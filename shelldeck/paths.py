@@ -9,6 +9,7 @@ APP_NAME = "ShellDeck"
 
 
 _DATA_DIR: Path | None = None
+INSTALLED_MARKER = "installed.marker"
 
 
 def app_dir() -> Path | None:
@@ -17,6 +18,10 @@ def app_dir() -> Path | None:
     None when installed as a package (pip/pipx) -> use the per-user folder."""
     if getattr(sys, "frozen", False):
         exe = Path(sys.executable).resolve()
+        # the Windows MSI drops this marker: installed apps keep data per-user
+        # (%APPDATA%), even when the install folder happens to be writable
+        if (exe.parent / INSTALLED_MARKER).exists():
+            return None
         for parent in exe.parents:           # .../ShellDeck.app/Contents/MacOS/ShellDeck
             if parent.suffix == ".app":
                 # installed in /Applications -> behave like a normal Mac app

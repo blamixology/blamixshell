@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ShellDeck Windows installer (WiX Toolset v5).
+
+  Dual-purpose package: the installer ASKS whether to install
+    • for all users  -> C:\Program Files\ShellDeck           (needs admin)
+    • just for me    -> %LOCALAPPDATA%\Programs\ShellDeck    (no admin)
+  Silent installs:
+    msiexec /i ShellDeck.msi /qn ALLUSERS=1                        (all users)
+    msiexec /i ShellDeck.msi /qn ALLUSERS=2 MSIINSTALLPERUSER=1    (current user)
+
+  Build: see packaging/windows/build_msi.ps1
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package Name="ShellDeck"
+           Manufacturer="ShellDeck contributors"
+           Version="$(var.Version)"
+           UpgradeCode="e3f36baf-2b0c-4135-a5f5-530a0d60532a"
+           Scope="perUserOrMachine"
+           Compressed="yes"
+           Language="1033">
+
+    <SummaryInformation Description="ShellDeck SSH client" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of ShellDeck is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- Apps & features entry -->
+    <Icon Id="AppIcon" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/blamixology/shelldeck" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/blamixology/shelldeck/issues" />
+
+    <!-- WixUI_Advanced = welcome/license -> "Install for all users / just for me" -> folder -> features -->
+    <Property Id="ApplicationFolderName" Value="ShellDeck" />
+    <Property Id="WixAppFolder" Value="WixPerMachineFolder" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+    <ui:WixUI Id="WixUI_Advanced" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="APPLICATIONFOLDER" Name="ShellDeck" />
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="ShellDeck" Description="The ShellDeck application."
+             Level="1" AllowAbsent="no" Display="expand">
+      <!-- the whole PyInstaller output folder (includes installed.marker) -->
+      <Files Directory="APPLICATIONFOLDER" Include="$(var.SourceDir)\**" />
+
+      <Component Id="StartMenuShortcut" Directory="ProgramMenuFolder" Guid="6f0c7a0e-2d61-4a55-9a0d-3c1f5c0b7a11">
+        <Shortcut Id="StartMenuSc" Name="ShellDeck" Description="SSH client with server manager, splits and SFTP"
+                  Target="[APPLICATIONFOLDER]ShellDeck.exe" WorkingDirectory="APPLICATIONFOLDER" Icon="AppIcon" />
+        <RegistryValue Root="HKMU" Key="Software\ShellDeck" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </Feature>
+
+    <Feature Id="DesktopShortcut" Title="Desktop shortcut" Description="Add a ShellDeck icon to the desktop." Level="1">
+      <Component Id="DesktopShortcutComp" Directory="DesktopFolder" Guid="b8a5d1c2-4e3f-4f1a-9c62-7d8e9f0a1b22">
+        <Shortcut Id="DesktopSc" Name="ShellDeck" Target="[APPLICATIONFOLDER]ShellDeck.exe"
+                  WorkingDirectory="APPLICATIONFOLDER" Icon="AppIcon" />
+        <RegistryValue Root="HKMU" Key="Software\ShellDeck" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </Feature>
+  </Package>
+</Wix>

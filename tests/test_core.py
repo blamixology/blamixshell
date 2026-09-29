@@ -183,3 +183,21 @@ def test_live_key_auth_and_jump():
         load_private_key(path=key_path, passphrase="nope")
     with pytest.raises(AuthConfigError, match="passphrase"):
         load_private_key(path=key_path)
+
+
+def test_data_dir_portable_vs_installed(tmp_path, monkeypatch):
+    import sys
+    from shelldeck import paths
+    monkeypatch.delenv("SHELLDECK_HOME", raising=False)
+    monkeypatch.setattr(paths, "_DATA_DIR", None)
+    appdir = tmp_path / "ShellDeck"
+    appdir.mkdir()
+    exe = appdir / "ShellDeck.exe"
+    exe.write_text("")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe))
+    monkeypatch.setattr(paths, "_legacy_dir", lambda: tmp_path / "peruser")
+    assert paths.data_dir() == appdir / "data"            # portable zip
+    (appdir / paths.INSTALLED_MARKER).write_text("")
+    monkeypatch.setattr(paths, "_DATA_DIR", None)
+    assert paths.data_dir() == tmp_path / "peruser"       # MSI install

@@ -11,18 +11,53 @@ permissions:
   contents: write
 
 jobs:
+  # 1) fast unit/TUI tests on all three OSes
   test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0 libgl1
+      - run: pip install -r requirements.txt textual pytest pexpect
+      - run: pytest -q tests
+        env: { QT_QPA_PLATFORM: offscreen }
+
+  # 2) live tests against a real OpenSSH server: shell, resize, SFTP, key auth,
+  #    jump host, host-key prompts, parallel exec, CLI + TUI in a real pty
+  test-live:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0 libgl1
+      - name: Start a throwaway sshd on 127.0.0.1:2222
+        run: |
+          sudo apt-get update && sudo apt-get install -y openssh-server libegl1 libxkbcommon0 libgl1
+          sudo useradd -m -s /bin/bash tester
+          echo 'tester:Secret123!' | sudo chpasswd
+          ssh-keygen -t ed25519 -N pp -f "$RUNNER_TEMP/id_ed25519" -q
+          sudo install -d -m 700 -o tester /home/tester/.ssh
+          sudo install -m 600 -o tester "$RUNNER_TEMP/id_ed25519.pub" /home/tester/.ssh/authorized_keys
+          printf 'Port 2222\nListenAddress 127.0.0.1\nPasswordAuthentication yes\nKbdInteractiveAuthentication no\nUsePAM yes\nSubsystem sftp /usr/lib/openssh/sftp-server\nPidFile /tmp/sshd-test.pid\n' > "$RUNNER_TEMP/sshd_config"
+          sudo mkdir -p /run/sshd
+          sudo /usr/sbin/sshd -f "$RUNNER_TEMP/sshd_config"
+          sleep 1
       - run: pip install -r requirements.txt textual pytest pexpect
-      - run: QT_QPA_PLATFORM=offscreen pytest -q tests
+      - run: pytest -q tests -rs
+        env:
+          QT_QPA_PLATFORM: offscreen
+          SHELLDECK_TEST_SSH: "127.0.0.1:2222:tester:Secret123!"
+          SHELLDECK_TEST_KEY: "${{ runner.temp }}/id_ed25519:pp"
 
+  # 3) only if every test passed: build the apps (each build also runs a self-test)
   build:
-    needs: test
+    needs: [test, test-live]
     strategy:
       fail-fast: false
       matrix:
@@ -53,6 +88,13 @@ jobs:
           Remove-Item Env:SHELLDECK_SELFTEST
           Remove-Item -Recurse -Force dist/ShellDeck/data -ErrorAction SilentlyContinue
           Compress-Archive -Path dist/ShellDeck -DestinationPath "ShellDeck-${{ matrix.name }}.zip"
+
+      - name: Build + test MSI installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_type }}" -eq "tag" ? "${{ github.ref_name }}" : ""
+          ./packaging/windows/build_msi.ps1 -Version $v -Test
 
       - name: Build (macOS)
         if: runner.os == 'macOS'
@@ -85,6 +127,7 @@ jobs:
           name: ShellDeck-${{ matrix.name }}
           path: |
             ShellDeck-*.zip
+            ShellDeck-*.msi
             ShellDeck-*.tar.gz
             shelldeck-cli-*.tar.gz
 

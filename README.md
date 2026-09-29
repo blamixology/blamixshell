@@ -14,8 +14,12 @@ A modern SSH client for **Windows, macOS and Linux**, written in Python. Think P
 ## Install / run
 
 ### Windows
+- **Installer (MSI):** download `ShellDeck-x.y.z-x64.msi` from Releases. The installer asks whether to install **for all users** (Program Files, needs admin) or **just for you** (no admin). It adds a Start-menu shortcut and an optional desktop shortcut, uninstalls from *Apps & features*, and upgrades in place. An installed copy keeps its data in `%APPDATA%\ShellDeck`.
+  - Silent install for IT rollouts: `msiexec /i ShellDeck-x.y.z-x64.msi /qn ALLUSERS=1` (all users) or `/qn ALLUSERS=2 MSIINSTALLPERUSER=1` (current user).
+- **Portable:** `ShellDeck-windows-x64.zip`, or build it yourself with **`build.bat`**, which produces `dist\ShellDeck\`. Keeps its data in a `data` folder next to the exe.
+- **Build the MSI yourself:** run `build.bat`, then **`build_msi.bat`** (needs the .NET 8 SDK; it installs WiX v5 automatically).
 - **From source:** install Python 3.10+, then double-click **`run.bat`**.
-- **Portable app:** double-click **`build.bat`**. It produces a `dist\ShellDeck\` folder with `ShellDeck.exe`; copy that folder anywhere.
+- The builds aren't code-signed yet, so Windows SmartScreen may show *"Windows protected your PC"*: click **More info → Run anyway**.
 
 ### macOS
 - **From source:** run `./run.sh` (needs `python3`; `brew install python` if missing).
