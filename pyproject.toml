@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shelldeck"
+version = "1.0.0"
+description = "Modern SSH client: server manager, split panes, SFTP, encrypted vault. Desktop GUI, TUI and CLI."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["paramiko>=3.4", "cryptography>=42"]
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.7"]
+tui = ["textual>=0.80"]
+all = ["PySide6>=6.7", "textual>=0.80"]
+
+[project.scripts]
+shelldeck = "shelldeck.cli:main"
+
+[project.gui-scripts]
+shelldeck-gui = "shelldeck.main:main"
+
+[tool.setuptools]
+packages = ["shelldeck"]
+
+[tool.setuptools.package-data]
+shelldeck = ["assets/*"]

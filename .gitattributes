@@ -1,0 +1,8 @@
+# Normalize line endings: shell scripts must stay LF (they run on Linux/macOS/CI),
+# Windows batch files stay CRLF.
+* text=auto
+*.sh  text eol=lf
+*.py  text eol=lf
+*.bat text eol=crlf
+*.png binary
+*.ico binary

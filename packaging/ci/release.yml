@@ -1,0 +1,101 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0 libgl1
+      - run: pip install -r requirements.txt textual pytest pexpect
+      - run: QT_QPA_PLATFORM=offscreen pytest -q tests
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, name: windows-x64 }
+          - { os: macos-latest,   name: macos-arm64 }
+          - { os: macos-13,       name: macos-x64 }
+          - { os: ubuntu-22.04,   name: linux-x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install
+        run: pip install -r requirements.txt pyinstaller pillow
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onedir --windowed --name ShellDeck `
+            --icon shelldeck/assets/app.ico --add-data "shelldeck/assets;shelldeck/assets" `
+            --exclude-module tkinter run.py
+          python packaging/prune_qt.py dist/ShellDeck
+          $env:SHELLDECK_SELFTEST = "1"; $env:QT_QPA_PLATFORM = "offscreen"
+          $p = Start-Process dist/ShellDeck/ShellDeck.exe -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "self-test failed ($($p.ExitCode))" }
+          Remove-Item Env:SHELLDECK_SELFTEST
+          Remove-Item -Recurse -Force dist/ShellDeck/data -ErrorAction SilentlyContinue
+          Compress-Archive -Path dist/ShellDeck -DestinationPath "ShellDeck-${{ matrix.name }}.zip"
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller --noconfirm --clean --windowed --name ShellDeck \
+            --icon shelldeck/assets/app.png --osx-bundle-identifier ro.blamixology.shelldeck \
+            --add-data "shelldeck/assets:shelldeck/assets" --exclude-module tkinter run.py
+          python packaging/prune_qt.py dist/ShellDeck.app
+          SHELLDECK_SELFTEST=1 QT_QPA_PLATFORM=offscreen dist/ShellDeck.app/Contents/MacOS/ShellDeck
+          rm -rf dist/ShellDeck.app/../data
+          cd dist && ditto -c -k --keepParent ShellDeck.app "../ShellDeck-${{ matrix.name }}.zip"
+
+      - name: Build (Linux GUI + CLI)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y libxcb-cursor0 libegl1
+          pyinstaller --noconfirm --clean --onedir --windowed --name ShellDeck \
+            --add-data "shelldeck/assets:shelldeck/assets" --exclude-module tkinter run.py
+          python packaging/prune_qt.py dist/ShellDeck
+          SHELLDECK_SELFTEST=1 QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox" dist/ShellDeck/ShellDeck
+          rm -rf dist/ShellDeck/data
+          cp shelldeck/assets/app.png dist/ShellDeck/shelldeck.png
+          cp packaging/linux/install-desktop-entry.sh dist/ShellDeck/
+          tar -C dist -czf "ShellDeck-${{ matrix.name }}.tar.gz" ShellDeck
+          ./build_cli.sh
+          cp dist/shelldeck-cli-*.tar.gz .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShellDeck-${{ matrix.name }}
+          path: |
+            ShellDeck-*.zip
+            ShellDeck-*.tar.gz
+            shelldeck-cli-*.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: out, merge-multiple: true }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true

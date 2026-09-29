@@ -1,0 +1,167 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="xterm.css">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: __BG__; }
+  #t { position: absolute; inset: 8px 4px 4px 12px; }
+  .xterm .xterm-viewport { scrollbar-width: thin; scrollbar-color: rgba(128,128,128,.35) transparent; }
+  .xterm .xterm-viewport::-webkit-scrollbar { width: 8px; }
+  .xterm .xterm-viewport::-webkit-scrollbar-thumb { background: rgba(128,128,128,.3); border-radius: 4px; }
+  #find { position: absolute; top: 8px; right: 16px; display: none; gap: 6px; align-items: center;
+          background: #1b2030; border: 1px solid #2c3346; border-radius: 10px; padding: 6px 8px;
+          font: 13px "Segoe UI", sans-serif; color: #cfd5e4; z-index: 10; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+  #find input { background: #10131a; border: 1px solid #2c3346; color: #e6e9f2; border-radius: 6px;
+                padding: 5px 8px; outline: none; width: 200px; }
+  #find button { background: transparent; border: none; color: #8a92a8; cursor: pointer; font-size: 14px; padding: 2px 6px; }
+  #find button:hover { color: #fff; }
+</style>
+<script src="xterm.js"></script>
+<script src="addon-fit.js"></script>
+<script src="addon-web-links.js"></script>
+<script src="addon-search.js"></script>
+<script>__QWEBCHANNEL__</script>
+</head>
+<body>
+<div id="t"></div>
+<div id="find"><input id="q" placeholder="Find in scrollback"><button id="prev" title="Previous">&#8593;</button><button id="next" title="Next">&#8595;</button><button id="close" title="Close">&#10005;</button></div>
+<script>
+let opts = __OPTS__;
+const isMac = /Mac/.test(navigator.platform || navigator.userAgent);
+let term, fit, search, bridge;
+const ctrlShiftKeys = new Set(["KeyC","KeyV","KeyD","KeyE","KeyW","KeyT","KeyP","KeyF","KeyB","KeyK","KeyR","KeyS","KeyN","Digit1","Digit2","Digit3","Digit4","Digit5","Digit6","Digit7","Digit8","Digit9"]);
+
+function b64ToBytes(s) {
+  const bin = atob(s); const u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return u;
+}
+
+function applyOptions(o) {
+  opts = Object.assign(opts, o);
+  term.options.fontFamily = opts.fontFamily;
+  term.options.fontSize = opts.fontSize;
+  term.options.lineHeight = opts.lineHeight;
+  term.options.cursorStyle = opts.cursorStyle;
+  term.options.cursorBlink = opts.cursorBlink;
+  term.options.scrollback = opts.scrollback;
+  term.options.theme = opts.theme;
+  document.body.style.background = opts.theme.background;
+  doFit();
+}
+
+let lastCols = 0, lastRows = 0;
+function doFit() {
+  try { fit.fit(); } catch (e) {}
+  if (term.cols !== lastCols || term.rows !== lastRows) {
+    lastCols = term.cols; lastRows = term.rows;
+    if (bridge) bridge.resize(term.cols, term.rows);
+  }
+}
+
+function init() {
+  term = new Terminal({
+    fontFamily: opts.fontFamily, fontSize: opts.fontSize, lineHeight: opts.lineHeight,
+    cursorStyle: opts.cursorStyle, cursorBlink: opts.cursorBlink, scrollback: opts.scrollback,
+    theme: opts.theme, allowProposedApi: true, macOptionIsMeta: true,
+    rightClickSelectsWord: false, smoothScrollDuration: 80, drawBoldTextInBrightColors: true,
+  });
+  fit = new FitAddon.FitAddon();
+  search = new SearchAddon.SearchAddon();
+  term.loadAddon(fit);
+  term.loadAddon(search);
+  term.loadAddon(new WebLinksAddon.WebLinksAddon((ev, uri) => { if (ev.ctrlKey && bridge) bridge.openUrl(uri); }));
+  term.open(document.getElementById("t"));
+
+  term.attachCustomKeyEventHandler(ev => {
+    if (ev.type !== "keydown") return true;
+    // macOS: Cmd+key drives the app (Ctrl stays for the shell, like Terminal.app / iTerm)
+    if (isMac && ev.metaKey && !ev.ctrlKey && !ev.altKey) {
+      ev.preventDefault();
+      const code = ev.code;
+      if (code === "KeyC") { const s = term.getSelection(); if (s && bridge) bridge.copy(s); return false; }
+      if (code === "KeyV") { if (bridge) bridge.requestPaste(); return false; }
+      if (code === "KeyF") { openFind(); return false; }
+      if (code === "KeyK") { term.clear(); return false; }
+      if (code === "KeyA") { term.selectAll(); return false; }
+      if (code === "Equal" || code === "Minus" || code === "Digit0") {
+        if (bridge) bridge.shortcut(code === "Equal" ? "zoom+" : code === "Minus" ? "zoom-" : "zoom0"); return false;
+      }
+      if (ctrlShiftKeys.has(code) && bridge) bridge.shortcut("ctrl+shift+" + code.replace("Key","").replace("Digit","").toLowerCase());
+      return false;
+    }
+    if (ev.ctrlKey && ev.shiftKey && !ev.altKey && ctrlShiftKeys.has(ev.code)) {
+      ev.preventDefault();
+      if (ev.code === "KeyC") { const s = term.getSelection(); if (s && bridge) bridge.copy(s); return false; }
+      if (ev.code === "KeyF") { openFind(); return false; }
+      if (bridge) bridge.shortcut("ctrl+shift+" + ev.code.replace("Key","").replace("Digit","").toLowerCase());
+      return false;
+    }
+    if (ev.shiftKey && ev.code === "Insert") { ev.preventDefault(); if (bridge) bridge.requestPaste(); return false; }
+    if (ev.ctrlKey && !ev.shiftKey && (ev.code === "Equal" || ev.code === "Minus" || ev.code === "Digit0")) {
+      ev.preventDefault();
+      if (bridge) bridge.shortcut(ev.code === "Equal" ? "zoom+" : ev.code === "Minus" ? "zoom-" : "zoom0");
+      return false;
+    }
+    if (ev.ctrlKey && ev.code === "Tab") { ev.preventDefault(); if (bridge) bridge.shortcut(ev.shiftKey ? "prevtab" : "nexttab"); return false; }
+    return true;
+  });
+
+  term.onData(d => bridge && bridge.input(d));
+  term.onBinary(d => bridge && bridge.inputBinary(d));
+  term.onSelectionChange(() => {
+    if (!opts.copyOnSelect) return;
+    const s = term.getSelection();
+    if (s && bridge) bridge.copy(s);
+  });
+  term.onTitleChange(t => bridge && bridge.title(t));
+  term.onBell(() => bridge && bridge.bell());
+  term.textarea.addEventListener("focus", () => bridge && bridge.focused());
+
+  document.getElementById("t").addEventListener("contextmenu", ev => {
+    ev.preventDefault();
+    if (!bridge) return;
+    if (opts.rightClickPaste) bridge.requestPaste(); else bridge.contextMenu();
+  });
+
+  new ResizeObserver(() => doFit()).observe(document.getElementById("t"));
+
+  new QWebChannel(qt.webChannelTransport, ch => {
+    bridge = ch.objects.bridge;
+    bridge.output.connect(b => term.write(b64ToBytes(b)));
+    bridge.text.connect(s => term.write(s));
+    bridge.pasteText.connect(s => { term.paste(s); term.focus(); });
+    bridge.options.connect(j => applyOptions(JSON.parse(j)));
+    bridge.command.connect(c => {
+      if (c === "focus") term.focus();
+      else if (c === "clear") term.clear();
+      else if (c === "reset") term.reset();
+      else if (c === "selectAll") term.selectAll();
+      else if (c === "find") openFind();
+      else if (c === "blur") term.blur();
+    });
+    doFit();
+    bridge.ready(term.cols, term.rows);
+    term.focus();
+  });
+}
+
+// ---- find bar
+const findBox = document.getElementById("find"), q = document.getElementById("q");
+const decor = { matchBackground: "#3b4a7a", activeMatchBackground: "#7c8cff", matchOverviewRuler: "#7c8cff", activeMatchColorOverviewRuler: "#ffffff" };
+function openFind() { findBox.style.display = "flex"; q.focus(); q.select(); }
+function closeFind() { findBox.style.display = "none"; search.clearDecorations(); term.focus(); }
+q.addEventListener("keydown", e => {
+  if (e.key === "Escape") closeFind();
+  else if (e.key === "Enter") (e.shiftKey ? search.findPrevious : search.findNext).call(search, q.value, { decorations: decor });
+});
+q.addEventListener("input", () => search.findNext(q.value, { incremental: true, decorations: decor }));
+document.getElementById("next").onclick = () => search.findNext(q.value, { decorations: decor });
+document.getElementById("prev").onclick = () => search.findPrevious(q.value, { decorations: decor });
+document.getElementById("close").onclick = closeFind;
+
+init();
+</script>
+</body>
+</html>
