@@ -574,15 +574,20 @@ class SnippetsDialog(_Base):
 class CommandPalette(QDialog):
     """Ctrl+Shift+P: fuzzy search servers and actions; also accepts user@host:port."""
 
-    def __init__(self, entries: list[tuple[str, str, object, str]], parent=None, placeholder=""):
-        """entries: (title, subtitle, callback, icon_name)."""
+    MAX_ROWS = 10
+
+    def __init__(self, entries: list[tuple[str, str, object, str]], parent=None, placeholder="",
+                 anchor=None):
+        """entries: (title, subtitle, callback, icon_name). anchor: the toolbar search
+        field - the palette drops down from it (like a browser address bar)."""
         super().__init__(parent, Qt.FramelessWindowHint | Qt.Popup)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.entries = entries
+        self.anchor = anchor
         self.quick_connect = None
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        frame = QFrame(objectName="Palette")
+        frame = self.frame = QFrame(objectName="Palette")
         outer.addWidget(frame)
         lay = QVBoxLayout(frame)
         lay.setContentsMargins(6, 6, 6, 6)
@@ -593,8 +598,12 @@ class CommandPalette(QDialog):
         line.setStyleSheet(f"background:{C['border']};")
         lay.addWidget(line)
         self.list = QListWidget()
-        self.list.setMinimumHeight(340)
+        self.list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         lay.addWidget(self.list)
+        self.empty = QLabel(objectName="Hint")
+        self.empty.setContentsMargins(14, 10, 14, 12)
+        self.empty.setWordWrap(True)
+        lay.addWidget(self.empty)
         self.q.textChanged.connect(self._filter)
         self.q.returnPressed.connect(self._run)
         self.list.itemActivated.connect(lambda _i: self._run())
@@ -647,6 +656,26 @@ class CommandPalette(QDialog):
             self.list.addItem(it)
         if self.list.count():
             self.list.setCurrentRow(0)
+        self._fit()
+
+    def _fit(self) -> None:
+        """Size the list to its rows (max MAX_ROWS) and show an empty state instead of
+        a big blank box when nothing matches."""
+        n = self.list.count()
+        self.list.setVisible(n > 0)
+        self.empty.setVisible(n == 0)
+        if n:
+            row = max(self.list.sizeHintForRow(0), 28)
+            self.list.setFixedHeight(row * min(n, self.MAX_ROWS) + 2 * self.list.frameWidth() + 4)
+        else:
+            q = self.q.text().strip()
+            self.empty.setText(f"No servers or actions match “{q}”.\n"
+                               "Tip: type user@host or host:port to quick-connect.")
+        # re-measure now (hidden/shown children otherwise keep the old height)
+        for lay in (self.frame.layout(), self.layout()):
+            lay.invalidate()
+            lay.activate()
+        self.resize(self.width(), self.sizeHint().height())
 
     def _run(self) -> None:
         it = self.list.currentItem()
@@ -661,10 +690,18 @@ class CommandPalette(QDialog):
 
     def showEvent(self, e):  # noqa: N802
         super().showEvent(e)
-        p = self.parentWidget()
-        if p:
-            g = p.geometry()
-            self.move(g.x() + (g.width() - self.width()) // 2, g.y() + 90)
+        a = self.anchor
+        if a is not None and a.isVisible():
+            # open over the search field, as its drop-down (same left edge, at least as wide)
+            from PySide6.QtCore import QPoint
+            self.setFixedWidth(max(a.width(), 560))
+            top_left = a.mapToGlobal(QPoint(0, 0))
+            self.move(top_left.x(), top_left.y() - 4)
+        else:
+            p = self.parentWidget()
+            if p:
+                g = p.geometry()
+                self.move(g.x() + (g.width() - self.width()) // 2, g.y() + 90)
         self.q.setFocus()
 
 

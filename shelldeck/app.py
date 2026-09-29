@@ -258,6 +258,7 @@ class MainWindow(QMainWindow):
                           f"border:1px solid {C['border']}; border-radius:9px; padding:6px 12px;")
         pal.setFixedWidth(430)
         pal.clicked.connect(self.open_palette)
+        self.pal_btn = pal
         kbl = QLabel(kb("Ctrl+Shift+P"), pal)
         kbl.setStyleSheet(f"color:{C['faint']}; font-size:8pt; background:transparent; border:none;")
         kbl.setAttribute(Qt.WA_TransparentForMouseEvents)
@@ -658,7 +659,7 @@ class MainWindow(QMainWindow):
             acts.append((f"Snippet: {sn.name}", sn.command.replace("\n", " ⏎ ")[:60],
                          lambda c=sn.command: self.send_snippet(c), "code"))
         acts = [(t, kb(sub), cb, ic) for t, sub, cb, ic in acts]
-        pal = CommandPalette(entries + acts, self)
+        pal = CommandPalette(entries + acts, self, anchor=getattr(self, "pal_btn", None))
         pal.quick_connect = self.quick_connect
         pal.exec()
 
