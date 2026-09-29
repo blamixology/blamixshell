@@ -10,8 +10,8 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import (QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox,
-                               QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu,
+                               QMessageBox, QToolButton, QVBoxLayout, QWidget)
 
 from .models import Server
 from .paths import assets_dir
@@ -157,6 +157,7 @@ class TerminalPane(QWidget):
         self._pending_start = False
         self._session_password = ""
         self.remote_title = ""
+        self.deferred = False            # restored from the last session, not connected yet
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -176,6 +177,15 @@ class TerminalPane(QWidget):
         h.addWidget(self.title_lbl)
         h.addWidget(self.addr_lbl)
         h.addStretch(1)
+        # tunnels: shows "⇄ 2" when tunnels run on this connection; click for details
+        self.tun_btn = QToolButton()
+        self.tun_btn.setAutoRaise(True)
+        self.tun_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.tun_btn.setPopupMode(QToolButton.InstantPopup)
+        self.tun_btn.setMenu(QMenu(self.tun_btn))
+        self.tun_btn.hide()
+        self._tunnel_states: list = []
+        h.addWidget(self.tun_btn)
         h.addWidget(self.status_lbl)
         self.btn_reconnect = self._tbtn("refresh", "Reconnect (R)", self.reconnect)
         self.btn_close = self._tbtn("x", kb("Close pane (Ctrl+Shift+W)"), lambda: self.close_requested.emit(self))
@@ -272,7 +282,7 @@ class TerminalPane(QWidget):
 
     def send(self, data: bytes) -> None:
         """Deliver keyboard input to this pane's session (after broadcast routing)."""
-        if self.state in ("disconnected", "failed"):
+        if self.state in ("disconnected", "failed") or self.deferred:
             if data in (b"r", b"R", b"\r"):
                 self.reconnect()
             return
@@ -304,7 +314,14 @@ class TerminalPane(QWidget):
         self.view.bridge.options.emit(json.dumps(self.settings.terminal_options()))
 
     # ---------------------------------------------------------- session
+    def defer(self) -> None:
+        """Restored pane: show where it was, connect when its tab is opened."""
+        self.deferred = True
+        self.write_status(f"Restored from your last session: {self.server.label} ({self.server.address}).")
+        self.status_lbl.setText("opens when you view this tab")
+
     def start(self) -> None:
+        self.deferred = False
         if self.server.auth == "password" and not self.server.password and not self._session_password:
             pw, ok = QInputDialog.getText(self, f"Password for {self.server.label}",
                                           f"Password for {self.server.address}:", QLineEdit.Password)
@@ -333,6 +350,9 @@ class TerminalPane(QWidget):
         s.disconnected.connect(self._on_disconnected)
         s.failed.connect(self._on_failed)
         s.host_key_prompt.connect(self._on_host_key)
+        s.auth_prompt.connect(self._on_auth_prompt)
+        s.tunnels_changed.connect(self._on_tunnels)
+        s.tunnel_message.connect(lambda m, err: self.write_status(m, "33" if err else "90"))
         self.session = s
         self._set_state("connecting", "connecting …")
         cols, rows = self._size
@@ -358,6 +378,40 @@ class TerminalPane(QWidget):
         self.write_status("Press R to retry.", "90")
         if "Authentication" in reason and self.server.auth == "password":
             self._session_password = ""   # ask again next time
+
+    def _on_auth_prompt(self, label: str, title: str, instructions: str, prompts: list) -> None:
+        from .dialogs import AuthPromptDialog
+        sess = self.sender()
+        self.status_lbl.setText("waiting for verification …")
+        dlg = AuthPromptDialog(label, title, instructions, prompts, self)
+        ok = dlg.exec() == QDialog.Accepted
+        if sess:
+            sess.answer_prompt(dlg.answers() if ok else None)
+
+    def _on_tunnels(self, states: list) -> None:
+        self._tunnel_states = states
+        if not states:
+            self.tun_btn.hide()
+            return
+        ok = [s for s in states if s.ok]
+        bad = len(states) - len(ok)
+        color = C["danger"] if bad and not ok else C["warn"] if bad else C["ok"]
+        self.tun_btn.setIcon(icon("tunnel", color, 14))
+        live = sum(s.connections for s in states)
+        self.tun_btn.setText((f"{len(ok)}/{len(states)}" if bad else f"{len(ok)}") + (f" · {live} open" if live else ""))
+        tip = "\n".join(("✔ " if s.ok else "✖ ") + s.summary() for s in states)
+        self.tun_btn.setToolTip("Tunnels on this connection\n" + tip)
+        m = self.tun_btn.menu()
+        m.clear()
+        for st in states:
+            act = m.addAction(icon("tunnel", C["ok"] if st.ok else C["danger"], 14), st.summary())
+            if st.ok and st.tunnel.kind != "R":
+                addr = f"{st.tunnel.listen_host}:{st.port}"
+                act.setToolTip(f"Click to copy {addr}")
+                act.triggered.connect(lambda _=False, a=addr: QGuiApplication.clipboard().setText(a))
+            else:
+                act.setEnabled(False)
+        self.tun_btn.show()
 
     def _on_host_key(self, hid: str, ktype: str, fp: str, changed: bool) -> None:
         if changed:

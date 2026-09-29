@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from urllib.parse import unquote
 
-from .models import Server
+from .models import Server, Tunnel
 
 PUTTY_KEY = r"Software\SimonTatham\PuTTY\Sessions"
 
@@ -76,6 +76,13 @@ def parse_ssh_config(text: str, base_dir: Path | None = None) -> list[Server]:
             username=o.get("user", ""), auth="key" if ident else "agent", key_path=ident,
             group="Imported/ssh-config", tags=["ssh-config"],
         )
+        for key, kind in (("localforward", "L"), ("remoteforward", "R"), ("dynamicforward", "D")):
+            vals = o.get(key) or []
+            for spec in [vals] if isinstance(vals, str) else vals:
+                try:
+                    s.tunnels.append(Tunnel.parse(kind, spec))
+                except ValueError:
+                    pass
         servers[alias] = s
         pj = o.get("proxyjump")
         if pj and pj.lower() != "none":

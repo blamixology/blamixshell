@@ -1,4 +1,4 @@
-"""Qt-free SSH core: host-key checks, auth, bastion hops.
+"""Qt-free SSH core: host-key checks, auth (incl. 2FA prompts), bastion hops, tunnels.
 
 Shared by the desktop GUI, the CLI and the TUI (so those run on headless Linux
 without PySide6 installed).
@@ -107,6 +107,146 @@ def load_private_key(path: str = "", data: str = "", passphrase: str = "") -> pa
     raise AuthConfigError("No private key configured")
 
 
+# A server prompt during keyboard-interactive login: (text, echo). The handler gets
+# (title, instructions, prompts) and returns one answer per prompt, or None to cancel.
+Prompt = tuple[str, bool]
+InteractiveHandler = Callable[[str, str, list[Prompt]], "list[str] | None"]
+
+
+class AuthCancelled(paramiko.AuthenticationException):
+    pass
+
+
+class NeedsInput(paramiko.AuthenticationException):
+    """The server asked for something (e.g. a 2FA code) and no handler was given."""
+
+    def __init__(self, prompts: list[str]):
+        super().__init__("The server asks for: " + ", ".join(p.strip() for p in prompts))
+        self.prompts = prompts
+
+
+def _is_password_prompt(text: str) -> bool:
+    t = text.strip().lower()
+    return "password" in t and "new" not in t and "code" not in t and "otp" not in t
+
+
+def _default_key_files() -> list[paramiko.PKey]:
+    """Unencrypted ~/.ssh/id_* keys (like ssh does when no key is configured)."""
+    import os
+    keys = []
+    for name in ("id_ed25519", "id_ecdsa", "id_rsa"):
+        for d in (".ssh", "ssh"):
+            path = os.path.expanduser(f"~/{d}/{name}")
+            if os.path.isfile(path):
+                try:
+                    keys.append(paramiko.PKey.from_path(path))
+                except Exception:
+                    pass   # encrypted or unreadable: the agent may still have it
+    return keys
+
+
+class _Client(paramiko.SSHClient):
+    """SSHClient with an auth sequence that supports 2FA / keyboard-interactive
+    prompts through a callback (paramiko's own falls back to stdin input())."""
+
+    interactive: InteractiveHandler | None = None
+
+    def _auth(self, username, password, pkey, key_filenames, allow_agent,
+              look_for_keys, passphrase):  # noqa: PLR0912 (it's a sequence of fallbacks)
+        t = self._transport
+        saved: Exception | None = None
+
+        # what does the server accept? ("none" is refused by nearly every server)
+        try:
+            t.auth_none(username)
+            if t.is_authenticated():
+                return
+            allowed = ["publickey", "password", "keyboard-interactive"]
+        except paramiko.BadAuthenticationType as e:
+            allowed = list(e.allowed_types)
+        except paramiko.SSHException:
+            allowed = ["publickey", "password", "keyboard-interactive"]
+
+        # 1) keys: configured key, agent keys, default key files
+        keys: list[paramiko.PKey] = [pkey] if pkey is not None else []
+        if allow_agent:
+            try:
+                keys += list(paramiko.Agent().get_keys())
+            except Exception:
+                pass
+        if look_for_keys:
+            keys += _default_key_files()
+        if "publickey" in allowed:
+            for key in keys:
+                try:
+                    remaining = t.auth_publickey(username, key)
+                except paramiko.AuthenticationException as e:
+                    saved = e
+                    continue
+                except paramiko.SSHException as e:
+                    saved = e
+                    continue
+                if t.is_authenticated():
+                    return
+                allowed = list(remaining)   # key accepted, a second factor is required
+                break
+
+        # 2) password
+        if password and "password" in allowed:
+            try:
+                remaining = t.auth_password(username, password, fallback=False)
+                if t.is_authenticated():
+                    return
+                allowed = list(remaining)
+            except paramiko.BadAuthenticationType as e:
+                allowed = list(e.allowed_types)
+            except paramiko.AuthenticationException as e:
+                saved = e
+
+        # 3) keyboard-interactive: fill password prompts with the saved password
+        #    (once, so a wrong one is asked again), ask the user for everything else
+        if "keyboard-interactive" in allowed and (self.interactive or password):
+            state = {"pw_used": False, "cancelled": False, "unanswered": []}
+            ask = self.interactive
+
+            def handler(title, instructions, prompts):
+                answers: list[str | None] = []
+                for text, _echo in prompts:
+                    if password and not state["pw_used"] and _is_password_prompt(text):
+                        answers.append(password)
+                        state["pw_used"] = True
+                    else:
+                        answers.append(None)
+                missing = [(p[0], p[1]) for p, a in zip(prompts, answers) if a is None]
+                if missing:
+                    if not ask:
+                        state["unanswered"] += [m[0] for m in missing]
+                        return [a or "" for a in answers]
+                    got = ask(title or "", instructions or "", missing)
+                    if got is None:
+                        state["cancelled"] = True
+                        return ["" for _ in prompts]
+                    it = iter(got)
+                    answers = [a if a is not None else next(it, "") for a in answers]
+                return answers
+            try:
+                t.auth_interactive(username, handler)
+                if t.is_authenticated():
+                    return
+            except paramiko.AuthenticationException as e:
+                saved = e
+            if state["cancelled"]:
+                raise AuthCancelled("Login cancelled.")
+            other = [q for q in state["unanswered"] if not _is_password_prompt(q)]
+            if other:   # (a repeated password prompt just means the password was wrong)
+                raise NeedsInput(other)
+
+        if saved is not None:
+            raise saved
+        raise paramiko.AuthenticationException(
+            "No supported authentication method (server offers: " + ", ".join(allowed) + ")")
+
+
 def _connect_kwargs(server: Server) -> dict:
     kw: dict = dict(username=server.username or None, timeout=12, banner_timeout=20,
                     auth_timeout=25, allow_agent=False, look_for_keys=False)
@@ -122,8 +262,11 @@ def _connect_kwargs(server: Server) -> dict:
 
 def open_client(server: Server, resolve: Callable[[str], Server | None],
                 log: Callable[[str], None] = lambda m: None,
-                _depth: int = 0) -> tuple[paramiko.SSHClient, list[paramiko.SSHClient]]:
-    """Connect (through bastions if configured). Returns (client, [bastion clients])."""
+                _depth: int = 0, interactive: InteractiveHandler | None = None,
+                ) -> tuple[paramiko.SSHClient, list[paramiko.SSHClient]]:
+    """Connect (through bastions if configured). Returns (client, [bastion clients]).
+    `interactive` answers keyboard-interactive prompts (2FA codes etc.); it gets the
+    server's prompts and returns the answers, or None to cancel."""
     if _depth > 4:
         raise AuthConfigError("Jump host chain is too long (loop?)")
     sock = None
@@ -133,12 +276,13 @@ def open_client(server: Server, resolve: Callable[[str], Server | None],
         if not jump:
             raise AuthConfigError("The configured jump host no longer exists")
         log(f"via jump host {jump.label} …")
-        jclient, jchain = open_client(jump, resolve, log, _depth + 1)
+        jclient, jchain = open_client(jump, resolve, log, _depth + 1, interactive)
         chain = jchain + [jclient]
         sock = jclient.get_transport().open_channel(
             "direct-tcpip", (server.host, int(server.port)), ("127.0.0.1", 0), timeout=15)
 
-    client = paramiko.SSHClient()
+    client = _Client()
+    client.interactive = interactive
     client._host_keys = load_known_hosts()       # read-only view; we save via trust_host_key
     client.set_missing_host_key_policy(_AskPolicy())
     log(f"connecting to {server.host}:{server.port} …")
@@ -220,8 +364,13 @@ def open_sftp(client: paramiko.SSHClient) -> tuple[paramiko.SFTPClient, str]:
 
 
 def friendly_error(e: Exception) -> str:
+    if isinstance(e, (AuthCancelled, NeedsInput)):
+        return str(e)
     if isinstance(e, paramiko.AuthenticationException):
-        return "Authentication failed: check username, password or key."
+        msg = str(e)
+        if msg.startswith("No supported authentication method"):
+            return msg + "."
+        return "Authentication failed: check username, password, key or code."
     if isinstance(e, socket.timeout) or isinstance(e, TimeoutError):
         return "Connection timed out."
     if isinstance(e, socket.gaierror):
@@ -249,6 +398,9 @@ def test_connection(server: Server, resolve) -> str:
         return f"OK. Host key not yet trusted ({e.key.get_name()} {fingerprint(e.key)}); you'll be asked on first connect."
     except ChangedHostKey:
         return "WARNING: the server's host key has CHANGED since you last connected."
+    except NeedsInput as e:
+        return (f"OK. The server also asks for “{e.prompts[0].strip().rstrip(':')}”; "
+                "you'll be prompted when connecting.")
     except AuthConfigError as e:
         return str(e)
     except Exception as e:

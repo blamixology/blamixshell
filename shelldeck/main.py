@@ -73,6 +73,7 @@ def main() -> None:
 
     win = MainWindow(holder["store"], Settings())
     win.show()
+    win.restore_session()
     sys.exit(app.exec())
 
 

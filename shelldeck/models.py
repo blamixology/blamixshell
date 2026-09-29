@@ -17,6 +17,77 @@ def _id() -> str:
 
 
 @dataclass
+class Tunnel:
+    """A port forward that runs while the server is connected.
+
+    L  local:   listen here  (listen_host:listen_port) -> dest_host:dest_port as seen by the server
+    R  remote:  listen on the server (listen_host:listen_port) -> dest_host:dest_port as seen from here
+    D  dynamic: SOCKS4/5 proxy here (listen_host:listen_port), destinations chosen by the app using it
+    """
+    kind: str = "L"
+    listen_host: str = "127.0.0.1"
+    listen_port: int = 0
+    dest_host: str = "localhost"
+    dest_port: int = 0
+    enabled: bool = True
+    name: str = ""
+
+    def describe(self) -> str:
+        lp = f"{self.listen_host}:{self.listen_port}"
+        if self.kind == "D":
+            return f"SOCKS {lp}"
+        arrow = f"{self.dest_host}:{self.dest_port}"
+        return f"{'Local' if self.kind == 'L' else 'Remote'} {lp} → {arrow}"
+
+    def problem(self) -> str:
+        """'' if the tunnel is usable, else a short reason."""
+        if self.kind not in ("L", "R", "D"):
+            return "unknown type"
+        if not (0 <= int(self.listen_port) <= 65535) or (self.kind != "R" and not self.listen_port):
+            return "needs a listen port"
+        if self.kind != "D" and (not self.dest_host or not (0 < int(self.dest_port) <= 65535)):
+            return "needs a destination host and port"
+        return ""
+
+    @classmethod
+    def parse(cls, kind: str, spec: str) -> "Tunnel":
+        """OpenSSH syntax: L/R '[bind:]port:host:hostport', D '[bind:]port'.
+        Also accepts the 'LocalForward 8080 host:80' form from ssh_config."""
+        kind = kind.upper().lstrip("-")[:1]
+        spec = spec.strip().replace(" ", ":")
+        if spec.startswith("["):   # [::1]:port… - keep IPv6 literals whole
+            host_end = spec.index("]")
+            parts = [spec[1:host_end]] + spec[host_end + 2:].split(":")
+        else:
+            parts = spec.split(":")
+        default_bind = "localhost" if kind == "R" else "127.0.0.1"
+        try:
+            if kind == "D":
+                bind, port = (parts[0], parts[1]) if len(parts) == 2 else (default_bind, parts[0])
+                return cls("D", bind or default_bind, int(port), "", 0)
+            if len(parts) == 4:
+                bind, port, host, hport = parts
+            elif len(parts) == 3:
+                bind, (port, host, hport) = default_bind, parts
+            else:
+                raise ValueError
+            if bind in ("*", ""):
+                bind = "0.0.0.0" if kind == "L" else ""
+            return cls(kind, bind, int(port), host, int(hport))
+        except (ValueError, IndexError):
+            raise ValueError(f"Can't read -{kind} {spec!r}; expected "
+                             + ("[bind:]port" if kind == "D" else "[bind:]port:host:hostport")) from None
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Tunnel":
+        known = {f.name for f in fields(cls)}
+        t = cls(**{k: v for k, v in d.items() if k in known})
+        t.listen_port = int(t.listen_port or 0)
+        t.dest_port = int(t.dest_port or 0)
+        return t
+
+
+@dataclass
 class Server:
     name: str = ""
     host: str = ""
@@ -34,6 +105,7 @@ class Server:
     jump_id: str = ""               # id of another server used as a bastion
     keepalive: int = 30
     startup_cmd: str = ""
+    tunnels: list[Tunnel] = field(default_factory=list)
     notes: str = ""
     last_connected: float = 0.0
     connect_count: int = 0
@@ -80,6 +152,7 @@ class Server:
         s = cls(**{k: v for k, v in d.items() if k in known})
         s.port = int(s.port or 22)
         s.tags = [t for t in (s.tags or []) if t]
+        s.tunnels = [t if isinstance(t, Tunnel) else Tunnel.from_dict(t) for t in (s.tunnels or [])]
         return s
 
     def copy(self) -> "Server":

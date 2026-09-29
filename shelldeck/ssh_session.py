@@ -13,6 +13,7 @@ from .models import Server
 from .ssh_core import (AuthConfigError, ChangedHostKey, UnknownHostKey,  # noqa: F401 (re-exported)
                        fingerprint, friendly_error, host_id, load_known_hosts,
                        load_private_key, open_client, open_sftp, test_connection, trust_host_key)
+from .tunnels import TunnelManager
 
 
 class ShellSession(QObject):
@@ -22,6 +23,9 @@ class ShellSession(QObject):
     disconnected = Signal(str)           # reason ("" = clean exit)
     failed = Signal(str)
     host_key_prompt = Signal(str, str, str, bool)   # host_id, key type, fingerprint, changed?
+    auth_prompt = Signal(str, str, str, object)     # server label, title, instructions, [(prompt, echo)]
+    tunnels_changed = Signal(object)                # list[TunnelState]
+    tunnel_message = Signal(str, bool)              # text, is_error
 
     def __init__(self, server: Server, resolve: Callable[[str], Server | None], parent=None):
         super().__init__(parent)
@@ -38,6 +42,9 @@ class ShellSession(QObject):
         self.sftp_noise: str = ""   # text a login script printed on the SFTP channel
         self.connected_at = 0.0
         self._lock = threading.Lock()
+        self.tunnels: TunnelManager | None = None
+        self._prompt_evt = threading.Event()
+        self._prompt_answer: list[str] | None = None
 
     # -- lifecycle
     @property
@@ -58,9 +65,59 @@ class ShellSession(QObject):
             self._pending_key = None
             self.start()
 
+    # -- 2FA / keyboard-interactive: called on the SSH thread, answered by the UI
+    def _ask(self, title: str, instructions: str, prompts: list) -> list[str] | None:
+        self._prompt_answer = None
+        self._prompt_evt.clear()
+        label = self.server.label
+        self.auth_prompt.emit(label, title, instructions, list(prompts))
+        while not self._prompt_evt.wait(0.25):
+            if self._closing:
+                return None
+        return self._prompt_answer
+
+    def answer_prompt(self, answers: list[str] | None) -> None:
+        self._prompt_answer = answers
+        self._prompt_evt.set()
+
+    # a server's tunnels run once, on its first connected session (panes/tabs share them)
+    _tunnel_owners: dict[str, "ShellSession"] = {}
+    _owners_lock = threading.Lock()
+
+    def _start_tunnels(self) -> None:
+        wanted = [t for t in self.server.tunnels if t.enabled]
+        if not wanted or not self.client:
+            return
+        with ShellSession._owners_lock:
+            owner = ShellSession._tunnel_owners.get(self.server.id)
+            if owner is not None and owner is not self and owner.tunnels is not None:
+                self.tunnel_message.emit(f"⇄ {len(wanted)} tunnel(s) for {self.server.label} "
+                                         "already run in another pane", False)
+                return
+            ShellSession._tunnel_owners[self.server.id] = self
+        mgr = TunnelManager(self.client.get_transport(), wanted,
+                            log=lambda m: self.tunnel_message.emit(m, True),   # runtime problems
+                            on_change=lambda: self.tunnels_changed.emit(list(mgr.states)))
+        self.tunnels = mgr
+        for st in mgr.start():
+            if st.ok:
+                self.tunnel_message.emit("⇄ " + st.summary(), False)
+            else:
+                self.tunnel_message.emit(f"✖ tunnel {st.tunnel.describe()}: {st.error}", True)
+
+    def _release_tunnels(self) -> None:
+        if self.tunnels:
+            self.tunnels.stop()
+            self.tunnels = None
+            self.tunnels_changed.emit([])
+        with ShellSession._owners_lock:
+            if ShellSession._tunnel_owners.get(self.server.id) is self:
+                del ShellSession._tunnel_owners[self.server.id]
+
     def _run(self) -> None:
         try:
-            self.client, self._chain = open_client(self.server, self._resolve, self.status.emit)
+            self.client, self._chain = open_client(self.server, self._resolve, self.status.emit,
+                                                   interactive=self._ask)
             self.status.emit("opening shell …")
             cols, rows = self._size
             chan = self.client.invoke_shell(term="xterm-256color", width=cols, height=rows)
@@ -68,6 +125,7 @@ class ShellSession(QObject):
             self.chan = chan
             self.connected_at = time.time()
             self.connected.emit()
+            self._start_tunnels()
             if self.server.startup_cmd:
                 chan.send((self.server.startup_cmd.rstrip("\n") + "\n").encode())
             self._read_loop(chan)
@@ -149,6 +207,7 @@ class ShellSession(QObject):
             self.sftp_client = None
 
     def _teardown(self) -> None:
+        self._release_tunnels()
         for obj in [self.sftp_client, self.chan, self.client, *reversed(self._chain)]:
             try:
                 if obj:
@@ -162,5 +221,7 @@ class ShellSession(QObject):
 
     def close(self) -> None:
         self._closing = True
+        self._prompt_evt.set()
+        self._release_tunnels()   # now, so a reconnect can bind the same ports right away
         threading.Thread(target=self._teardown, daemon=True).start()
 

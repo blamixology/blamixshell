@@ -7,11 +7,11 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
-                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-                               QPlainTextEdit, QPushButton, QRadioButton, QSpinBox,
-                               QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
+                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
+                               QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSpinBox,
+                               QStackedWidget, QTabWidget, QToolButton, QVBoxLayout, QWidget)
 
-from .models import COLORS, Server, Snippet, Store
+from .models import COLORS, Server, Snippet, Store, Tunnel
 from .platform_ui import MONO_DEFAULT
 from .settings import TERMINAL_THEMES, Settings
 from .ssh_core import test_connection
@@ -100,6 +100,259 @@ class UnlockDialog(_Base):
         self.err.show()
 
 
+# ======================================================================= 2FA prompts
+class AuthPromptDialog(_Base):
+    """Keyboard-interactive prompts from the server (verification code, OTP, …)."""
+
+    def __init__(self, server_label: str, title: str, instructions: str,
+                 prompts: list[tuple[str, bool]], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Sign in to {server_label}")
+        self.setMinimumWidth(420)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(26, 22, 26, 20)
+        lay.setSpacing(10)
+        head = QHBoxLayout()
+        badge = QLabel()
+        badge.setPixmap(icon("shield", C["accent"], 28).pixmap(28, 28))
+        head.addWidget(badge)
+        h = QLabel(title.strip() or "Verification required", objectName="H2")
+        head.addWidget(h, 1)
+        lay.addLayout(head)
+        sub = QLabel(instructions.strip() or f"{server_label} asks for more information to sign you in.")
+        sub.setObjectName("Muted")
+        sub.setWordWrap(True)
+        lay.addWidget(sub)
+        form = QFormLayout()
+        form.setVerticalSpacing(10)
+        self.fields: list[QLineEdit] = []
+        for text, echo in prompts:
+            ed = QLineEdit(echoMode=QLineEdit.Normal if echo else QLineEdit.Password)
+            low = text.lower()
+            if any(w in low for w in ("code", "otp", "token", "verification", "passcode")):
+                ed.setPlaceholderText("123456")
+                ed.setInputMethodHints(Qt.ImhDigitsOnly)
+            form.addRow(text.strip().rstrip(":") or "Answer", ed)
+            self.fields.append(ed)
+            ed.returnPressed.connect(self._next)
+        lay.addLayout(form)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        ok = QPushButton("Sign in", objectName="Primary")
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        row.addWidget(cancel)
+        row.addWidget(ok)
+        lay.addLayout(row)
+        if self.fields:
+            self.fields[0].setFocus()
+
+    def _next(self) -> None:
+        idx = self.fields.index(self.sender())
+        if idx + 1 < len(self.fields):
+            self.fields[idx + 1].setFocus()
+        else:
+            self.accept()
+
+    def answers(self) -> list[str]:
+        return [f.text() for f in self.fields]
+
+
+# ======================================================================= tunnels editor
+_TUNNEL_KINDS = [("L", "Local"), ("R", "Remote"), ("D", "SOCKS")]
+_COLS = {"check": 22, "kind": 122, "lhost": 104, "port": 80, "arrow": 16}
+_TUNNEL_HELP = {
+    "L": "Open <b>localhost:{lp}</b> here to reach <b>{dh}:{dp}</b> as seen from the server "
+         "(e.g. a database that only listens on the server).",
+    "R": "Connections to port <b>{lp}</b> on the server come back to <b>{dh}:{dp}</b> on this PC "
+         "(e.g. show a local dev site to the server).",
+    "D": "A SOCKS proxy on <b>localhost:{lp}</b>: point a browser or tool at it and its traffic "
+         "goes out through the server.",
+}
+
+
+class _TunnelRow(QFrame):
+    def __init__(self, t: Tunnel, on_remove, on_change):
+        super().__init__(objectName="TunnelRow")
+        self.setStyleSheet(f"#TunnelRow {{ background:{C['surface']}; border:1px solid {C['border']};"
+                           f" border-radius:10px; }}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 8, 8, 8)
+        lay.setSpacing(4)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.on = QCheckBox()
+        self.on.setChecked(t.enabled)
+        self.on.setToolTip("Start this tunnel when connecting")
+        self.kind = QComboBox()
+        for k, label in _TUNNEL_KINDS:
+            self.kind.addItem(label, k)
+        self.kind.setCurrentIndex(max(0, self.kind.findData(t.kind)))
+        self.kind.setFixedWidth(_COLS["kind"])
+        self.lhost = QLineEdit(t.listen_host)
+        self.lhost.setFixedWidth(_COLS["lhost"])
+        self.lport = QSpinBox()
+        self.lport.setRange(0, 65535)
+        self.lport.setValue(int(t.listen_port))
+        self.lport.setFixedWidth(_COLS["port"])
+        self.arrow = QLabel("→")
+        self.arrow.setFixedWidth(_COLS["arrow"])
+        self.arrow.setAlignment(Qt.AlignCenter)
+        self.dhost = QLineEdit(t.dest_host, placeholderText="host")
+        self.dport = QSpinBox()
+        self.dport.setRange(0, 65535)
+        self.dport.setValue(int(t.dest_port))
+        self.dport.setFixedWidth(_COLS["port"])
+        for w in (self.arrow, self.dhost, self.dport):   # keep the columns aligned for SOCKS rows
+            sp = w.sizePolicy()
+            sp.setRetainSizeWhenHidden(True)
+            w.setSizePolicy(sp)
+        rm = QToolButton()
+        rm.setIcon(icon("trash", C["muted"], 15))
+        rm.setAutoRaise(True)
+        rm.setToolTip("Remove tunnel")
+        rm.clicked.connect(lambda: on_remove(self))
+        for w in (self.on, self.kind, self.lhost, self.lport, self.arrow):
+            row.addWidget(w)
+        row.addWidget(self.dhost, 1)
+        row.addWidget(self.dport)
+        row.addWidget(rm)
+        lay.addLayout(row)
+        self.help = QLabel(objectName="Hint")
+        self.help.setWordWrap(True)
+        lay.addWidget(self.help)
+        self._name = t.name
+        self.kind.currentIndexChanged.connect(self._kind_changed)
+        for sig in (self.lhost.textChanged, self.dhost.textChanged, self.lport.valueChanged,
+                    self.dport.valueChanged, self.on.toggled):
+            sig.connect(lambda *_: (self._refresh(), on_change()))
+        self._kind_changed(first=True)
+
+    def _kind_changed(self, *_a, first: bool = False) -> None:
+        k = self.kind.currentData()
+        if not first:   # sensible defaults when switching type
+            self.lhost.setText("localhost" if k == "R" else "127.0.0.1")
+        self.lhost.setToolTip("Address on the server to listen on" if k == "R"
+                              else "Address on this PC to listen on (0.0.0.0 = whole network)")
+        self.lport.setToolTip("Port on the server (0 = let the server pick)" if k == "R" else "Port on this PC")
+        self.lport.setSpecialValueText("auto" if k == "R" else "")
+        for w in (self.arrow, self.dhost, self.dport):
+            w.setVisible(k != "D")
+        self.dhost.setToolTip("Host as seen from the server" if k == "L" else "Host as seen from this PC")
+        self._refresh()
+
+    def _refresh(self) -> None:
+        t = self.tunnel()
+        problem = t.problem()
+        if problem:
+            self.help.setText(f"<span style='color:{C['warn']}'>{problem}</span>")
+            return
+        text = _TUNNEL_HELP[t.kind].format(lp=t.listen_port or "auto", dh=t.dest_host, dp=t.dest_port)
+        if t.kind != "R" and t.listen_host not in ("127.0.0.1", "localhost", "::1"):
+            text += f"<br><span style='color:{C['warn']}'>Listening on {t.listen_host} lets other " \
+                    "computers on your network use this tunnel.</span>"
+        self.help.setText(text)
+
+    def tunnel(self) -> Tunnel:
+        k = self.kind.currentData()
+        return Tunnel(kind=k, listen_host=self.lhost.text().strip() or ("localhost" if k == "R" else "127.0.0.1"),
+                      listen_port=self.lport.value(),
+                      dest_host="" if k == "D" else self.dhost.text().strip(),
+                      dest_port=0 if k == "D" else self.dport.value(),
+                      enabled=self.on.isChecked(), name=self._name)
+
+
+class TunnelEditor(QWidget):
+    PRESETS = [
+        ("Local forward (-L)", "Reach a service on the server's network",
+         lambda: Tunnel("L", "127.0.0.1", 8080, "localhost", 80)),
+        ("Remote forward (-R)", "Expose a port of this PC on the server",
+         lambda: Tunnel("R", "localhost", 9000, "localhost", 3000)),
+        ("SOCKS proxy (-D)", "Browse through the server",
+         lambda: Tunnel("D", "127.0.0.1", 1080)),
+    ]
+
+    def __init__(self, tunnels: list[Tunnel], parent=None):
+        super().__init__(parent)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(4, 14, 4, 4)
+        outer.setSpacing(8)
+        intro = QLabel("Tunnels start when you connect to this server and stop when you disconnect.",
+                       objectName="Muted")
+        intro.setWordWrap(True)
+        outer.addWidget(intro)
+        head = QHBoxLayout()
+        head.setContentsMargins(11, 0, 9 + 28 + 6, 0)
+        head.setSpacing(6)
+        for text, width in (("", _COLS["check"]), ("Type", _COLS["kind"]), ("Listen on", _COLS["lhost"]),
+                            ("Port", _COLS["port"]), ("", _COLS["arrow"]), ("Destination", 0),
+                            ("Port", _COLS["port"])):
+            lbl = QLabel(text, objectName="Hint")
+            if width:
+                lbl.setFixedWidth(width)
+                head.addWidget(lbl)
+            else:
+                head.addWidget(lbl, 1)
+        self.head = QWidget()
+        self.head.setLayout(head)
+        outer.addWidget(self.head)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        body = QWidget()
+        self.rows_lay = QVBoxLayout(body)
+        self.rows_lay.setContentsMargins(0, 0, 0, 0)
+        self.rows_lay.setSpacing(8)
+        self.empty = QLabel("No tunnels yet.", objectName="Hint")
+        self.rows_lay.addWidget(self.empty)
+        self.rows_lay.addStretch(1)
+        self.scroll.setWidget(body)
+        outer.addWidget(self.scroll, 1)
+        add = QPushButton(icon("plus"), " Add tunnel")
+        menu = QMenu(add)
+        for label, tip, make in self.PRESETS:
+            act = menu.addAction(icon("tunnel"), label)
+            act.setToolTip(tip)
+            act.triggered.connect(lambda _=False, m=make: self.add(m(), focus=True))
+        menu.setToolTipsVisible(True)
+        add.setMenu(menu)
+        row = QHBoxLayout()
+        row.addWidget(add)
+        row.addStretch(1)
+        outer.addLayout(row)
+        self.rows: list[_TunnelRow] = []
+        for t in tunnels:
+            self.add(t)
+        self.head.setVisible(bool(self.rows))
+
+    def add(self, t: Tunnel, focus: bool = False) -> None:
+        r = _TunnelRow(t, self._remove, lambda: None)
+        self.rows.append(r)
+        self.rows_lay.insertWidget(self.rows_lay.count() - 1, r)
+        self.empty.hide()
+        self.head.show()
+        if focus:
+            r.lport.setFocus()
+            r.lport.selectAll()
+            self.scroll.ensureWidgetVisible(r)
+
+    def _remove(self, r: _TunnelRow) -> None:
+        self.rows.remove(r)
+        r.setParent(None)
+        r.deleteLater()
+        self.empty.setVisible(not self.rows)
+        self.head.setVisible(bool(self.rows))
+
+    def tunnels(self) -> list[Tunnel]:
+        return [r.tunnel() for r in self.rows]
+
+    def problems(self) -> list[str]:
+        return [f"{t.describe()}: {t.problem()}" for t in self.tunnels() if t.enabled and t.problem()]
+
+
 # ======================================================================= server editor
 class _Tester(QObject):
     done = Signal(str)
@@ -111,7 +364,7 @@ class ServerDialog(_Base):
         self.store = store
         self.server = server.copy() if server else Server(group=group)
         self.setWindowTitle("Edit server" if server else "New server")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(720)
         s = self.server
 
         root = QVBoxLayout(self)
@@ -257,7 +510,10 @@ class ServerDialog(_Base):
         f3.addRow("Jump host", self.jump)
         f3.addRow("Keepalive", self.keepalive)
         f3.addRow("Run on connect", self.startup)
+        self.tunnel_editor = TunnelEditor(s.tunnels)
+        tabs.addTab(self.tunnel_editor, "Tunnels" + (f" ({len(s.tunnels)})" if s.tunnels else ""))
         tabs.addTab(w3, "Advanced")
+        self._tabs = tabs
 
         # -- buttons
         self.test_lbl = QLabel(objectName="Hint")
@@ -333,6 +589,7 @@ class ServerDialog(_Base):
         s.jump_id = self.jump.currentData() or ""
         s.keepalive = self.keepalive.value()
         s.startup_cmd = self.startup.text()
+        s.tunnels = self.tunnel_editor.tunnels()
         return s
 
     def _test(self) -> None:
@@ -355,6 +612,11 @@ class ServerDialog(_Base):
         s = self._collect()
         if not s.host:
             QMessageBox.warning(self, "Missing host", "Please enter a host name or IP.")
+            return
+        bad = self.tunnel_editor.problems()
+        if bad:
+            self._tabs.setCurrentWidget(self.tunnel_editor)
+            QMessageBox.warning(self, "Check the tunnels", "Fix or disable these tunnels:\n\n" + "\n".join(bad))
             return
         self.accept()
 
@@ -413,6 +675,13 @@ class SettingsDialog(_Base):
         f.addRow("Scrollback lines", self.scroll)
         lay.addLayout(f)
 
+        lay.addWidget(_section("Startup"))
+        self.restore = QCheckBox("Reopen my tabs and splits from last time")
+        self.restore.setChecked(settings.get("restore_tabs", True))
+        lay.addWidget(self.restore)
+        lay.addWidget(QLabel("Only the active tab connects right away; the others connect when you open them.",
+                             objectName="Hint", wordWrap=True))
+
         lay.addWidget(_section("Clipboard"))
         self.cos = QCheckBox("Copy on select (like PuTTY)")
         self.cos.setChecked(settings["copy_on_select"])
@@ -462,6 +731,9 @@ class SettingsDialog(_Base):
         s["right_click_paste"] = self.rcp.isChecked()
         s["confirm_multiline_paste"] = self.cmp.isChecked()
         s["check_updates"] = self.upd.isChecked()
+        s["restore_tabs"] = self.restore.isChecked()
+        if not s["restore_tabs"]:
+            s["last_session"] = {}
         s.save()
         self.accept()
 

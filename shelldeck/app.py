@@ -352,6 +352,14 @@ class MainWindow(QMainWindow):
         self._pending_release = None
         QTimer.singleShot(4000, lambda: self.check_updates(manual=False))
 
+        # session restore: the layout is saved shortly after every change and on exit
+        self.persist_layout = False      # set by restore_session() (not in self-test runs)
+        self._layout_timer = QTimer(self)
+        self._layout_timer.setSingleShot(True)
+        self._layout_timer.setInterval(800)
+        self._layout_timer.timeout.connect(self.save_session)
+        self.tabs.tabBar().tabMoved.connect(lambda *_: self._layout_timer.start())
+
     # ================================================================ helpers
     def _tab_close_button(self, tab: "SessionTab") -> QWidget:
         """Close button with real breathing room from the tab edge (the style's own
@@ -487,6 +495,11 @@ class MainWindow(QMainWindow):
     def _on_tab_changed(self, _i: int) -> None:
         t = self.current_tab()
         self.stack.setCurrentIndex(1 if self.tabs.count() else 0)
+        if t:
+            for p in t.panes():      # restored tabs connect when you look at them
+                if p.deferred:
+                    p.start()
+        self._layout_timer.start()
         self.btn_bcast.setChecked(bool(t and t.broadcast))
         self._sync_sftp()
         if t and t.active:
@@ -505,6 +518,7 @@ class MainWindow(QMainWindow):
             self.tabs.setTabToolTip(i, "\n".join(f"{p.server.label} ({p.server.address}): {p.state}" for p in ps))
         self._sync_sftp()
         self._update_status()
+        self._layout_timer.start()
 
     def _sync_sftp(self) -> None:
         if not self.sftp.isVisible():
@@ -513,14 +527,87 @@ class MainWindow(QMainWindow):
         self.sftp.set_session(p.session if p and p.state == "connected" else None)
 
     # ================================================================ connect
-    def _make_pane(self, server: Server) -> TerminalPane:
+    def _make_pane(self, server: Server, touch: bool = True) -> TerminalPane:
         pane = TerminalPane(server, self.store.servers.get, self.settings)
         pane.close_requested.connect(self.close_pane)
         pane.shortcut.connect(lambda _p, n: self.handle_shortcut(n))
         pane.state_changed.connect(self._on_pane_state)
-        if server.id in self.store.servers:
+        if touch and server.id in self.store.servers:
             self.store.touch(server.id)
         return pane
+
+    def _new_tab(self) -> SessionTab:
+        tab = SessionTab()
+        tab.emptied.connect(self._tab_emptied)
+        tab.active_pane_changed.connect(lambda _p: (self._sync_sftp(), self._update_status()))
+        tab.changed.connect(self._on_pane_state)
+        return tab
+
+    def _add_tab(self, tab: SessionTab) -> int:
+        idx = self.tabs.addTab(tab, dot_icon(C["faint"]), tab.title())
+        self.tabs.tabBar().setTabButton(idx, QTabBar.RightSide, self._tab_close_button(tab))
+        return idx
+
+    # ================================================================ session restore
+    def _describe_pane(self, pane: TerminalPane) -> dict:
+        s = pane.server
+        if s.id in self.store.servers:
+            return {"server": s.id}
+        return {"adhoc": {"host": s.host, "port": s.port, "username": s.username}}   # quick connect
+
+    def save_session(self) -> None:
+        if not self.persist_layout or not self.settings.get("restore_tabs", True):
+            return
+        tabs = []
+        current = 0
+        for i in range(self.tabs.count()):
+            tree = self.tabs.widget(i).layout_tree(self._describe_pane)
+            if tree:
+                if i == self.tabs.currentIndex():
+                    current = len(tabs)
+                tabs.append(tree)
+        data = {"tabs": tabs, "current": current} if tabs else {}
+        if data != self.settings.get("last_session"):
+            self.settings["last_session"] = data
+            self.settings.save()
+
+    def restore_session(self) -> int:
+        """Reopen last session's tabs (called once after unlocking). Returns tabs opened."""
+        self.persist_layout = True
+        data = self.settings.get("last_session") or {}
+        if not self.settings.get("restore_tabs", True) or not data.get("tabs"):
+            return 0
+
+        def make(node: dict):
+            if "server" in node:
+                srv = self.store.servers.get(node["server"])
+            elif "adhoc" in node:
+                a = node["adhoc"]
+                srv = Server(host=a.get("host", ""), port=int(a.get("port") or 22),
+                             username=a.get("username", ""), auth="password") if a.get("host") else None
+            else:
+                srv = None
+            if srv is None:          # server was deleted since
+                return None
+            pane = self._make_pane(srv, touch=False)
+            pane.defer()
+            return pane
+
+        opened = 0
+        for tree in data["tabs"]:
+            tab = self._new_tab()
+            if tab.build(tree, make):
+                self._add_tab(tab)
+                opened += 1
+            else:
+                tab.deleteLater()
+        if opened:
+            self.tabs.setCurrentIndex(min(int(data.get("current", 0)), opened - 1))
+            self._on_tab_changed(self.tabs.currentIndex())
+            self._on_pane_state()
+            self.statusBar().showMessage(
+                f"Reopened {opened} tab{'s' if opened != 1 else ''} from your last session", 5000)
+        return opened
 
     def connect_server(self, server_id: str, where: str = "tab") -> None:
         s = self.store.servers.get(server_id)
@@ -535,13 +622,9 @@ class MainWindow(QMainWindow):
         if where in ("right", "down") and tab and tab.active:
             tab.split(tab.active, pane, Qt.Horizontal if where == "right" else Qt.Vertical)
         else:
-            tab = SessionTab()
-            tab.emptied.connect(self._tab_emptied)
-            tab.active_pane_changed.connect(lambda _p: (self._sync_sftp(), self._update_status()))
-            tab.changed.connect(self._on_pane_state)
+            tab = self._new_tab()
             tab.add_first(pane)
-            idx = self.tabs.addTab(tab, dot_icon(C["warn"]), tab.title())
-            self.tabs.tabBar().setTabButton(idx, QTabBar.RightSide, self._tab_close_button(tab))
+            idx = self._add_tab(tab)
             self.tabs.setCurrentIndex(idx)
         self.stack.setCurrentIndex(1)
         pane.start()
@@ -995,6 +1078,8 @@ class MainWindow(QMainWindow):
                 self, "Quit ShellDeck?", f"Disconnect {len(live)} live session(s) and quit?") != QMessageBox.Yes:
             e.ignore()
             return
+        self._layout_timer.stop()
+        self.save_session()
         self.settings["window_geometry"] = bytes(self.saveGeometry().toBase64()).decode()
         if self.side.isVisible():
             self.settings["sidebar_width"] = self.root_split.sizes()[0]

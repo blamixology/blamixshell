@@ -59,6 +59,8 @@ DEFAULTS = {
     "sftp_visible": False,
     "window_geometry": "",
     "sidebar_width": 280,
+    "restore_tabs": True,           # reopen last session's tabs (they connect when opened)
+    "last_session": {},             # layout only: server ids / splits, never passwords
     "check_updates": True,          # daily check against GitHub Releases
     "skip_version": "",
     "last_update_check": 0,

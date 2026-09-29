@@ -3,7 +3,8 @@ interactively, and run commands across many servers. No Qt needed.
 
     shelldeck                 open the TUI (if Textual is installed)
     shelldeck ls [query]      list servers (query: words, tag:prod)
-    shelldeck connect NAME    interactive shell (NAME, id, or user@host[:port])
+    shelldeck connect NAME    interactive shell (NAME, id, or user@host[:port]); -L/-R/-D add tunnels
+    shelldeck tunnel NAME     run a server's saved tunnels (plus -L/-R/-D) without a shell
     shelldeck exec QUERY -- CMD   run CMD on every matching server in parallel
     shelldeck add | rm NAME | import ssh-config|putty | passwd | gui
 """
@@ -19,7 +20,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from . import __version__
-from .models import Server, Store
+from .models import Server, Store, Tunnel
 from .paths import data_dir, vault_path
 from .ssh_core import (AuthConfigError, ChangedHostKey, UnknownHostKey, fingerprint,
                        friendly_error, open_client, trust_host_key)
@@ -131,6 +132,17 @@ class Connector:
             s.password = self._pw[s.id]
         return s
 
+    def ask(self, title: str, instructions: str, prompts: list) -> list[str] | None:
+        """2FA / keyboard-interactive prompts, answered in the terminal."""
+        with self._lock:
+            for line in (title, instructions):
+                if line and line.strip():
+                    print(c(line.strip(), "1"))
+            try:
+                return [input(p) if echo else getpass.getpass(p) for p, echo in prompts]
+            except EOFError:
+                return None
+
     def resolve(self, sid: str) -> Server | None:
         s = self.store.servers.get(sid)
         return self.prepare(s) if s else None
@@ -138,7 +150,8 @@ class Connector:
     def open(self, server: Server, log=lambda m: None):
         for _attempt in range(4):
             try:
-                return open_client(self.prepare(server), self.resolve, log)
+                return open_client(self.prepare(server), self.resolve, log,
+                                   interactive=self.ask if self.interactive else None)
             except UnknownHostKey as e:
                 fp = f"{e.key.get_name()} {fingerprint(e.key)}"
                 if self.accept_new:
@@ -205,6 +218,7 @@ def interactive_shell(server: Server, store: Store) -> int:
                                width=size.columns, height=size.lines)
     if server.startup_cmd:
         chan.send((server.startup_cmd.rstrip("\n") + "\n").encode())
+    tunnels = start_tunnels(client, server)
 
     def on_resize(*_a):
         try:
@@ -248,10 +262,74 @@ def interactive_shell(server: Server, store: Store) -> int:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
         signal.signal(signal.SIGWINCH, old_handler)
     code = chan.recv_exit_status() if chan.exit_status_ready() else 0
+    if tunnels:
+        tunnels.stop()
     client.close()
     for cl in chain:
         cl.close()
     print(c(f"\n← disconnected from {server.label}", "90"))
+    return code
+
+
+def start_tunnels(client, server: Server):
+    """Start the server's enabled tunnels and print one line per tunnel."""
+    from .tunnels import TunnelManager
+    wanted = [t for t in server.tunnels if t.enabled]
+    if not wanted:
+        return None
+    mgr = TunnelManager(client.get_transport(), wanted,
+                        log=lambda m: print(c(f"\r  ⚠ {m}", "33"), flush=True))
+    for st in mgr.start():
+        print(c("  ⇄ ", "36") + st.summary() if st.ok else c(f"  ✖ {st.summary()}", "31"))
+    return mgr
+
+
+def add_cli_tunnels(server: Server, a) -> Server:
+    """Copy of the server with -L/-R/-D tunnels from the command line added."""
+    s = server.copy()
+    for kind in ("L", "R", "D"):
+        for spec in getattr(a, f"fwd_{kind}", None) or []:
+            try:
+                s.tunnels.append(Tunnel.parse(kind, spec))
+            except ValueError as e:
+                die(str(e))
+    return s
+
+
+def run_tunnels(server: Server, store: Store) -> int:
+    """Keep a connection open just for its tunnels, until Ctrl+C or the connection drops."""
+    if not any(t.enabled for t in server.tunnels):
+        die(f"{server.label} has no tunnels. Add some in the app, or pass -L/-R/-D "
+            "(e.g. -L 5432:localhost:5432 or -D 1080).")
+    conn = Connector(store)
+    print(c(f"→ {server.label}", "1;36") + c(f"  {server.address}", "90"))
+    try:
+        client, chain = conn.open(server, lambda m: print(c(f"  {m}", "90")))
+    except AuthConfigError as e:
+        die(str(e))
+    except Exception as e:
+        die(friendly_error(e))
+    mgr = start_tunnels(client, server)
+    if not mgr or not mgr.active:
+        client.close()
+        for cl in chain:
+            cl.close()
+        die("No tunnel could be started.")
+    print(c("Tunnels are up. Press Ctrl+C to stop.", "90"))
+    tr = client.get_transport()
+    try:
+        while tr.is_active():
+            time.sleep(0.5)
+        print(c("✖ The connection was closed by the server.", "31"))
+        code = 1
+    except KeyboardInterrupt:
+        print()
+        code = 0
+    mgr.stop()
+    client.close()
+    for cl in chain:
+        cl.close()
+    print(c(f"← tunnels to {server.label} stopped", "90"))
     return code
 
 
@@ -402,7 +480,17 @@ def cmd_connect(store: Store, a) -> int:
     s = find_server(store, a.target) or adhoc_server(a.target)
     if not s:
         die(f"No server matching “{a.target}”")
-    return interactive_shell(s, store)
+    return interactive_shell(add_cli_tunnels(s, a), store)
+
+
+def cmd_tunnel(store: Store, a) -> int:
+    s = find_server(store, a.target) or adhoc_server(a.target)
+    if not s:
+        die(f"No server matching “{a.target}”")
+    s = s.copy()
+    if a.only:
+        s.tunnels = []
+    return run_tunnels(add_cli_tunnels(s, a), store)
 
 
 def cmd_exec(store: Store, a) -> int:
@@ -484,6 +572,15 @@ def cmd_update() -> int:
     return 0
 
 
+def _tunnel_args(sp) -> None:
+    sp.add_argument("-L", dest="fwd_L", action="append", metavar="[BIND:]PORT:HOST:HOSTPORT",
+                    help="local forward, like ssh -L (repeatable)")
+    sp.add_argument("-R", dest="fwd_R", action="append", metavar="[BIND:]PORT:HOST:HOSTPORT",
+                    help="remote forward, like ssh -R (repeatable)")
+    sp.add_argument("-D", dest="fwd_D", action="append", metavar="[BIND:]PORT",
+                    help="SOCKS proxy, like ssh -D (repeatable)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="shelldeck", description="SSH server manager (shares the desktop app's vault).")
     p.add_argument("--version", action="version", version=f"shelldeck {__version__}")
@@ -493,6 +590,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--json", action="store_true")
     sp = sub.add_parser("connect", aliases=["c", "ssh"], help="open an interactive shell")
     sp.add_argument("target", help="name, id, search term or user@host[:port]")
+    _tunnel_args(sp)
+    sp = sub.add_parser("tunnel", aliases=["t", "fwd"], help="run port forwards without a shell")
+    sp.add_argument("target", help="name, id, search term or user@host[:port]")
+    _tunnel_args(sp)
+    sp.add_argument("--only", action="store_true", help="ignore the server's saved tunnels")
     sp = sub.add_parser("exec", aliases=["x"], help="run a command on many servers in parallel")
     sp.add_argument("query", help="search words, tag:prod, group:Prod/EU, or all")
     sp.add_argument("command", nargs=argparse.REMAINDER, help="-- command to run")
@@ -519,6 +621,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 HANDLERS = {"ls": cmd_ls, "list": cmd_ls, "connect": cmd_connect, "c": cmd_connect, "ssh": cmd_connect,
+            "tunnel": cmd_tunnel, "t": cmd_tunnel, "fwd": cmd_tunnel,
             "exec": cmd_exec, "x": cmd_exec, "add": cmd_add, "rm": cmd_rm, "remove": cmd_rm,
             "import": cmd_import, "passwd": cmd_passwd}
 

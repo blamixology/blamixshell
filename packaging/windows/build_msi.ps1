@@ -1,7 +1,8 @@
 <#
   Builds ShellDeck-<version>-x64.msi from an existing dist\ShellDeck folder and,
   with -Test, installs it silently (all users AND per user), checks that installing
-  the other kind over an existing copy is blocked, runs the app self-test
+  the other kind over an existing copy is blocked and that upgrading to a newer
+  version works in both modes, runs the app self-test
   from the installed location, checks no data is written into the install folder,
   then uninstalls.
 
@@ -38,14 +39,25 @@ $out = "ShellDeck-$Version-x64.msi"
 $src  = (Resolve-Path dist\ShellDeck).Path
 $icon = (Resolve-Path shelldeck\assets\app.ico).Path
 $lic  = (Resolve-Path packaging\windows\license.rtf).Path
-wix build packaging\windows\ShellDeck.wxs -arch x64 -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext `
-  -d Version=$Version -d "SourceDir=$src" -d "IconFile=$icon" -d "LicenseRtf=$lic" `
-  -o $out
-if ($LASTEXITCODE -ne 0) { throw "wix build failed" }
+function Build-Msi($ver, $file) {
+  wix build packaging\windows\ShellDeck.wxs -arch x64 -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext `
+    -d Version=$ver -d "SourceDir=$src" -d "IconFile=$icon" -d "LicenseRtf=$lic" `
+    -o $file
+  if ($LASTEXITCODE -ne 0) { throw "wix build failed" }
+}
+Build-Msi $Version $out
 # guard: an MSI without the app inside is tiny - fail instead of shipping it
 $mb = [math]::Round((Get-Item $out).Length / 1MB, 1)
 if ($mb -lt 30) { throw "MSI is only $mb MB - the app files were not included" }
 Write-Host "Built $out ($mb MB)"
+
+# -Test also needs a second package one version higher: a different version gets a new
+# ProductCode, like a real update (installing the *same* MSI again is just a repair)
+if ($Test) {
+  $p = $Version.Split("."); $p[2] = [string]([int]$p[2] + 1); $Next = $p -join "."
+  $nextOut = "ShellDeck-$Next-x64-test.msi"
+  Build-Msi $Next $nextOut
+}
 
 # keep the portable folder portable
 Remove-Item dist\ShellDeck\installed.marker -Force
@@ -65,6 +77,17 @@ function Invoke-MsiBlocked($msiArgs, $log, $what) {
   }
   Write-Host "Blocked as expected: $what"
 }
+function Get-Registered {
+  # ShellDeck entries in Apps & features (machine and current user)
+  Get-ChildItem "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+                "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" -ErrorAction SilentlyContinue |
+    Get-ItemProperty | Where-Object { $_.DisplayName -eq "ShellDeck" }
+}
+function Assert-Registered($version) {
+  $r = @(Get-Registered)
+  if ($r.Count -ne 1) { throw "expected 1 ShellDeck in Apps & features, found $($r.Count): $($r.DisplayVersion -join ', ')" }
+  if (-not "$($r[0].DisplayVersion)".StartsWith($version)) { throw "expected version $version, found $($r[0].DisplayVersion)" }
+}
 function Test-Installed($dir) {
   $exe = Join-Path $dir "ShellDeck.exe"
   if (-not (Test-Path $exe)) {
@@ -82,19 +105,35 @@ function Test-Installed($dir) {
   Write-Host "Self-test OK from $dir"
 }
 $msi = (Resolve-Path $out).Path
+$next = (Resolve-Path $nextOut).Path
+$machineDir = "$env:ProgramFiles\ShellDeck"
+$userDir = "$env:LOCALAPPDATA\Programs\ShellDeck"
 
-Write-Host "== all-users install =="
+Write-Host "== all users: install $Version, block a per-user $Next, upgrade to $Next =="
 Invoke-Msi "/i `"$msi`" /qn ALLUSERS=1 /l*v install-machine.log" "install-machine.log"
-Test-Installed "$env:ProgramFiles\ShellDeck"
-Invoke-MsiBlocked "/i `"$msi`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v block-user.log" "block-user.log" "per-user install over all-users copy"
-Invoke-Msi "/x `"$msi`" /qn /l*v uninstall-machine.log" "uninstall-machine.log"
-if (Test-Path "$env:ProgramFiles\ShellDeck\ShellDeck.exe") { throw "uninstall left files behind" }
+Test-Installed $machineDir
+Assert-Registered $Version
+Invoke-MsiBlocked "/i `"$next`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v block-user.log" "block-user.log" "per-user install over all-users copy"
+if (Test-Path "$userDir\ShellDeck.exe") { throw "the blocked per-user install left files in $userDir" }
+Invoke-Msi "/i `"$next`" /qn ALLUSERS=1 /l*v upgrade-machine.log" "upgrade-machine.log"
+Test-Installed $machineDir
+Assert-Registered $Next
+Invoke-Msi "/x `"$next`" /qn /l*v uninstall-machine.log" "uninstall-machine.log"
+if (Test-Path "$machineDir\ShellDeck.exe") { throw "uninstall left files behind" }
+if (@(Get-Registered).Count) { throw "uninstall left an Apps & features entry" }
 
-Write-Host "== per-user install =="
+Write-Host "== just me: install $Version, block an all-users $Next, upgrade to $Next =="
 Invoke-Msi "/i `"$msi`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v install-user.log" "install-user.log"
-Test-Installed "$env:LOCALAPPDATA\Programs\ShellDeck"
-Invoke-MsiBlocked "/i `"$msi`" /qn ALLUSERS=1 /l*v block-machine.log" "block-machine.log" "all-users install over per-user copy"
-Invoke-Msi "/x `"$msi`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v uninstall-user.log" "uninstall-user.log"
-if (Test-Path "$env:LOCALAPPDATA\Programs\ShellDeck\ShellDeck.exe") { throw "per-user uninstall left files behind" }
+Test-Installed $userDir
+Assert-Registered $Version
+Invoke-MsiBlocked "/i `"$next`" /qn ALLUSERS=1 /l*v block-machine.log" "block-machine.log" "all-users install over per-user copy"
+if (Test-Path "$machineDir\ShellDeck.exe") { throw "the blocked all-users install left files in $machineDir" }
+Invoke-Msi "/i `"$next`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v upgrade-user.log" "upgrade-user.log"
+Test-Installed $userDir
+Assert-Registered $Next
+Invoke-Msi "/x `"$next`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v uninstall-user.log" "uninstall-user.log"
+if (Test-Path "$userDir\ShellDeck.exe") { throw "per-user uninstall left files behind" }
+if (@(Get-Registered).Count) { throw "per-user uninstall left an Apps & features entry" }
 
+Remove-Item $nextOut -Force
 Write-Host "MSI tests passed"

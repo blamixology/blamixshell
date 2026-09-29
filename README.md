@@ -53,8 +53,11 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
 - **Encrypted vault:** one AES-256-GCM file; the key comes from your master password via scrypt. The same file works on every OS and in every front-end.
 - **Host key verification:** you confirm the fingerprint on first connect. If a key changes, the connection is refused unless you explicitly replace the key (MITM protection).
 - **Auth options:** password (or ask each time), private key (a file or a pasted key, with passphrase), or SSH agent (Pageant, Windows OpenSSH, `ssh-agent`).
+- **2FA / verification codes:** servers that ask for a code (Google Authenticator, Duo, PAM OTP) or any other keyboard-interactive prompt get a sign-in dialog. A saved password is filled in automatically, so you only type the code. Works for jump hosts too.
+- **Tunnels (port forwarding):** per-server local (`-L`), remote (`-R`) and SOCKS (`-D`) tunnels that start with the connection. The pane header shows how many are up and how many connections are open; click it to copy a tunnel's address. If a server is open in several panes, its tunnels run once.
+- **Session restore:** your tabs and splits come back when you restart. The active tab connects right away; the others connect when you open them. Only the layout is saved (server ids), never passwords. Turn it off in Settings → Startup.
 - **Jump hosts / bastions:** any saved server can be a jump host, including chains.
-- **Imports:** PuTTY sessions (Windows) and `~/.ssh/config`, including `ProxyJump`.
+- **Imports:** PuTTY sessions (Windows) and `~/.ssh/config`, including `ProxyJump` and `LocalForward` / `RemoteForward` / `DynamicForward`.
 - **Snippets:** saved commands, one click away.
 
 ## CLI
@@ -62,7 +65,10 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
 ```text
 shelldeck                          TUI (or the desktop app via `shelldeck gui`)
 shelldeck ls [query]               list servers  (e.g. `shelldeck ls tag:prod`)
-shelldeck connect <name|user@host:port>
+shelldeck connect <name|user@host:port> [-L ..] [-R ..] [-D ..]
+                                   interactive shell; the server's saved tunnels start too
+shelldeck tunnel <name> [-L 5432:localhost:5432] [-D 1080] [--only]
+                                   run tunnels without a shell until Ctrl+C
 shelldeck exec <query> -- <cmd>    run on many servers in parallel, colored per-host output
       e.g.  shelldeck exec group:Prod/EU -- 'df -h / | tail -1'
             shelldeck exec tag:web --accept-new -y -- sudo systemctl reload nginx
@@ -110,7 +116,8 @@ If that folder isn't writable, or the app is installed (in `/Applications`, via 
 
 ## Notes
 - PuTTY `.ppk` keys: in PuTTYgen, open the key and choose **Conversions → Export OpenSSH key**, then use the exported file.
-- Tests: `pip install pytest pexpect textual`, then `pytest tests`. To include the live SSH tests, set `SHELLDECK_TEST_SSH=host:port:user:password`.
+- Tests: `pip install pytest pexpect textual`, then `pytest tests`. 2FA and tunnel tests use a small in-process SSH server (`tests/sshserver.py`), so they need no setup. To include the live tests against a real OpenSSH server, set `SHELLDECK_TEST_SSH=host:port:user:password` and, for a keyboard-interactive-only server, `SHELLDECK_TEST_SSH_KBD=host:port:user:password`.
+- Roadmap: see [ROADMAP.md](ROADMAP.md).
 
 ## Project layout
 
@@ -122,7 +129,8 @@ shelldeck/
   session_tab.py   tab with nested split panes, broadcast routing
   terminal.py      xterm.js <-> Python bridge (QWebChannel), pane UI
   ssh_session.py   Qt wrapper: shell I/O thread → signals
-  ssh_core.py      Qt-free SSH core: auth, host keys, jump hosts (shared by all front-ends)
+  ssh_core.py      Qt-free SSH core: auth incl. 2FA prompts, host keys, jump hosts (shared by all front-ends)
+  tunnels.py       Qt-free port forwarding: local, remote, SOCKS4/5
   sftp_panel.py    SFTP browser, transfers, edit-in-place
   cli.py           command line + interactive raw-tty shell + parallel exec
   tui.py           Textual full-screen UI

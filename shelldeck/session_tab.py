@@ -35,6 +35,61 @@ class SessionTab(QWidget):
         self._lay.addWidget(pane)
         self.set_active(pane)
 
+    # ------------------------------------------------------------ save / restore
+    def layout_tree(self, describe) -> dict | None:
+        """Nested dict of splits and panes. describe(pane) -> dict or None (skip)."""
+        def node(w):
+            if isinstance(w, TerminalPane):
+                d = describe(w)
+                if d is not None and w is self.active:
+                    d["active"] = True
+                return d
+            if isinstance(w, QSplitter):
+                kids = [(k, w.sizes()[i]) for i in range(w.count()) if (k := node(w.widget(i))) is not None]
+                if not kids:
+                    return None
+                if len(kids) == 1:
+                    return kids[0][0]
+                return {"split": "h" if w.orientation() == Qt.Horizontal else "v",
+                        "sizes": [sz for _k, sz in kids], "children": [k for k, _sz in kids]}
+            return None
+        return node(self._root) if self._root else None
+
+    def build(self, tree: dict, make_pane) -> bool:
+        """Recreate panes/splits from layout_tree(). make_pane(node) -> TerminalPane | None."""
+        active: list[TerminalPane] = []
+
+        def build(n):
+            if "children" in n:
+                kids = [k for k in (build(c) for c in n["children"]) if k is not None]
+                if len(kids) <= 1:
+                    return kids[0] if kids else None
+                sp = QSplitter(Qt.Horizontal if n.get("split") == "h" else Qt.Vertical)
+                sp.setChildrenCollapsible(False)
+                sp.setHandleWidth(1)
+                for k in kids:
+                    sp.addWidget(k)
+                sizes = n.get("sizes") or []
+                sp.setSizes(sizes if len(sizes) == len(kids) else [1000] * len(kids))
+                return sp
+            pane = make_pane(n)
+            if pane is not None:
+                self._wire(pane)
+                if n.get("active"):
+                    active.append(pane)
+            return pane
+        root = build(tree)
+        if root is None:
+            return False
+        self._root = root
+        self._lay.addWidget(root)
+        panes = self.panes()
+        self.set_active(active[0] if active else panes[0])
+        if len(panes) > 1:   # set_active skips the highlight when it was already current
+            for p in panes:
+                p.set_active(p is self.active)
+        return True
+
     def split(self, pane: TerminalPane, new: TerminalPane, orientation=Qt.Horizontal) -> None:
         self._wire(new)
         parent = pane.parentWidget()

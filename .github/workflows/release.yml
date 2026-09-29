@@ -47,12 +47,18 @@ jobs:
           printf 'Port 2222\nListenAddress 127.0.0.1\nPasswordAuthentication yes\nKbdInteractiveAuthentication no\nUsePAM yes\nSubsystem sftp /usr/lib/openssh/sftp-server\nPidFile /tmp/sshd-test.pid\n' > "$RUNNER_TEMP/sshd_config"
           sudo mkdir -p /run/sshd
           sudo /usr/sbin/sshd -f "$RUNNER_TEMP/sshd_config"
+          # a second one that only allows keyboard-interactive (how PAM / 2FA servers are set up)
+          sed -e 's/^Port 2222/Port 2223/' -e 's/^PasswordAuthentication yes/PasswordAuthentication no/' \
+              -e 's/^KbdInteractiveAuthentication no/KbdInteractiveAuthentication yes/' \
+              -e 's#^PidFile .*#PidFile /tmp/sshd-kbd.pid#' "$RUNNER_TEMP/sshd_config" > "$RUNNER_TEMP/sshd_kbd_config"
+          sudo /usr/sbin/sshd -f "$RUNNER_TEMP/sshd_kbd_config"
           sleep 1
       - run: pip install -r requirements.txt textual pytest pexpect
       - run: pytest -q tests -rs
         env:
           QT_QPA_PLATFORM: offscreen
           SHELLDECK_TEST_SSH: "127.0.0.1:2222:tester:Secret123!"
+          SHELLDECK_TEST_SSH_KBD: "127.0.0.1:2223:tester:Secret123!"
           SHELLDECK_TEST_KEY: "${{ runner.temp }}/id_ed25519:pp"
 
   # 3) only if every test passed: build the apps (each build also runs a self-test)
