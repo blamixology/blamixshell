@@ -269,3 +269,15 @@ def test_updater_versions_assets_and_download(tmp_path, monkeypatch):
 
     script = updater.portable_update_script(tmp_path / "new", tmp_path / "app", 1234)
     assert "/XD data" in script and "ShellDeck.exe" in script and "PID eq 1234" in script
+
+
+def test_updater_msi_keeps_install_scope(tmp_path, monkeypatch):
+    from shelldeck import updater
+    local = tmp_path / "Local"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    per_user = local / "Programs" / "ShellDeck"
+    per_machine = tmp_path / "Program Files" / "ShellDeck"
+    assert updater.msi_scope_args(per_user) == "ALLUSERS=2 MSIINSTALLPERUSER=1"
+    assert updater.msi_scope_args(per_machine) == "ALLUSERS=1"
+    script = updater.msi_update_script(tmp_path / "new.msi", per_user, 1234)
+    assert "MSIINSTALLPERUSER=1" in script and "/passive" in script

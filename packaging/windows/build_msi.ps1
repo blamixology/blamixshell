@@ -26,6 +26,7 @@ if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
   $env:PATH += ";$env:USERPROFILE\.dotnet\tools"
 }
 wix extension add -g WixToolset.UI.wixext/5.0.2 | Out-Null
+wix extension add -g WixToolset.Util.wixext/5.0.2 | Out-Null
 
 # the marker tells ShellDeck it is installed -> keep data in %APPDATA%, not next to the exe
 New-Item dist\ShellDeck\installed.marker -ItemType File -Force | Out-Null
@@ -36,7 +37,7 @@ $out = "ShellDeck-$Version-x64.msi"
 $src  = (Resolve-Path dist\ShellDeck).Path
 $icon = (Resolve-Path shelldeck\assets\app.ico).Path
 $lic  = (Resolve-Path packaging\windows\license.rtf).Path
-wix build packaging\windows\ShellDeck.wxs -arch x64 -ext WixToolset.UI.wixext `
+wix build packaging\windows\ShellDeck.wxs -arch x64 -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext `
   -d Version=$Version -d "SourceDir=$src" -d "IconFile=$icon" -d "LicenseRtf=$lic" `
   -o $out
 if ($LASTEXITCODE -ne 0) { throw "wix build failed" }

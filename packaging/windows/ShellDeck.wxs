@@ -12,7 +12,8 @@
   Build: see packaging/windows/build_msi.ps1
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
 
   <Package Name="ShellDeck"
            Manufacturer="ShellDeck contributors"
@@ -23,7 +24,17 @@
            Language="1033">
 
     <SummaryInformation Description="ShellDeck SSH client" />
-    <MajorUpgrade DowngradeErrorMessage="A newer version of ShellDeck is already installed." />
+    <!-- Upgrades remove the old version first, inside the same transaction
+         (if the new install fails, the old version is rolled back in place). -->
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of ShellDeck is already installed." />
+
+    <!-- Files of a running ShellDeck (and its Chromium helper processes) can't be replaced:
+         ask them to close, and end them if they don't within a few seconds. -->
+    <util:CloseApplication Id="CloseShellDeck" Target="ShellDeck.exe"
+                           CloseMessage="yes" TerminateProcess="1" Timeout="5" RebootPrompt="no" />
+    <util:CloseApplication Id="CloseWebEngine" Target="QtWebEngineProcess.exe"
+                           TerminateProcess="1" Timeout="2" RebootPrompt="no" />
     <!-- one embedded cabinet (default splits every 200 MB; Qt WebEngine makes several) -->
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" MaximumUncompressedMediaSize="1800" />
 
