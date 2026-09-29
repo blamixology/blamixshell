@@ -27,3 +27,7 @@ packages = ["shelldeck"]
 
 [tool.setuptools.package-data]
 shelldeck = ["assets/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
