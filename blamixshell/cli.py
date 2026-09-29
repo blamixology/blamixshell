@@ -1,12 +1,12 @@
-"""ShellDeck command line: manage the same encrypted vault as the desktop app, connect
+"""BlamixShell command line: manage the same encrypted vault as the desktop app, connect
 interactively, and run commands across many servers. No Qt needed.
 
-    shelldeck                 open the TUI (if Textual is installed)
-    shelldeck ls [query]      list servers (query: words, tag:prod)
-    shelldeck connect NAME    interactive shell (NAME, id, or user@host[:port]); -L/-R/-D add tunnels
-    shelldeck tunnel NAME     run a server's saved tunnels (plus -L/-R/-D) without a shell
-    shelldeck exec QUERY -- CMD   run CMD on every matching server in parallel
-    shelldeck add | rm NAME | import ssh-config|putty | passwd | gui
+    blamixshell                 open the TUI (if Textual is installed)
+    blamixshell ls [query]      list servers (query: words, tag:prod)
+    blamixshell connect NAME    interactive shell (NAME, id, or user@host[:port]); -L/-R/-D add tunnels
+    blamixshell tunnel NAME     run a server's saved tunnels (plus -L/-R/-D) without a shell
+    blamixshell exec QUERY -- CMD   run CMD on every matching server in parallel
+    blamixshell add | rm NAME | import ssh-config|putty | passwd | gui
 """
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ def unlock(create_if_missing: bool = True) -> Store:
     if not Vault.exists(path):
         if not create_if_missing:
             die(f"No vault at {path}")
-        print(c("Creating a new ShellDeck vault", "1") + f"  ({path})")
+        print(c("Creating a new BlamixShell vault", "1") + f"  ({path})")
         print("Everything is encrypted with your master password. It cannot be recovered if lost.")
         while True:
             pw = getpass.getpass("New master password: ")
@@ -411,7 +411,7 @@ def cmd_ls(store: Store, a) -> int:
                            "user": s.username, "group": s.group, "tags": s.tags} for s in servers], indent=2))
         return 0
     if not servers:
-        print("No servers." + ("" if store.servers else "  Add one with: shelldeck add"))
+        print("No servers." + ("" if store.servers else "  Add one with: blamixshell add"))
         return 0
     group = None
     for s in servers:
@@ -497,7 +497,7 @@ def cmd_exec(store: Store, a) -> int:
     query = a.query
     command = " ".join(a.command)
     if not command:
-        die("Nothing to run. Usage: shelldeck exec <query> -- <command>")
+        die("Nothing to run. Usage: blamixshell exec <query> -- <command>")
     if query.startswith("group:"):
         g = query[6:]
         servers = [s for s in store.servers.values() if s.group == g or s.group.startswith(g + "/")]
@@ -520,7 +520,7 @@ def cmd_import(store: Store, a) -> int:
     from . import importers
     servers = importers.putty_sessions() if a.source == "putty" else importers.ssh_config_servers()
     if a.source == "putty" and sys.platform != "win32":
-        die("PuTTY sessions live in the Windows registry; use: shelldeck import ssh-config")
+        die("PuTTY sessions live in the Windows registry; use: blamixshell import ssh-config")
     added = store.import_servers(servers)
     print(c("✔ ", "32") + f"Imported {added} new server(s) ({len(servers) - added} already existed)")
     return 0
@@ -539,7 +539,7 @@ def cmd_tui(_store, _a) -> int:
     try:
         from .tui import run_tui
     except ImportError:
-        die("The TUI needs Textual:  pip install textual   (or: pipx install 'shelldeck[tui]')")
+        die("The TUI needs Textual:  pip install textual   (or: pipx install 'blamixshell[tui]')")
     return run_tui()
 
 
@@ -559,14 +559,14 @@ def cmd_update() -> int:
     except updater.UpdateError as e:
         die(str(e))
     if not rel:
-        print(c("✔ ", "32") + f"ShellDeck {__version__} is the latest version.")
+        print(c("✔ ", "32") + f"BlamixShell {__version__} is the latest version.")
         return 0
-    print(c(f"ShellDeck {rel.version} is available", "1") + f" (you have {__version__})\n")
+    print(c(f"BlamixShell {rel.version} is available", "1") + f" (you have {__version__})\n")
     if rel.notes:
         print(rel.notes[:1500] + "\n")
     kind = updater.install_kind()
     if kind == "source":
-        print("Update with:  pipx upgrade shelldeck   (or git pull in your checkout)")
+        print("Update with:  pipx upgrade blamixshell   (or git pull in your checkout)")
     else:
         print(f"Download:  {rel.page}")
     return 0
@@ -582,8 +582,8 @@ def _tunnel_args(sp) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="shelldeck", description="SSH server manager (shares the desktop app's vault).")
-    p.add_argument("--version", action="version", version=f"shelldeck {__version__}")
+    p = argparse.ArgumentParser(prog="blamixshell", description="SSH server manager (shares the desktop app's vault).")
+    p.add_argument("--version", action="version", version=f"blamixshell {__version__}")
     sub = p.add_subparsers(dest="cmd")
     sp = sub.add_parser("ls", aliases=["list"], help="list servers")
     sp.add_argument("query", nargs="*", help="filter words, tag:prod")
@@ -616,7 +616,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("tui", help="full-screen terminal UI")
     sub.add_parser("gui", help="launch the desktop app")
     sub.add_parser("where", help="show where data is stored")
-    sub.add_parser("update", help="check GitHub for a newer ShellDeck")
+    sub.add_parser("update", help="check GitHub for a newer BlamixShell")
     return p
 
 

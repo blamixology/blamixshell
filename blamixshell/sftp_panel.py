@@ -479,7 +479,7 @@ class SftpPanel(QWidget):
         self._run(self._job_fetch_for_edit, remote)
 
     def _job_fetch_for_edit(self, sess: ShellSession, remote: str) -> None:
-        folder = Path(tempfile.gettempdir()) / "shelldeck-edit" / uuid.uuid4().hex[:8]
+        folder = Path(tempfile.gettempdir()) / "blamixshell-edit" / uuid.uuid4().hex[:8]
         folder.mkdir(parents=True, exist_ok=True)
         local = folder / posixpath.basename(remote)
         size = sess.sftp().stat(remote).st_size or 0

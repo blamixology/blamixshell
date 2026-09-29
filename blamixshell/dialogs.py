@@ -35,7 +35,7 @@ class UnlockDialog(_Base):
         super().__init__(parent)
         self.create = create
         self._attempt = attempt
-        self.setWindowTitle("ShellDeck")
+        self.setWindowTitle("BlamixShell")
         self.setFixedWidth(420)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(32, 30, 32, 26)
@@ -44,7 +44,7 @@ class UnlockDialog(_Base):
         badge = QLabel()
         badge.setPixmap(icon("lock", C["accent"], 34).pixmap(34, 34))
         lay.addWidget(badge)
-        h = QLabel("Create your vault" if create else "Unlock ShellDeck", objectName="H1")
+        h = QLabel("Create your vault" if create else "Unlock BlamixShell", objectName="H1")
         h.setStyleSheet("font-size:17pt; font-weight:600;")
         lay.addWidget(h)
         sub = QLabel(
@@ -707,7 +707,7 @@ class SettingsDialog(_Base):
         now.clicked.connect(lambda: self.parent() and self.parent().check_updates(manual=True))
         urow.addWidget(now)
         lay.addLayout(urow)
-        lay.addWidget(QLabel(f"You're running ShellDeck {__version__}. Checks GitHub Releases at most once a day; "
+        lay.addWidget(QLabel(f"You're running BlamixShell {__version__}. Checks GitHub Releases at most once a day; "
                              "nothing else is sent.", objectName="Hint", wordWrap=True))
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -990,7 +990,7 @@ class UpdateDialog(_Base):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 20, 22, 18)
         lay.setSpacing(10)
-        lay.addWidget(QLabel(f"ShellDeck {release.version} is available", objectName="H2"))
+        lay.addWidget(QLabel(f"BlamixShell {release.version} is available", objectName="H2"))
         lay.addWidget(QLabel(f"You have {current}.", objectName="Muted"))
         from PySide6.QtWidgets import QTextBrowser, QProgressBar
         notes = QTextBrowser()
@@ -1039,7 +1039,7 @@ class AboutDialog(_Base):
     def __init__(self, parent=None):
         super().__init__(parent)
         from . import __version__, links
-        self.setWindowTitle("About ShellDeck")
+        self.setWindowTitle("About BlamixShell")
         self.setFixedWidth(480)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 24, 28, 20)
@@ -1051,7 +1051,7 @@ class AboutDialog(_Base):
         head.addWidget(logo)
         name = QVBoxLayout()
         name.setSpacing(0)
-        name.addWidget(QLabel("ShellDeck", objectName="H1"))
+        name.addWidget(QLabel("BlamixShell", objectName="H1"))
         name.addWidget(QLabel(f"Version {__version__}", objectName="Muted"))
         head.addLayout(name, 1)
         lay.addLayout(head)
@@ -1076,7 +1076,7 @@ class AboutDialog(_Base):
         bl = QVBoxLayout(box)
         bl.setContentsMargins(16, 12, 16, 14)
         bl.setSpacing(10)
-        bl.addWidget(QLabel("If ShellDeck saves you time, you can buy me a coffee. Thanks!", wordWrap=True))
+        bl.addWidget(QLabel("If BlamixShell saves you time, you can buy me a coffee. Thanks!", wordWrap=True))
         row = QHBoxLayout()
         coffee = QPushButton(icon("coffee", "#0b0d12"), " Buy me a coffee", objectName="Primary")
         coffee.clicked.connect(lambda: open_url(links.KOFI_URL))

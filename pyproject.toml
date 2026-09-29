@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "shelldeck"
+name = "blamixshell"
 version = "1.0.0"
 description = "Modern SSH client: server manager, split panes, SFTP, encrypted vault. Desktop GUI, TUI and CLI."
 readme = "README.md"
@@ -22,16 +22,16 @@ tui = ["textual>=0.80"]
 all = ["PySide6>=6.7", "textual>=0.80"]
 
 [project.scripts]
-shelldeck = "shelldeck.cli:main"
+blamixshell = "blamixshell.cli:main"
 
 [project.gui-scripts]
-shelldeck-gui = "shelldeck.main:main"
+blamixshell-gui = "blamixshell.main:main"
 
 [tool.setuptools]
-packages = ["shelldeck"]
+packages = ["blamixshell"]
 
 [tool.setuptools.package-data]
-shelldeck = ["assets/*"]
+blamixshell = ["assets/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

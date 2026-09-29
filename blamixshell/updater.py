@@ -4,10 +4,10 @@ Only talks to api.github.com / github.com, and only when enabled (on by default,
 at most once a day, can be switched off in Settings). No telemetry is sent: the
 request is a plain GET for the latest release.
 
-How an update is applied depends on how ShellDeck was installed:
+How an update is applied depends on how BlamixShell was installed:
   msi       Windows installer   -> download the new MSI, run it (upgrades in place)
   portable  Windows zip folder  -> download zip, a small script swaps the files after
-                                   ShellDeck exits (the data/ folder is kept), restarts
+                                   BlamixShell exits (the data/ folder is kept), restarts
   other     macOS / Linux / pip / source -> open the release page
 """
 from __future__ import annotations
@@ -28,9 +28,9 @@ from . import __version__
 from .paths import INSTALLED_MARKER
 
 from .links import REPO  # noqa: E402
-API_URL = os.environ.get("SHELLDECK_UPDATE_URL", f"https://api.github.com/repos/{REPO}/releases/latest")
+API_URL = os.environ.get("BLAMIXSHELL_UPDATE_URL", f"https://api.github.com/repos/{REPO}/releases/latest")
 RELEASES_PAGE = f"https://github.com/{REPO}/releases/latest"
-USER_AGENT = f"ShellDeck/{__version__} (+https://github.com/{REPO})"
+USER_AGENT = f"BlamixShell/{__version__} (+https://github.com/{REPO})"
 
 
 class UpdateError(Exception):
@@ -119,7 +119,7 @@ def pick_asset(rel: Release, kind: str | None = None) -> Asset | None:
     if kind == "msi":
         return find(lambda n: n.endswith(".msi") and "x64" in n)
     if kind == "portable":
-        return find(lambda n: n.startswith("shelldeck-windows") and n.endswith(".zip"))
+        return find(lambda n: n.startswith("blamixshell-windows") and n.endswith(".zip"))
     return None
 
 
@@ -152,9 +152,9 @@ def download(asset: Asset, dest_dir: Path, progress=lambda done, total: None) ->
 
 # ---------------------------------------------------------------- applying (Windows)
 def _wait_and_kill_helpers(pid: int, app_dir: Path) -> str:
-    """Batch lines: wait for ShellDeck (pid) to exit, then end any Chromium helper
+    """Batch lines: wait for BlamixShell (pid) to exit, then end any Chromium helper
     processes left over from *this* install folder, so no file stays locked."""
-    ps = (f"Get-Process QtWebEngineProcess,ShellDeck -ErrorAction SilentlyContinue | "
+    ps = (f"Get-Process QtWebEngineProcess,BlamixShell -ErrorAction SilentlyContinue | "
           f"Where-Object {{ $_.Path -like '{app_dir}\\*' }} | Stop-Process -Force")
     return f""":wait
 tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul && (timeout /t 1 /nobreak >nul & goto wait)
@@ -176,17 +176,17 @@ def msi_scope_args(app_dir: Path) -> str:
 
 
 def msi_update_script(msi: Path, app_dir: Path, pid: int) -> str:
-    log = Path(tempfile.gettempdir()) / "shelldeck-update-msi.log"
+    log = Path(tempfile.gettempdir()) / "blamixshell-update-msi.log"
     return f"""@echo off
 setlocal
 {_wait_and_kill_helpers(pid, app_dir)}msiexec /i "{msi}" {msi_scope_args(app_dir)} /passive /norestart /l*v "{log}"
-if exist "{app_dir}\\ShellDeck.exe" start "" "{app_dir}\\ShellDeck.exe"
+if exist "{app_dir}\\BlamixShell.exe" start "" "{app_dir}\\BlamixShell.exe"
 (goto) 2>nul & del "%~f0"
 """
 
 
 def portable_update_script(new_dir: Path, app_dir: Path, pid: int) -> str:
-    """Batch script: wait for ShellDeck to exit, mirror the new files over the old
+    """Batch script: wait for BlamixShell to exit, mirror the new files over the old
     ones (keeping data/), then start the new version."""
     return f"""@echo off
 setlocal
@@ -196,7 +196,7 @@ if %ERRORLEVEL% GEQ 8 (
   pause
   exit /b 1
 )
-start "" "{app_dir}\\ShellDeck.exe"
+start "" "{app_dir}\\BlamixShell.exe"
 rmdir /s /q "{new_dir.parent}" 2>nul
 (goto) 2>nul & del "%~f0"
 """
@@ -207,23 +207,23 @@ def apply_update(path: Path, kind: str | None = None) -> None:
     kind = kind or install_kind()
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     if kind == "msi":
-        # wait until ShellDeck has fully exited (incl. helper processes), then run the
+        # wait until BlamixShell has fully exited (incl. helper processes), then run the
         # MSI: /passive = progress bar only; MajorUpgrade replaces the old version
         app_dir = Path(sys.executable).resolve().parent
-        script = Path(tempfile.gettempdir()) / f"shelldeck-update-{os.getpid()}.bat"
+        script = Path(tempfile.gettempdir()) / f"blamixshell-update-{os.getpid()}.bat"
         script.write_text(msi_update_script(path, app_dir, os.getpid()), encoding="utf-8")
         subprocess.Popen(["cmd", "/c", str(script)], creationflags=flags | 0x08000000, close_fds=True)
         return
     if kind == "portable":
         app_dir = Path(sys.executable).resolve().parent
-        work = Path(tempfile.mkdtemp(prefix="shelldeck-update-"))
+        work = Path(tempfile.mkdtemp(prefix="blamixshell-update-"))
         with zipfile.ZipFile(path) as z:
             z.extractall(work)
-        inner = work / "ShellDeck"
-        new_dir = inner if (inner / "ShellDeck.exe").exists() else work
-        if not (new_dir / "ShellDeck.exe").exists():
-            raise UpdateError("The downloaded package doesn't contain ShellDeck.exe")
-        script = work.parent / f"shelldeck-update-{os.getpid()}.bat"
+        inner = work / "BlamixShell"
+        new_dir = inner if (inner / "BlamixShell.exe").exists() else work
+        if not (new_dir / "BlamixShell.exe").exists():
+            raise UpdateError("The downloaded package doesn't contain BlamixShell.exe")
+        script = work.parent / f"blamixshell-update-{os.getpid()}.bat"
         script.write_text(portable_update_script(new_dir, app_dir, os.getpid()), encoding="utf-8")
         subprocess.Popen(["cmd", "/c", str(script)], creationflags=flags | 0x08000000,  # CREATE_NO_WINDOW
                          close_fds=True)

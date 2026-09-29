@@ -11,7 +11,7 @@ def main() -> None:
     if sys.platform == "win32":
         try:
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ShellDeck.SSH.1")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("BlamixShell.SSH.1")
         except Exception:
             pass
 
@@ -22,8 +22,8 @@ def main() -> None:
 
     QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
-    app.setApplicationName("ShellDeck")
-    app.setOrganizationName("ShellDeck")
+    app.setApplicationName("BlamixShell")
+    app.setOrganizationName("BlamixShell")
 
     from .app import MainWindow
     from .dialogs import UnlockDialog
@@ -37,7 +37,7 @@ def main() -> None:
     ico = assets_dir() / ("app.ico" if sys.platform == "win32" else "app.png")
     if ico.exists():
         app.setWindowIcon(QIcon(str(ico)))
-    app.setDesktopFileName("shelldeck")   # matches the Linux .desktop entry
+    app.setDesktopFileName("blamixshell")   # matches the Linux .desktop entry
 
     path = vault_path()
     create = not Vault.exists(path)
@@ -64,7 +64,7 @@ def main() -> None:
     except Exception:
         pass
 
-    if os.environ.get("SHELLDECK_SELFTEST"):
+    if os.environ.get("BLAMIXSHELL_SELFTEST"):
         sys.exit(_selftest(app))
 
     dlg = UnlockDialog(create, attempt)
@@ -89,7 +89,7 @@ def _selftest(app) -> int:
     from .settings import Settings
     from .vault import Vault
 
-    tmp = Path(tempfile.mkdtemp(prefix="shelldeck-selftest-"))
+    tmp = Path(tempfile.mkdtemp(prefix="blamixshell-selftest-"))
     store = Store(Vault.create(tmp / "v.sdv", "selftest", n_log2=10), {})
     store.upsert(Server(name="selftest", host="127.0.0.1", port=1, username="x", password="x"))
     win = MainWindow(store, Settings())

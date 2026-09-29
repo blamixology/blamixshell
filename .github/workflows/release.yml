@@ -57,9 +57,9 @@ jobs:
       - run: pytest -q tests -rs
         env:
           QT_QPA_PLATFORM: offscreen
-          SHELLDECK_TEST_SSH: "127.0.0.1:2222:tester:Secret123!"
-          SHELLDECK_TEST_SSH_KBD: "127.0.0.1:2223:tester:Secret123!"
-          SHELLDECK_TEST_KEY: "${{ runner.temp }}/id_ed25519:pp"
+          BLAMIXSHELL_TEST_SSH: "127.0.0.1:2222:tester:Secret123!"
+          BLAMIXSHELL_TEST_SSH_KBD: "127.0.0.1:2223:tester:Secret123!"
+          BLAMIXSHELL_TEST_KEY: "${{ runner.temp }}/id_ed25519:pp"
 
   # 3) only if every test passed: build the apps (each build also runs a self-test)
   build:
@@ -87,16 +87,16 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onedir --windowed --name ShellDeck `
-            --icon shelldeck/assets/app.ico --add-data "shelldeck/assets;shelldeck/assets" `
+          pyinstaller --noconfirm --clean --onedir --windowed --name BlamixShell `
+            --icon blamixshell/assets/app.ico --add-data "blamixshell/assets;blamixshell/assets" `
             --exclude-module tkinter run.py
-          python packaging/prune_qt.py dist/ShellDeck
-          $env:SHELLDECK_SELFTEST = "1"; $env:QT_QPA_PLATFORM = "offscreen"
-          $p = Start-Process dist/ShellDeck/ShellDeck.exe -Wait -PassThru
+          python packaging/prune_qt.py dist/BlamixShell
+          $env:BLAMIXSHELL_SELFTEST = "1"; $env:QT_QPA_PLATFORM = "offscreen"
+          $p = Start-Process dist/BlamixShell/BlamixShell.exe -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "self-test failed ($($p.ExitCode))" }
-          Remove-Item Env:SHELLDECK_SELFTEST
-          Remove-Item -Recurse -Force dist/ShellDeck/data -ErrorAction SilentlyContinue
-          Compress-Archive -Path dist/ShellDeck -DestinationPath "ShellDeck-${{ matrix.name }}.zip"
+          Remove-Item Env:BLAMIXSHELL_SELFTEST
+          Remove-Item -Recurse -Force dist/BlamixShell/data -ErrorAction SilentlyContinue
+          Compress-Archive -Path dist/BlamixShell -DestinationPath "BlamixShell-${{ matrix.name }}.zip"
 
       - name: Build + test MSI installer (Windows)
         if: runner.os == 'Windows'
@@ -108,37 +108,37 @@ jobs:
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: |
-          pyinstaller --noconfirm --clean --windowed --name ShellDeck \
-            --icon shelldeck/assets/app.png --osx-bundle-identifier ro.blamixology.shelldeck \
-            --add-data "shelldeck/assets:shelldeck/assets" --exclude-module tkinter run.py
-          python packaging/prune_qt.py dist/ShellDeck.app
-          SHELLDECK_SELFTEST=1 QT_QPA_PLATFORM=offscreen dist/ShellDeck.app/Contents/MacOS/ShellDeck
-          rm -rf dist/ShellDeck.app/../data
-          cd dist && ditto -c -k --keepParent ShellDeck.app "../ShellDeck-${{ matrix.name }}.zip"
+          pyinstaller --noconfirm --clean --windowed --name BlamixShell \
+            --icon blamixshell/assets/app.png --osx-bundle-identifier ro.blamixology.blamixshell \
+            --add-data "blamixshell/assets:blamixshell/assets" --exclude-module tkinter run.py
+          python packaging/prune_qt.py dist/BlamixShell.app
+          BLAMIXSHELL_SELFTEST=1 QT_QPA_PLATFORM=offscreen dist/BlamixShell.app/Contents/MacOS/BlamixShell
+          rm -rf dist/BlamixShell.app/../data
+          cd dist && ditto -c -k --keepParent BlamixShell.app "../BlamixShell-${{ matrix.name }}.zip"
 
       - name: Build (Linux GUI + CLI)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update && sudo apt-get install -y libxcb-cursor0 libegl1
-          pyinstaller --noconfirm --clean --onedir --windowed --name ShellDeck \
-            --add-data "shelldeck/assets:shelldeck/assets" --exclude-module tkinter run.py
-          python packaging/prune_qt.py dist/ShellDeck
-          SHELLDECK_SELFTEST=1 QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox" dist/ShellDeck/ShellDeck
-          rm -rf dist/ShellDeck/data
-          cp shelldeck/assets/app.png dist/ShellDeck/shelldeck.png
-          cp packaging/linux/install-desktop-entry.sh dist/ShellDeck/
-          tar -C dist -czf "ShellDeck-${{ matrix.name }}.tar.gz" ShellDeck
+          pyinstaller --noconfirm --clean --onedir --windowed --name BlamixShell \
+            --add-data "blamixshell/assets:blamixshell/assets" --exclude-module tkinter run.py
+          python packaging/prune_qt.py dist/BlamixShell
+          BLAMIXSHELL_SELFTEST=1 QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox" dist/BlamixShell/BlamixShell
+          rm -rf dist/BlamixShell/data
+          cp blamixshell/assets/app.png dist/BlamixShell/blamixshell.png
+          cp packaging/linux/install-desktop-entry.sh dist/BlamixShell/
+          tar -C dist -czf "BlamixShell-${{ matrix.name }}.tar.gz" BlamixShell
           ./build_cli.sh
-          cp dist/shelldeck-cli-*.tar.gz .
+          cp dist/blamixshell-cli-*.tar.gz .
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ShellDeck-${{ matrix.name }}
+          name: BlamixShell-${{ matrix.name }}
           path: |
-            ShellDeck-*.zip
-            ShellDeck-*.msi
-            ShellDeck-*.tar.gz
-            shelldeck-cli-*.tar.gz
+            BlamixShell-*.zip
+            BlamixShell-*.msi
+            BlamixShell-*.tar.gz
+            blamixshell-cli-*.tar.gz
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

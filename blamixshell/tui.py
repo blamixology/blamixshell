@@ -176,8 +176,8 @@ class ServerForm(ModalScreen[Server | None]):
 
 
 # ============================================================== app
-class ShellDeckTUI(App):
-    TITLE = "ShellDeck"
+class BlamixShellTUI(App):
+    TITLE = "BlamixShell"
     SUB_TITLE = "SSH server manager"
     CSS = """
     Screen { background: $background; }
@@ -326,7 +326,7 @@ class ShellDeckTUI(App):
             panel.update(t)
         else:
             n = len(self.store.servers)
-            panel.update(Text.assemble(("ShellDeck\n", f"bold {ACCENT}"),
+            panel.update(Text.assemble(("BlamixShell\n", f"bold {ACCENT}"),
                                        (f"{n} server(s) in your vault\n\n", "dim"),
                                        ("a  add a server\n/  search\nq  quit", "")))
 
@@ -374,7 +374,7 @@ class ShellDeckTUI(App):
             try:
                 interactive_shell(s, self.store)
             except SystemExit:
-                input("\nPress Enter to return to ShellDeck…")
+                input("\nPress Enter to return to BlamixShell…")
         self.rebuild(select_id=s.id)
 
     def action_add(self) -> None:
@@ -448,7 +448,7 @@ class ShellDeckTUI(App):
                     run_many(self.store, sorted(targets, key=lambda x: x.label.lower()), cmd)
                 except SystemExit:
                     pass
-                input("\nPress Enter to return to ShellDeck…")
+                input("\nPress Enter to return to BlamixShell…")
             self.rebuild()
         self.push_screen(PromptScreen(f"Run a command on {len(targets)} server(s)",
                                       f"Targets: {names}", "uptime"), run)
@@ -457,5 +457,5 @@ class ShellDeckTUI(App):
 def run_tui() -> int:
     from .cli import unlock
     store = unlock()
-    ShellDeckTUI(store).run()
+    BlamixShellTUI(store).run()
     return 0

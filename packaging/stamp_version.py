@@ -12,7 +12,7 @@ if not m:
     print(f"stamp_version: '{sys.argv[1:]}' is not a version tag, leaving sources unchanged")
     sys.exit(0)
 v = m.group(1)
-init = root / "shelldeck" / "__init__.py"
+init = root / "blamixshell" / "__init__.py"
 init.write_text(re.sub(r'__version__ = "[^"]*"', f'__version__ = "{v}"', init.read_text()))
 pp = root / "pyproject.toml"
 pp.write_text(re.sub(r'(?m)^version = "[^"]*"', f'version = "{v}"', pp.read_text(), count=1))

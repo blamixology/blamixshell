@@ -67,11 +67,11 @@ def release_notes(tag: str, repo: str) -> str:
     out = [f"## What's changed in {version}", "", body, "",
            "### Downloads", "",
            "| System | File |", "|---|---|",
-           f"| Windows (installer) | `ShellDeck-{version}-x64.msi` |",
-           "| Windows (portable, no install) | `ShellDeck-windows-x64.zip` |",
-           "| macOS Apple Silicon / Intel | `ShellDeck-macos-arm64.zip` / `ShellDeck-macos-x64.zip` |",
-           "| Linux desktop | `ShellDeck-linux-x64.tar.gz` |",
-           "| Linux CLI + TUI (servers) | `shelldeck-cli-linux-x86_64.tar.gz` |", ""]
+           f"| Windows (installer) | `BlamixShell-{version}-x64.msi` |",
+           "| Windows (portable, no install) | `BlamixShell-windows-x64.zip` |",
+           "| macOS Apple Silicon / Intel | `BlamixShell-macos-arm64.zip` / `BlamixShell-macos-x64.zip` |",
+           "| Linux desktop | `BlamixShell-linux-x64.tar.gz` |",
+           "| Linux CLI + TUI (servers) | `blamixshell-cli-linux-x86_64.tar.gz` |", ""]
     if prev:
         out.append(f"**Full changelog**: https://github.com/{repo}/compare/{prev}...{tag}")
     return "\n".join(out)
@@ -98,7 +98,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("tag", nargs="?")
     ap.add_argument("--changelog", action="store_true", help="print the full CHANGELOG.md")
-    ap.add_argument("--repo", default="blamixology/shelldeck")
+    ap.add_argument("--repo", default="blamixology/blamixshell")
     a = ap.parse_args()
     if a.changelog:
         print(changelog(a.repo), end="")

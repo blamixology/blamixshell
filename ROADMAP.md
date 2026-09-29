@@ -1,7 +1,7 @@
 # Roadmap
 
-What's planned for ShellDeck, roughly in order. Ideas and votes are welcome in
-[issues](https://github.com/blamixology/shelldeck/issues).
+What's planned for BlamixShell, roughly in order. Ideas and votes are welcome in
+[issues](https://github.com/blamixology/blamixshell/issues).
 
 Legend: ✅ done · 🚧 in progress · 🗓 planned · 💡 later / maybe
 
@@ -9,9 +9,10 @@ Legend: ✅ done · 🚧 in progress · 🗓 planned · 💡 later / maybe
 
 | | Feature | What it means |
 |---|---|---|
-| ✅ | **Port forwarding / tunnels** | Local (`-L`), remote (`-R`) and dynamic SOCKS (`-D`) tunnels saved per server, started with the connection, status shown in the pane header. Also `shelldeck tunnel <server>` for headless use. |
+| ✅ | **Port forwarding / tunnels** | Local (`-L`), remote (`-R`) and dynamic SOCKS (`-D`) tunnels saved per server, started with the connection, status shown in the pane header. Also `blamixshell tunnel <server>` for headless use. |
 | ✅ | **2FA / keyboard-interactive login** | Servers that ask for a verification code (Google Authenticator, Duo, PAM OTP) or any other prompt; works for jump hosts too. |
-| ✅ | **Session restore** | Reopen the tabs and splits you had when ShellDeck was closed; tabs connect when you open them. |
+| ✅ | **New name: BlamixShell** | Formerly ShellDeck. Data and Windows installs carry over automatically. |
+| ✅ | **Session restore** | Reopen the tabs and splits you had when BlamixShell was closed; tabs connect when you open them. |
 
 ## Planned
 
@@ -22,6 +23,18 @@ Legend: ✅ done · 🚧 in progress · 🗓 planned · 💡 later / maybe
 | 🗓 | **Agent forwarding** | `ssh -A`: use your local keys for `git pull` on the server or the next hop. |
 | 🗓 | **Vault backup / sync** | Export and import the encrypted vault, or keep it in a folder you choose (OneDrive, Syncthing, …) to have the same servers on every machine. |
 | 🗓 | **Per-server appearance** | Terminal theme and tab tint per server or group, so production is visibly different. |
+
+## Gaps vs. other tools
+
+Where BlamixShell doesn't match Cockpit/Webmin, Teleport or Guacamole yet. Kept here so
+comparison tables stay honest.
+
+| | Gap | Plan |
+|---|---|---|
+| 🗓 | **OS management GUI** (Cockpit/Webmin style) | An agentless **server dashboard** over the existing SSH connection: systemd services (start/stop/restart, status, logs), a journal viewer, processes, disk usage, pending package updates, users. Read-only first, then actions with a confirmation. |
+| 🗓 | **Air-gapped / managed networks** (already works offline: no account, no telemetry) | Turn the update check off for everyone: an MSI property (`UPDATECHECK=0`) and a setting admins can lock. "Update from file" for offline machines. A documented offline install. |
+| 🗓 | **Single binary** | A one-file CLI/TUI binary for servers (no Qt, starts fast). The desktop app stays a portable folder: a one-file Qt WebEngine build unpacks ~300 MB on every start. |
+| 💡 | **Teams / RBAC** (Teleport, Guacamole) | BlamixShell is single-user with a local vault. Possible path: a shared encrypted team vault (per-member keys, synced through git or a shared folder), roles (connect-only / read-only / admin) and an audit log. Real multi-tenant RBAC with enforced access needs a server component, which is a different product. |
 
 ## Later / maybe
 

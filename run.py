@@ -1,4 +1,4 @@
-from shelldeck.main import main
+from blamixshell.main import main
 
 if __name__ == "__main__":
     main()

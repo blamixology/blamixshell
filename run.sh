@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the ShellDeck desktop app from source on macOS or Linux.
+# Run the BlamixShell desktop app from source on macOS or Linux.
 set -e
 cd "$(dirname "$0")"
 PY=${PYTHON:-python3}

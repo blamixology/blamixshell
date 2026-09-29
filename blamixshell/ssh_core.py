@@ -79,7 +79,7 @@ def load_private_key(path: str = "", data: str = "", passphrase: str = "") -> pa
         if path.lower().endswith(".ppk"):
             raise AuthConfigError(
                 "PuTTY .ppk keys aren't supported directly. Open the key in PuTTYgen and use "
-                "Conversions → Export OpenSSH key, then point ShellDeck at the exported file.")
+                "Conversions → Export OpenSSH key, then point BlamixShell at the exported file.")
         try:
             return paramiko.PKey.from_path(path, password=pw.encode() if pw else None)
         except paramiko.PasswordRequiredException:

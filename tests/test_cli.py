@@ -1,20 +1,20 @@
-"""CLI + TUI tests. Live parts need SHELLDECK_TEST_SSH=host:port:user:password."""
+"""CLI + TUI tests. Live parts need BLAMIXSHELL_TEST_SSH=host:port:user:password."""
 import asyncio
 import os
 import sys
 
 import pytest
 
-from shelldeck import cli
-from shelldeck.models import Server, Store
-from shelldeck.vault import Vault
+from blamixshell import cli
+from blamixshell.models import Server, Store
+from blamixshell.vault import Vault
 
-LIVE = os.environ.get("SHELLDECK_TEST_SSH")
+LIVE = os.environ.get("BLAMIXSHELL_TEST_SSH")
 
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.setenv("SHELLDECK_HOME", str(tmp_path))
+    monkeypatch.setenv("BLAMIXSHELL_HOME", str(tmp_path))
     st = Store(Vault.create(tmp_path / "vault.sdv", "masterpass", n_log2=12), {})
     st.upsert(Server(name="web-1", host="10.0.0.1", username="deploy", group="Prod/EU", tags=["prod", "web"]))
     st.upsert(Server(name="db-1", host="10.0.0.2", username="deploy", group="Prod/EU", tags=["prod", "db"]))
@@ -51,11 +51,11 @@ def test_exec_parser_strips_separator():
 
 
 def test_tui_renders_and_filters(store):
-    from shelldeck.tui import ServerForm, ShellDeckTUI
+    from blamixshell.tui import ServerForm, BlamixShellTUI
     from textual.widgets import Tree
 
     async def go():
-        app = ShellDeckTUI(store)
+        app = BlamixShellTUI(store)
         async with app.run_test(size=(120, 36)) as pilot:
             tree = app.query_one(Tree)
             labels = []
@@ -114,7 +114,7 @@ def test_exec_many_live(store, capsys):
 @pytest.mark.skipif(not LIVE or sys.platform == "win32", reason="no live sshd")
 def test_interactive_connect_via_pty(store, tmp_path):
     import pexpect
-    from shelldeck.ssh_core import trust_host_key
+    from blamixshell.ssh_core import trust_host_key
     import paramiko
     host, port, user, pw = LIVE.split(":")
     store.upsert(Server(name="live", host=host, port=int(port), username=user, password=pw))
@@ -122,8 +122,8 @@ def test_interactive_connect_via_pty(store, tmp_path):
     t.start_client()
     trust_host_key(f"[{host}]:{port}", t.get_remote_server_key())
     t.close()
-    env = dict(os.environ, SHELLDECK_HOME=str(tmp_path), TERM="xterm-256color")
-    child = pexpect.spawn(sys.executable, ["-m", "shelldeck", "connect", "live"], env=env,
+    env = dict(os.environ, BLAMIXSHELL_HOME=str(tmp_path), TERM="xterm-256color")
+    child = pexpect.spawn(sys.executable, ["-m", "blamixshell", "connect", "live"], env=env,
                           cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                           timeout=20, encoding="utf-8", dimensions=(30, 100))
     child.expect("Master password:")
@@ -143,7 +143,7 @@ def test_interactive_connect_via_pty(store, tmp_path):
 @pytest.mark.skipif(not LIVE, reason="no live sshd")
 def test_live_sftp_open_and_roundtrip(tmp_path):
     import paramiko
-    from shelldeck.ssh_core import open_sftp
+    from blamixshell.ssh_core import open_sftp
     host, port, user, pw = LIVE.split(":")
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -151,8 +151,8 @@ def test_live_sftp_open_and_roundtrip(tmp_path):
     sftp, _noise = open_sftp(c)
     src = tmp_path / "a.bin"
     src.write_bytes(os.urandom(300_000))
-    sftp.put(str(src), "shelldeck_rt.bin")
-    sftp.get("shelldeck_rt.bin", str(tmp_path / "b.bin"))
-    sftp.remove("shelldeck_rt.bin")
+    sftp.put(str(src), "blamixshell_rt.bin")
+    sftp.get("blamixshell_rt.bin", str(tmp_path / "b.bin"))
+    sftp.remove("blamixshell_rt.bin")
     assert (tmp_path / "b.bin").read_bytes() == src.read_bytes()
     c.close()

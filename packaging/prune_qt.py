@@ -1,4 +1,4 @@
-"""Remove Qt modules ShellDeck never uses from a PyInstaller build (saves ~250 MB).
+"""Remove Qt modules BlamixShell never uses from a PyInstaller build (saves ~250 MB).
 
 Usage: python packaging/prune_qt.py <dist folder or .app>
 Works for Windows (Qt6*.dll), Linux (libQt6*.so*) and macOS (Qt*.framework).

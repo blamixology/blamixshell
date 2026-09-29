@@ -57,7 +57,7 @@ class Vault:
     def open(cls, path: Path, password: str) -> tuple["Vault", dict]:
         raw = Path(path).read_bytes()
         if len(raw) < 4 + 16 + 1 + 12 + 16 or raw[:4] != MAGIC:
-            raise VaultError("Not a ShellDeck vault (or the file is corrupted)")
+            raise VaultError("Not a BlamixShell vault (or the file is corrupted)")
         salt = raw[4:20]
         n_log2 = raw[20]
         nonce = raw[21:33]

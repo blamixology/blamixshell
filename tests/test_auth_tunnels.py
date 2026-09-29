@@ -12,16 +12,16 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 from sshserver import CODE, PASSWORD, USER, TestSSHServer, echo_server, host_key  # noqa: E402
 
-from shelldeck.models import Server, Tunnel  # noqa: E402
-from shelldeck import ssh_core  # noqa: E402
-from shelldeck.ssh_core import (AuthCancelled, NeedsInput, host_id, open_client,  # noqa: E402
+from blamixshell.models import Server, Tunnel  # noqa: E402
+from blamixshell import ssh_core  # noqa: E402
+from blamixshell.ssh_core import (AuthCancelled, NeedsInput, host_id, open_client,  # noqa: E402
                                 trust_host_key)
-from shelldeck.tunnels import TunnelManager  # noqa: E402
+from blamixshell.tunnels import TunnelManager  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def home(tmp_path, monkeypatch):
-    monkeypatch.setenv("SHELLDECK_HOME", str(tmp_path))
+    monkeypatch.setenv("BLAMIXSHELL_HOME", str(tmp_path))
     return tmp_path
 
 
@@ -233,10 +233,10 @@ def test_server_refusing_forwarding():
 
 
 # ------------------------------------------------------------------ against a real OpenSSH server
-# SHELLDECK_TEST_SSH=host:port:user:password        (password auth, forwarding allowed)
-# SHELLDECK_TEST_SSH_KBD=host:port:user:password    (keyboard-interactive only, like PAM/2FA setups)
-LIVE = os.environ.get("SHELLDECK_TEST_SSH", "")
-LIVE_KBD = os.environ.get("SHELLDECK_TEST_SSH_KBD", "")
+# BLAMIXSHELL_TEST_SSH=host:port:user:password        (password auth, forwarding allowed)
+# BLAMIXSHELL_TEST_SSH_KBD=host:port:user:password    (keyboard-interactive only, like PAM/2FA setups)
+LIVE = os.environ.get("BLAMIXSHELL_TEST_SSH", "")
+LIVE_KBD = os.environ.get("BLAMIXSHELL_TEST_SSH_KBD", "")
 
 
 def _live_server(spec: str) -> Server:
@@ -245,7 +245,7 @@ def _live_server(spec: str) -> Server:
 
 
 def _open_trusting(s: Server, **kw):
-    from shelldeck.ssh_core import UnknownHostKey
+    from blamixshell.ssh_core import UnknownHostKey
     try:
         return open_client(s, lambda _i: None, **kw)
     except UnknownHostKey as e:

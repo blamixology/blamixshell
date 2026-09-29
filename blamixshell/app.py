@@ -171,7 +171,7 @@ class MainWindow(QMainWindow):
         self.store = store
         self.settings = settings
         self._last_shortcut = ("", 0.0)
-        self.setWindowTitle("ShellDeck")
+        self.setWindowTitle("BlamixShell")
         self.resize(1400, 860)
         self.setMinimumSize(900, 560)
 
@@ -194,7 +194,7 @@ class MainWindow(QMainWindow):
         logo.setPixmap(icon("terminal", C["accent"], 22).pixmap(22, 22))
         bt = QVBoxLayout()
         bt.setSpacing(0)
-        bt.addWidget(QLabel("ShellDeck", objectName="Brand"))
+        bt.addWidget(QLabel("BlamixShell", objectName="Brand"))
         self.count_lbl = QLabel(objectName="BrandSub")
         bt.addWidget(self.count_lbl)
         brand.addWidget(logo)
@@ -743,7 +743,7 @@ class MainWindow(QMainWindow):
             ("Settings…", "", self.open_settings, "settings"),
             ("Lock vault", "", self.lock, "lock"),
             ("Check for updates", "", lambda: self.check_updates(manual=True), "refresh"),
-            ("About ShellDeck", "", self.show_about, "help"),
+            ("About BlamixShell", "", self.show_about, "help"),
         ]
         for sn in self.store.snippets:
             acts.append((f"Snippet: {sn.name}", sn.command.replace("\n", " ⏎ ")[:60],
@@ -980,7 +980,7 @@ class MainWindow(QMainWindow):
             return
         if not rel:
             if manual:
-                QMessageBox.information(self, "Updates", f"You're up to date (ShellDeck {__version__}).")
+                QMessageBox.information(self, "Updates", f"You're up to date (BlamixShell {__version__}).")
             return
         self._pending_release = rel
         self.update_btn.setText(f"⬆  Update {rel.version}")
@@ -989,7 +989,7 @@ class MainWindow(QMainWindow):
             if manual:
                 self._show_update(rel)
             else:
-                self.statusBar().showMessage(f"ShellDeck {rel.version} is available: click the button on the right.", 8000)
+                self.statusBar().showMessage(f"BlamixShell {rel.version} is available: click the button on the right.", 8000)
         else:
             self.update_btn.hide()   # user skipped this version
 
@@ -1012,7 +1012,7 @@ class MainWindow(QMainWindow):
             live = [p for p in self.all_panes() if p.state == "connected"]
             if live and QMessageBox.question(
                     self, "Install update?",
-                    f"ShellDeck will close to install the update, disconnecting {len(live)} session(s). Continue?"
+                    f"BlamixShell will close to install the update, disconnecting {len(live)} session(s). Continue?"
             ) != QMessageBox.Yes:
                 return
             self._download_update(asset)
@@ -1027,7 +1027,7 @@ class MainWindow(QMainWindow):
 
         def run():
             try:
-                path = updater.download(asset, Path(tempfile.gettempdir()) / "shelldeck-update",
+                path = updater.download(asset, Path(tempfile.gettempdir()) / "blamixshell-update",
                                         lambda d, t: self._upd.progress.emit(d, t))
                 self._upd.downloaded.emit((str(path), ""))
             except updater.UpdateError as e:
@@ -1059,7 +1059,7 @@ class MainWindow(QMainWindow):
         from . import links
         from .dialogs import open_url
         m = QMenu(parent)
-        m.addAction(icon("terminal"), "About ShellDeck", self.show_about)
+        m.addAction(icon("terminal"), "About BlamixShell", self.show_about)
         m.addAction(icon("code"), "Keyboard shortcuts", lambda: open_url(links.SHORTCUTS_URL))
         m.addAction(icon("link"), "Documentation", lambda: open_url(links.DOCS_URL))
         m.addAction(icon("refresh"), "Check for updates", lambda: self.check_updates(manual=True))
@@ -1099,7 +1099,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e):  # noqa: N802
         live = [p for p in self.all_panes() if p.state == "connected"]
         if live and not getattr(self, "_force_quit", False) and QMessageBox.question(
-                self, "Quit ShellDeck?", f"Disconnect {len(live)} live session(s) and quit?") != QMessageBox.Yes:
+                self, "Quit BlamixShell?", f"Disconnect {len(live)} live session(s) and quit?") != QMessageBox.Yes:
             e.ignore()
             return
         self._layout_timer.stop()

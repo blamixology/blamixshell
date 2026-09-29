@@ -1,4 +1,4 @@
-"""Core tests. Live SSH tests run when SHELLDECK_TEST_SSH=host:port:user:password is set."""
+"""Core tests. Live SSH tests run when BLAMIXSHELL_TEST_SSH=host:port:user:password is set."""
 import os
 import time
 
@@ -6,14 +6,14 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from shelldeck import importers  # noqa: E402
-from shelldeck.models import Server, Store  # noqa: E402
-from shelldeck.vault import Vault, VaultError, WrongPassword  # noqa: E402
+from blamixshell import importers  # noqa: E402
+from blamixshell.models import Server, Store  # noqa: E402
+from blamixshell.vault import Vault, VaultError, WrongPassword  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def home(tmp_path, monkeypatch):
-    monkeypatch.setenv("SHELLDECK_HOME", str(tmp_path))
+    monkeypatch.setenv("BLAMIXSHELL_HOME", str(tmp_path))
     return tmp_path
 
 
@@ -87,7 +87,7 @@ Host app
 
 
 def test_parse_target():
-    from shelldeck.app import parse_target
+    from blamixshell.app import parse_target
     s = parse_target("ssh -p 2201 root@example.org")
     assert (s.username, s.host, s.port) == ("root", "example.org", 2201)
     s = parse_target("me@1.2.3.4:2222")
@@ -95,12 +95,12 @@ def test_parse_target():
 
 
 def test_ppk_friendly_error():
-    from shelldeck.ssh_session import AuthConfigError, load_private_key
+    from blamixshell.ssh_session import AuthConfigError, load_private_key
     with pytest.raises(AuthConfigError, match="PuTTYgen"):
         load_private_key(path="C:/keys/mine.ppk")
 
 
-LIVE = os.environ.get("SHELLDECK_TEST_SSH")
+LIVE = os.environ.get("BLAMIXSHELL_TEST_SSH")
 
 
 def _live_server(**kw):
@@ -111,7 +111,7 @@ def _live_server(**kw):
 @pytest.mark.skipif(not LIVE, reason="no live sshd")
 def test_live_shell_hostkey_and_sftp(tmp_path):
     from PySide6.QtCore import QCoreApplication
-    from shelldeck.ssh_session import ShellSession
+    from blamixshell.ssh_session import ShellSession
     app = QCoreApplication.instance() or QCoreApplication([])
     srv = _live_server()
     s = ShellSession(srv, lambda _i: None)
@@ -142,9 +142,9 @@ def test_live_shell_hostkey_and_sftp(tmp_path):
     sftp = s.sftp()
     local = tmp_path / "up.txt"
     local.write_text("hello sftp")
-    sftp.put(str(local), "shelldeck_up.txt")
-    assert "shelldeck_up.txt" in sftp.listdir(".")
-    sftp.remove("shelldeck_up.txt")
+    sftp.put(str(local), "blamixshell_up.txt")
+    assert "blamixshell_up.txt" in sftp.listdir(".")
+    sftp.remove("blamixshell_up.txt")
 
     # second connection: host key now known -> no prompt
     s2 = ShellSession(_live_server(), lambda _i: None)
@@ -157,11 +157,11 @@ def test_live_shell_hostkey_and_sftp(tmp_path):
     s2.close()
 
 
-@pytest.mark.skipif(not LIVE or not os.environ.get("SHELLDECK_TEST_KEY"), reason="no key")
+@pytest.mark.skipif(not LIVE or not os.environ.get("BLAMIXSHELL_TEST_KEY"), reason="no key")
 def test_live_key_auth_and_jump():
-    from shelldeck.ssh_session import open_client, trust_host_key, load_known_hosts
+    from blamixshell.ssh_session import open_client, trust_host_key, load_known_hosts
     import paramiko
-    key_path, passphrase = os.environ["SHELLDECK_TEST_KEY"].split(":")
+    key_path, passphrase = os.environ["BLAMIXSHELL_TEST_KEY"].split(":")
     bastion = _live_server()
     target = _live_server(auth="key", key_path=key_path, passphrase=passphrase, jump_id=bastion.id)
     target.password = ""
@@ -178,7 +178,7 @@ def test_live_key_auth_and_jump():
     client.close()
     chain[0].close()
     # wrong passphrase gives a readable error
-    from shelldeck.ssh_session import AuthConfigError, load_private_key
+    from blamixshell.ssh_session import AuthConfigError, load_private_key
     with pytest.raises(Exception):
         load_private_key(path=key_path, passphrase="nope")
     with pytest.raises(AuthConfigError, match="passphrase"):
@@ -187,25 +187,62 @@ def test_live_key_auth_and_jump():
 
 def test_data_dir_portable_vs_installed(tmp_path, monkeypatch):
     import sys
-    from shelldeck import paths
-    monkeypatch.delenv("SHELLDECK_HOME", raising=False)
+    from blamixshell import paths
+    monkeypatch.delenv("BLAMIXSHELL_HOME", raising=False)
     monkeypatch.setattr(paths, "_DATA_DIR", None)
-    appdir = tmp_path / "ShellDeck"
+    appdir = tmp_path / "BlamixShell"
     appdir.mkdir()
-    exe = appdir / "ShellDeck.exe"
+    exe = appdir / "BlamixShell.exe"
     exe.write_text("")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(exe))
-    monkeypatch.setattr(paths, "_legacy_dir", lambda: tmp_path / "peruser")
+    monkeypatch.setattr(paths, "_user_dir",
+                        lambda name=paths.APP_NAME: tmp_path / ("peruser" if name == paths.APP_NAME else "old"))
     assert paths.data_dir() == appdir / "data"            # portable zip
     (appdir / paths.INSTALLED_MARKER).write_text("")
     monkeypatch.setattr(paths, "_DATA_DIR", None)
     assert paths.data_dir() == tmp_path / "peruser"       # MSI install
 
 
+def test_data_migrates_from_shelldeck_after_rename(tmp_path, monkeypatch):
+    """1.2 renamed ShellDeck -> BlamixShell: the old per-user data is copied over once."""
+    import sys
+    from blamixshell import paths
+    monkeypatch.delenv("BLAMIXSHELL_HOME", raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    appdir = tmp_path / "Programs" / "BlamixShell"
+    appdir.mkdir(parents=True)
+    (appdir / "BlamixShell.exe").write_text("")
+    (appdir / paths.INSTALLED_MARKER).write_text("")
+    monkeypatch.setattr(sys, "executable", str(appdir / "BlamixShell.exe"))
+    old, new = tmp_path / "ShellDeck", tmp_path / "BlamixShell"
+    monkeypatch.setattr(paths, "_user_dir", lambda name=paths.APP_NAME: old if name == "ShellDeck" else new)
+    old.mkdir()
+    for name, data in (("vault.sdv", b"SDV1|vault"), ("known_hosts", b"host key"), ("settings.json", b"{}")):
+        (old / name).write_bytes(data)
+    monkeypatch.setattr(paths, "_DATA_DIR", None)
+    assert paths.data_dir() == new
+    assert (new / "vault.sdv").read_bytes() == b"SDV1|vault" and (new / "known_hosts").exists()
+    assert (old / "vault.sdv").exists()                  # copied, not moved
+    # never overwrites an existing vault
+    (old / "vault.sdv").write_bytes(b"SDV1|newer-old")
+    monkeypatch.setattr(paths, "_DATA_DIR", None)
+    paths.data_dir()
+    assert (new / "vault.sdv").read_bytes() == b"SDV1|vault"
+    # portable: an old per-user ShellDeck vault is picked up too
+    port = tmp_path / "portable"
+    port.mkdir()
+    (port / "BlamixShell.exe").write_text("")
+    monkeypatch.setattr(sys, "executable", str(port / "BlamixShell.exe"))
+    new_empty = tmp_path / "none"
+    monkeypatch.setattr(paths, "_user_dir", lambda name=paths.APP_NAME: old if name == "ShellDeck" else new_empty)
+    monkeypatch.setattr(paths, "_DATA_DIR", None)
+    assert paths.data_dir() == port / "data" and (port / "data" / "vault.sdv").exists()
+
+
 def test_sftp_skips_login_script_noise():
     """Text printed by ~/.bashrc before the SFTP handshake must not break SFTP."""
-    from shelldeck.ssh_core import _SkipLoginNoise
+    from blamixshell.ssh_core import _SkipLoginNoise
 
     version = (5).to_bytes(4, "big") + b"\x02\x00\x00\x00\x03"   # SSH_FXP_VERSION v3
     after = b"NEXT-PACKET"
@@ -234,13 +271,13 @@ def test_updater_versions_assets_and_download(tmp_path, monkeypatch):
     import hashlib
     import http.server
     import threading
-    from shelldeck import updater
+    from blamixshell import updater
 
     assert updater.is_newer("v1.2.0", "1.1.9") and not updater.is_newer("v1.0.0", "1.0.0")
     assert updater.is_newer("1.10.0", "1.9.3") and not updater.is_newer("garbage", "1.0.0")
     rel = updater.Release("1.2.0", "v1.2.0", "", "", [
-        updater.Asset("ShellDeck-1.2.0-x64.msi", "u1"), updater.Asset("ShellDeck-windows-x64.zip", "u2"),
-        updater.Asset("ShellDeck-macos-arm64.zip", "u3")])
+        updater.Asset("BlamixShell-1.2.0-x64.msi", "u1"), updater.Asset("BlamixShell-windows-x64.zip", "u2"),
+        updater.Asset("BlamixShell-macos-arm64.zip", "u3")])
     assert updater.pick_asset(rel, "msi").url == "u1"
     assert updater.pick_asset(rel, "portable").url == "u2"
     assert updater.pick_asset(rel, "mac") is None
@@ -268,15 +305,15 @@ def test_updater_versions_assets_and_download(tmp_path, monkeypatch):
     srv.shutdown()
 
     script = updater.portable_update_script(tmp_path / "new", tmp_path / "app", 1234)
-    assert "/XD data" in script and "ShellDeck.exe" in script and "PID eq 1234" in script
+    assert "/XD data" in script and "BlamixShell.exe" in script and "PID eq 1234" in script
 
 
 def test_updater_msi_keeps_install_scope(tmp_path, monkeypatch):
-    from shelldeck import updater
+    from blamixshell import updater
     local = tmp_path / "Local"
     monkeypatch.setenv("LOCALAPPDATA", str(local))
-    per_user = local / "Programs" / "ShellDeck"
-    per_machine = tmp_path / "Program Files" / "ShellDeck"
+    per_user = local / "Programs" / "BlamixShell"
+    per_machine = tmp_path / "Program Files" / "BlamixShell"
     assert updater.msi_scope_args(per_user) == "ALLUSERS=2 MSIINSTALLPERUSER=1"
     assert updater.msi_scope_args(per_machine) == "ALLUSERS=1"
     script = updater.msi_update_script(tmp_path / "new.msi", per_user, 1234)
