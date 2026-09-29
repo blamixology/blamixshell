@@ -7,7 +7,7 @@ from PySide6.QtCore import QByteArray, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (QApplication, QDialog, QGridLayout, QHBoxLayout, QInputDialog,
                                QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton,
-                               QSplitter, QStackedWidget, QTabWidget, QToolButton, QVBoxLayout,
+                               QSplitter, QStackedWidget, QTabBar, QTabWidget, QToolButton, QVBoxLayout,
                                QWidget)
 
 from . import importers
@@ -277,7 +277,7 @@ class MainWindow(QMainWindow):
         self.welcome = WelcomePage(self)
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
-        self.tabs.setTabsClosable(True)
+        self.tabs.setTabsClosable(False)   # we add our own close button with proper spacing
         self.tabs.setMovable(True)
         self.tabs.setElideMode(Qt.ElideRight)
         self.tabs.setIconSize(QSize(10, 10))
@@ -323,6 +323,24 @@ class MainWindow(QMainWindow):
         self._status_timer.start(1000)
 
     # ================================================================ helpers
+    def _tab_close_button(self, tab: "SessionTab") -> QWidget:
+        """Close button with real breathing room from the tab edge (the style's own
+        close-button ignores margins on some platforms/DPI settings)."""
+        holder = QWidget()
+        holder.setAttribute(Qt.WA_TranslucentBackground)
+        lay = QHBoxLayout(holder)
+        lay.setContentsMargins(6, 0, 4, 0)
+        btn = QToolButton(holder)
+        btn.setObjectName("TabClose")
+        btn.setIcon(icon("x", C["muted"], 12))
+        btn.setIconSize(QSize(12, 12))
+        btn.setFixedSize(20, 20)
+        btn.setToolTip(kb("Close tab (Ctrl+Shift+W closes a pane)"))
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.clicked.connect(lambda: self.close_tab(self.tabs.indexOf(tab)))
+        lay.addWidget(btn)
+        return holder
+
     def _tool(self, ic, tip, fn, checkable=False) -> QToolButton:
         b = QToolButton()
         b.setIcon(icon(ic, C["muted"], 18))
@@ -492,6 +510,7 @@ class MainWindow(QMainWindow):
             tab.changed.connect(self._on_pane_state)
             tab.add_first(pane)
             idx = self.tabs.addTab(tab, dot_icon(C["warn"]), tab.title())
+            self.tabs.tabBar().setTabButton(idx, QTabBar.RightSide, self._tab_close_button(tab))
             self.tabs.setCurrentIndex(idx)
         self.stack.setCurrentIndex(1)
         pane.start()

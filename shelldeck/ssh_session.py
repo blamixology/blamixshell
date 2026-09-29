@@ -12,7 +12,7 @@ from PySide6.QtCore import QObject, Signal
 from .models import Server
 from .ssh_core import (AuthConfigError, ChangedHostKey, UnknownHostKey,  # noqa: F401 (re-exported)
                        fingerprint, friendly_error, host_id, load_known_hosts,
-                       load_private_key, open_client, test_connection, trust_host_key)
+                       load_private_key, open_client, open_sftp, test_connection, trust_host_key)
 
 
 class ShellSession(QObject):
@@ -35,6 +35,7 @@ class ShellSession(QObject):
         self._pending_key: tuple[str, paramiko.PKey] | None = None
         self.sftp_client: paramiko.SFTPClient | None = None
         self.sftp_cwd: str = ""
+        self.sftp_noise: str = ""   # text a login script printed on the SFTP channel
         self.connected_at = 0.0
         self._lock = threading.Lock()
 
@@ -132,10 +133,20 @@ class ShellSession(QObject):
             if self.sftp_client is None or self.sftp_client.sock.closed:
                 if not self.client:
                     raise RuntimeError("Not connected")
-                self.sftp_client = self.client.open_sftp()
+                self.sftp_client, self.sftp_noise = open_sftp(self.client)
                 self.sftp_client.get_channel().settimeout(30)
                 self.sftp_cwd = self.sftp_client.normalize(".")
             return self.sftp_client
+
+    def reset_sftp(self) -> None:
+        """Drop a broken SFTP channel so the next operation opens a fresh one."""
+        with self._lock:
+            if self.sftp_client is not None:
+                try:
+                    self.sftp_client.close()
+                except Exception:
+                    pass
+            self.sftp_client = None
 
     def _teardown(self) -> None:
         for obj in [self.sftp_client, self.chan, self.client, *reversed(self._chain)]:

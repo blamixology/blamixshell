@@ -138,3 +138,21 @@ def test_interactive_connect_via_pty(store, tmp_path):
     child.sendline("exit")
     child.expect("disconnected from live")
     child.expect(pexpect.EOF)
+
+
+@pytest.mark.skipif(not LIVE, reason="no live sshd")
+def test_live_sftp_open_and_roundtrip(tmp_path):
+    import paramiko
+    from shelldeck.ssh_core import open_sftp
+    host, port, user, pw = LIVE.split(":")
+    c = paramiko.SSHClient()
+    c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    c.connect(host, int(port), user, pw, allow_agent=False, look_for_keys=False)
+    sftp, _noise = open_sftp(c)
+    src = tmp_path / "a.bin"
+    src.write_bytes(os.urandom(300_000))
+    sftp.put(str(src), "shelldeck_rt.bin")
+    sftp.get("shelldeck_rt.bin", str(tmp_path / "b.bin"))
+    sftp.remove("shelldeck_rt.bin")
+    assert (tmp_path / "b.bin").read_bytes() == src.read_bytes()
+    c.close()

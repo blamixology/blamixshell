@@ -166,6 +166,59 @@ def open_client(server: Server, resolve: Callable[[str], Server | None],
     return client, chain
 
 
+# ---------------------------------------------------------------- sftp
+_VERSION_REPLY = b"\x02\x00\x00\x00\x03"   # SSH_FXP_VERSION, protocol version 3
+
+
+class _SkipLoginNoise:
+    """Wraps an SFTP channel and drops any text a login script (~/.bashrc, ~/.profile,
+    motd hacks) printed before the SFTP handshake. Without this, paramiko fails with
+    "Garbage packet received" (OpenSSH's sftp says "Received message too long")."""
+
+    def __init__(self, chan):
+        self._chan = chan
+        self._buf = b""
+        self._synced = False
+        self.skipped = b""
+
+    def __getattr__(self, name):
+        return getattr(self._chan, name)
+
+    def recv(self, n: int) -> bytes:
+        if not self._synced:
+            self._sync()
+        if self._buf:
+            out, self._buf = self._buf[:n], self._buf[n:]
+            return out
+        return self._chan.recv(n)
+
+    def _sync(self) -> None:
+        data = b""
+        while True:
+            i = data.find(_VERSION_REPLY)
+            while i != -1:
+                if i >= 4 and 5 <= int.from_bytes(data[i - 4:i], "big") <= 65536:
+                    self.skipped, self._buf, self._synced = data[:i - 4], data[i - 4:], True
+                    return
+                i = data.find(_VERSION_REPLY, i + 1)
+            if len(data) > 256 * 1024:
+                raise paramiko.SFTPError("No SFTP handshake from the server (is the SFTP subsystem enabled?)")
+            chunk = self._chan.recv(32768)
+            if not chunk:
+                raise EOFError("The server closed the SFTP channel (is the SFTP subsystem enabled?)")
+            data += chunk
+
+
+def open_sftp(client: paramiko.SSHClient) -> tuple[paramiko.SFTPClient, str]:
+    """Open SFTP on an existing connection, tolerating login-script output.
+    Returns (sftp client, text the server printed before the handshake)."""
+    chan = client.get_transport().open_session(timeout=15)
+    chan.invoke_subsystem("sftp")
+    wrapped = _SkipLoginNoise(chan)
+    sftp = paramiko.SFTPClient(wrapped)
+    return sftp, wrapped.skipped.decode("utf-8", "replace").strip()
+
+
 def friendly_error(e: Exception) -> str:
     if isinstance(e, paramiko.AuthenticationException):
         return "Authentication failed: check username, password or key."
@@ -177,6 +230,8 @@ def friendly_error(e: Exception) -> str:
         return "Connection refused (is SSH running on that port?)."
     if isinstance(e, paramiko.SSHException):
         return f"SSH error: {e}"
+    if isinstance(e, EOFError):
+        return str(e) or "The server closed the channel."
     if isinstance(e, OSError) and e.strerror:
         return e.strerror
     return str(e) or e.__class__.__name__

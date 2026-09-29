@@ -153,6 +153,13 @@ class SftpPanel(QWidget):
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._menu)
         self.tree.files_dropped.connect(self.upload_paths)
+        self.err_lbl = QLabel()
+        self.err_lbl.setWordWrap(True)
+        self.err_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.err_lbl.setStyleSheet(f"color:{C['danger']}; background:{C['surface']}; border:1px solid {C['border']};"
+                                   "border-radius:8px; padding:8px;")
+        self.err_lbl.hide()
+        lay.addWidget(self.err_lbl)
         lay.addWidget(self.tree, 1)
 
         self.placeholder = QLabel("Open an SSH session to browse its files.\n\nDrop files here to upload.")
@@ -209,6 +216,8 @@ class SftpPanel(QWidget):
             try:
                 fn(sess, *args)
             except Exception as e:  # report every failure to the UI
+                if not isinstance(e, IOError):
+                    sess.reset_sftp()      # protocol-level failure: reopen next time
                 msg = friendly_error(e)
                 fname = getattr(e, "filename", None)
                 self.sig.error.emit(f"{msg} ({fname})" if fname else msg)
@@ -252,6 +261,13 @@ class SftpPanel(QWidget):
     def _on_listed(self, sess, path: str, entries: list) -> None:
         if sess is not self.session:
             return
+        self.err_lbl.hide()
+        if sess.sftp_noise and not getattr(sess, "_noise_reported", False):
+            sess._noise_reported = True
+            first = sess.sftp_noise.splitlines()[0][:80]
+            self.status_message.emit(
+                f"SFTP: ignored text printed by a login script on the server (\"{first}\"). "
+                "Tip: make ~/.bashrc quiet for non-interactive shells.")
         self.path_edit.setText(path)
         self.tree.setSortingEnabled(False)
         self.tree.clear()
@@ -280,9 +296,11 @@ class SftpPanel(QWidget):
         return time.strftime("%b %d %Y", lt)
 
     def _on_error(self, msg: str) -> None:
+        # inline banner (no modal popups: a broken server would spam them on every refresh)
         self._show_progress(False)
         self.status_message.emit(f"SFTP: {msg}")
-        QMessageBox.warning(self, "SFTP", msg)
+        self.err_lbl.setText(f"⚠ {msg}")
+        self.err_lbl.show()
 
     def _on_progress(self, label: str, done: int, total: int) -> None:
         self._show_progress(True)

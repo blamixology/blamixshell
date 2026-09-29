@@ -201,3 +201,30 @@ def test_data_dir_portable_vs_installed(tmp_path, monkeypatch):
     (appdir / paths.INSTALLED_MARKER).write_text("")
     monkeypatch.setattr(paths, "_DATA_DIR", None)
     assert paths.data_dir() == tmp_path / "peruser"       # MSI install
+
+
+def test_sftp_skips_login_script_noise():
+    """Text printed by ~/.bashrc before the SFTP handshake must not break SFTP."""
+    from shelldeck.ssh_core import _SkipLoginNoise
+
+    version = (5).to_bytes(4, "big") + b"\x02\x00\x00\x00\x03"   # SSH_FXP_VERSION v3
+    after = b"NEXT-PACKET"
+
+    class FakeChan:
+        def __init__(self, chunks):
+            self.chunks = list(chunks)
+
+        def recv(self, n):
+            return self.chunks.pop(0) if self.chunks else b""
+
+    # noise split across reads, version packet split too
+    ch = _SkipLoginNoise(FakeChan([b"Welcome to prod!\r\nLast", b" login: today\n" + version[:3],
+                                   version[3:] + after]))
+    got = b""
+    while len(got) < len(version) + len(after):
+        got += ch.recv(4)
+    assert got == version + after
+    assert b"Welcome to prod!" in ch.skipped
+    # clean server: nothing skipped
+    ch = _SkipLoginNoise(FakeChan([version]))
+    assert ch.recv(100) == version and ch.skipped == b""

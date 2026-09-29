@@ -75,12 +75,15 @@ QHeaderView::section {{ background: transparent; color: {C['faint']}; border: no
 
 QTabWidget::pane {{ border: none; }}
 QTabBar {{ background: {C['bg']}; }}
-QTabBar::tab {{ background: transparent; color: {C['muted']}; padding: 9px 14px; margin: 6px 2px 0 2px;
+QTabBar::tab {{ background: transparent; color: {C['muted']}; padding: 9px 10px 9px 14px; margin: 6px 2px 0 2px;
   border-top-left-radius: 10px; border-top-right-radius: 10px; min-width: 90px; }}
 QTabBar::tab:selected {{ background: {C['surface']}; color: {C['text']}; }}
 QTabBar::tab:hover:!selected {{ background: {C['sidebar']}; color: {C['text']}; }}
-QTabBar::close-button {{ subcontrol-position: right; image: url(__ASSETS__/close.svg); width: 14px; height: 14px; margin-left: 6px; }}
-QTabBar::close-button:hover {{ image: url(__ASSETS__/close-hover.svg); }}
+QTabBar::close-button {{ subcontrol-position: right; image: url(__ASSETS__/close.svg); width: 16px; height: 16px;
+  border-radius: 5px; }}
+QToolButton#TabClose {{ padding: 0; border-radius: 6px; }}
+QToolButton#TabClose:hover {{ background: {C['hover']}; }}
+QTabBar::close-button:hover {{ image: url(__ASSETS__/close-hover.svg); background: {C['hover']}; }}
 
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: {C['border']}; border-radius: 4px; min-height: 30px; }}
