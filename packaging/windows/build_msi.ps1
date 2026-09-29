@@ -32,12 +32,18 @@ New-Item dist\ShellDeck\installed.marker -ItemType File -Force | Out-Null
 Remove-Item -Recurse -Force dist\ShellDeck\data -ErrorAction SilentlyContinue
 
 $out = "ShellDeck-$Version-x64.msi"
+# absolute paths: WiX resolves <Files Include> relative to the .wxs file, not the current folder
+$src  = (Resolve-Path dist\ShellDeck).Path
+$icon = (Resolve-Path shelldeck\assets\app.ico).Path
+$lic  = (Resolve-Path packaging\windows\license.rtf).Path
 wix build packaging\windows\ShellDeck.wxs -arch x64 -ext WixToolset.UI.wixext `
-  -d Version=$Version -d SourceDir=dist\ShellDeck `
-  -d IconFile=shelldeck\assets\app.ico -d LicenseRtf=packaging\windows\license.rtf `
+  -d Version=$Version -d "SourceDir=$src" -d "IconFile=$icon" -d "LicenseRtf=$lic" `
   -o $out
 if ($LASTEXITCODE -ne 0) { throw "wix build failed" }
-Write-Host "Built $out"
+# guard: an MSI without the app inside is tiny - fail instead of shipping it
+$mb = [math]::Round((Get-Item $out).Length / 1MB, 1)
+if ($mb -lt 30) { throw "MSI is only $mb MB - the app files were not included" }
+Write-Host "Built $out ($mb MB)"
 
 # keep the portable folder portable
 Remove-Item dist\ShellDeck\installed.marker -Force
