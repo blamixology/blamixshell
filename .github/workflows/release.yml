@@ -140,8 +140,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }          # full history + tags for the changelog
-      - name: Write release notes
+        with: { fetch-depth: 0 }          # full history + tags
+      - name: Release notes (commits since the previous tag)
         run: python3 packaging/release_notes.py "${{ github.ref_name }}" --repo "${{ github.repository }}" > release-notes.md
       - uses: actions/download-artifact@v4
         with: { path: out, merge-multiple: true }
@@ -149,3 +149,14 @@ jobs:
         with:
           files: out/*
           body_path: release-notes.md
+      - name: Regenerate CHANGELOG.md on main
+        run: |
+          git fetch origin main
+          git checkout -B main origin/main
+          python3 packaging/release_notes.py --changelog --repo "${{ github.repository }}" > CHANGELOG.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          if git diff --cached --quiet; then echo "CHANGELOG unchanged"; exit 0; fi
+          git commit -m "Update CHANGELOG for ${{ github.ref_name }} [skip ci]"
+          git push origin main
