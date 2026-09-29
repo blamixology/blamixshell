@@ -236,6 +236,12 @@ class MainWindow(QMainWindow):
             b.setToolTip(tip)
             b.clicked.connect(fn)
             bottom.addWidget(b)
+        help_btn = QToolButton()
+        help_btn.setIcon(icon("help", C["muted"], 18))
+        help_btn.setToolTip("Help")
+        help_btn.setPopupMode(QToolButton.InstantPopup)
+        help_btn.setMenu(self._help_menu(help_btn))
+        bottom.addWidget(help_btn)
         bottom.addStretch(1)
         ver = QLabel(f"v{__version__}", objectName="Hint")
         bottom.addWidget(ver)
@@ -737,6 +743,7 @@ class MainWindow(QMainWindow):
             ("Settings…", "", self.open_settings, "settings"),
             ("Lock vault", "", self.lock, "lock"),
             ("Check for updates", "", lambda: self.check_updates(manual=True), "refresh"),
+            ("About ShellDeck", "", self.show_about, "help"),
         ]
         for sn in self.store.snippets:
             acts.append((f"Snippet: {sn.name}", sn.command.replace("\n", " ⏎ ")[:60],
@@ -1047,6 +1054,23 @@ class MainWindow(QMainWindow):
             return
         self._force_quit = True
         self.close()
+
+    def _help_menu(self, parent) -> QMenu:
+        from . import links
+        from .dialogs import open_url
+        m = QMenu(parent)
+        m.addAction(icon("terminal"), "About ShellDeck", self.show_about)
+        m.addAction(icon("code"), "Keyboard shortcuts", lambda: open_url(links.SHORTCUTS_URL))
+        m.addAction(icon("link"), "Documentation", lambda: open_url(links.DOCS_URL))
+        m.addAction(icon("refresh"), "Check for updates", lambda: self.check_updates(manual=True))
+        m.addAction(icon("edit"), "Report a problem", lambda: open_url(links.ISSUES_URL))
+        m.addSeparator()
+        m.addAction(icon("coffee", C["warn"]), "Buy me a coffee", lambda: open_url(links.KOFI_URL))
+        return m
+
+    def show_about(self) -> None:
+        from .dialogs import AboutDialog
+        AboutDialog(self).exec()
 
     def open_settings(self) -> None:
         if SettingsDialog(self.settings, self.store, self).exec() == QDialog.Accepted:

@@ -135,12 +135,20 @@ shelldeck/
   cli.py           command line + interactive raw-tty shell + parallel exec
   tui.py           Textual full-screen UI
   vault.py         AES-256-GCM + scrypt encrypted store
-  models.py        Server / Snippet / Store
+  models.py        Server / Tunnel / Snippet / Store
+  links.py         project, docs and donation links
   dialogs.py       unlock, server editor, settings, snippets, palette
   theme.py         colors, stylesheet, SVG icons, Windows title bar
   platform_ui.py   per-OS fonts, scaling and shortcut labels
   assets/          xterm.js 6 (MIT), terminal.html, icons
 ```
+
+## Support
+
+ShellDeck is free and open source, with no paid tier and no locked features. If it saves you time,
+you can [☕ buy me a coffee on Ko-fi](https://ko-fi.com/blamixology) or
+[sponsor on GitHub](https://github.com/sponsors/blamixology). The app never asks: the link is only in
+**Help → Buy me a coffee** and the About dialog.
 
 ## License
 

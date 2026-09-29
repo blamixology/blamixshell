@@ -105,7 +105,7 @@ function Test-Installed($dir) {
   Write-Host "Self-test OK from $dir"
 }
 $msi = (Resolve-Path $out).Path
-$next = (Resolve-Path $nextOut).Path
+$nextMsi = (Resolve-Path $nextOut).Path   # (PowerShell names are case-insensitive: not $next)
 $machineDir = "$env:ProgramFiles\ShellDeck"
 $userDir = "$env:LOCALAPPDATA\Programs\ShellDeck"
 
@@ -113,12 +113,12 @@ Write-Host "== all users: install $Version, block a per-user $Next, upgrade to $
 Invoke-Msi "/i `"$msi`" /qn ALLUSERS=1 /l*v install-machine.log" "install-machine.log"
 Test-Installed $machineDir
 Assert-Registered $Version
-Invoke-MsiBlocked "/i `"$next`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v block-user.log" "block-user.log" "per-user install over all-users copy"
+Invoke-MsiBlocked "/i `"$nextMsi`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v block-user.log" "block-user.log" "per-user install over all-users copy"
 if (Test-Path "$userDir\ShellDeck.exe") { throw "the blocked per-user install left files in $userDir" }
-Invoke-Msi "/i `"$next`" /qn ALLUSERS=1 /l*v upgrade-machine.log" "upgrade-machine.log"
+Invoke-Msi "/i `"$nextMsi`" /qn ALLUSERS=1 /l*v upgrade-machine.log" "upgrade-machine.log"
 Test-Installed $machineDir
 Assert-Registered $Next
-Invoke-Msi "/x `"$next`" /qn /l*v uninstall-machine.log" "uninstall-machine.log"
+Invoke-Msi "/x `"$nextMsi`" /qn /l*v uninstall-machine.log" "uninstall-machine.log"
 if (Test-Path "$machineDir\ShellDeck.exe") { throw "uninstall left files behind" }
 if (@(Get-Registered).Count) { throw "uninstall left an Apps & features entry" }
 
@@ -126,12 +126,12 @@ Write-Host "== just me: install $Version, block an all-users $Next, upgrade to $
 Invoke-Msi "/i `"$msi`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v install-user.log" "install-user.log"
 Test-Installed $userDir
 Assert-Registered $Version
-Invoke-MsiBlocked "/i `"$next`" /qn ALLUSERS=1 /l*v block-machine.log" "block-machine.log" "all-users install over per-user copy"
+Invoke-MsiBlocked "/i `"$nextMsi`" /qn ALLUSERS=1 /l*v block-machine.log" "block-machine.log" "all-users install over per-user copy"
 if (Test-Path "$machineDir\ShellDeck.exe") { throw "the blocked all-users install left files in $machineDir" }
-Invoke-Msi "/i `"$next`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v upgrade-user.log" "upgrade-user.log"
+Invoke-Msi "/i `"$nextMsi`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v upgrade-user.log" "upgrade-user.log"
 Test-Installed $userDir
 Assert-Registered $Next
-Invoke-Msi "/x `"$next`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v uninstall-user.log" "uninstall-user.log"
+Invoke-Msi "/x `"$nextMsi`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v uninstall-user.log" "uninstall-user.log"
 if (Test-Path "$userDir\ShellDeck.exe") { throw "per-user uninstall left files behind" }
 if (@(Get-Registered).Count) { throw "per-user uninstall left an Apps & features entry" }
 

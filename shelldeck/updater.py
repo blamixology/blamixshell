@@ -27,7 +27,7 @@ from pathlib import Path
 from . import __version__
 from .paths import INSTALLED_MARKER
 
-REPO = "blamixology/shelldeck"
+from .links import REPO  # noqa: E402
 API_URL = os.environ.get("SHELLDECK_UPDATE_URL", f"https://api.github.com/repos/{REPO}/releases/latest")
 RELEASES_PAGE = f"https://github.com/{REPO}/releases/latest"
 USER_AGENT = f"ShellDeck/{__version__} (+https://github.com/{REPO})"

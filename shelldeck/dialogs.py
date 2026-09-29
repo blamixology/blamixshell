@@ -1026,3 +1026,73 @@ class UpdateDialog(_Base):
     def _done(self, choice: str) -> None:
         self.choice = choice
         self.accept()
+
+
+# ======================================================================= about
+def open_url(url: str) -> None:
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+    QDesktopServices.openUrl(QUrl(url))
+
+
+class AboutDialog(_Base):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from . import __version__, links
+        self.setWindowTitle("About ShellDeck")
+        self.setFixedWidth(480)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(28, 24, 28, 20)
+        lay.setSpacing(10)
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        logo = QLabel()
+        logo.setPixmap(icon("terminal", C["accent"], 40).pixmap(40, 40))
+        head.addWidget(logo)
+        name = QVBoxLayout()
+        name.setSpacing(0)
+        name.addWidget(QLabel("ShellDeck", objectName="H1"))
+        name.addWidget(QLabel(f"Version {__version__}", objectName="Muted"))
+        head.addLayout(name, 1)
+        lay.addLayout(head)
+        lay.addWidget(QLabel("SSH client with a server manager, tabs and splits, tunnels and SFTP.",
+                             wordWrap=True))
+        lay.addWidget(QLabel("Free and open source (MIT). No ads, no tracking, no paid tier.",
+                             objectName="Muted", wordWrap=True))
+
+        a = C["accent"]
+        lk = QLabel(f"<a style='color:{a}' href='{links.REPO_URL}'>GitHub</a> &nbsp;·&nbsp; "
+                    f"<a style='color:{a}' href='{links.RELEASES_URL}'>Release notes</a> &nbsp;·&nbsp; "
+                    f"<a style='color:{a}' href='{links.ISSUES_URL}'>Report a problem</a> &nbsp;·&nbsp; "
+                    f"<a style='color:{a}' href='{links.NOTICES_URL}'>Licenses</a>")
+        lk.setOpenExternalLinks(True)
+        lk.setWordWrap(True)
+        lay.addWidget(lk)
+
+        lay.addSpacing(6)
+        box = QFrame(objectName="SupportBox")
+        box.setStyleSheet(f"#SupportBox {{ background:{C['surface']}; border:1px solid {C['border']};"
+                          " border-radius:12px; }")
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(16, 12, 16, 14)
+        bl.setSpacing(10)
+        bl.addWidget(QLabel("If ShellDeck saves you time, you can buy me a coffee. Thanks!", wordWrap=True))
+        row = QHBoxLayout()
+        coffee = QPushButton(icon("coffee", "#0b0d12"), " Buy me a coffee", objectName="Primary")
+        coffee.clicked.connect(lambda: open_url(links.KOFI_URL))
+        sponsor = QPushButton(icon("heart", C["muted"]), " Sponsor on GitHub")
+        sponsor.clicked.connect(lambda: open_url(links.SPONSOR_URL))
+        row.addWidget(coffee)
+        row.addWidget(sponsor)
+        row.addStretch(1)
+        bl.addLayout(row)
+        lay.addWidget(box)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        close = QPushButton("Close")
+        close.setDefault(True)
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        lay.addSpacing(4)
+        lay.addLayout(row)
