@@ -2,6 +2,22 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.1.0](https://github.com/blamixology/shelldeck/releases/tag/v1.1.0) - 2026-09-30
+
+### New
+- Add port forwarding (L/R/D), 2FA keyboard-interactive login, session restore; roadmap; realistic MSI upgrade tests (47bffb4)
+
+### Fixes
+- Help menu + About dialog with optional 'buy me a coffee' link; FUNDING.yml; fix MSI test variable clash (5fe875c)
+
+### Improvements
+- Command palette drops down from the search bar, fits its results, shows a no-match hint (a16d6a6)
+
+## [1.0.4](https://github.com/blamixology/shelldeck/releases/tag/v1.0.4) - 2026-09-30
+
+### Improvements
+- MSI: block installing over a copy of the other scope (all users vs just me) with a clear message (de767b8)
+
 ## [1.0.3](https://github.com/blamixology/shelldeck/releases/tag/v1.0.3) - 2026-09-29
 
 ### Fixes
