@@ -24,7 +24,8 @@
 
     <SummaryInformation Description="ShellDeck SSH client" />
     <MajorUpgrade DowngradeErrorMessage="A newer version of ShellDeck is already installed." />
-    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <!-- one embedded cabinet (default splits every 200 MB; Qt WebEngine makes several) -->
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" MaximumUncompressedMediaSize="1800" />
 
     <!-- Apps & features entry -->
     <Icon Id="AppIcon" SourceFile="$(var.IconFile)" />
