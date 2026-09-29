@@ -29,6 +29,30 @@
     <MajorUpgrade Schedule="afterInstallInitialize"
                   DowngradeErrorMessage="A newer version of ShellDeck is already installed." />
 
+    <!-- An "all users" and a "just for me" copy can't upgrade each other (Windows keeps
+         the two contexts apart), so installing over the other kind would leave two copies
+         or fail half-way (error 2349/1603). Detect the other copy and stop with a clear
+         message instead. HKMU values below land in HKLM (all users) or HKCU (just me). -->
+    <Property Id="SD_MACHINE_COPY" Secure="yes">
+      <RegistrySearch Id="FindMachineCopy" Root="HKLM" Key="Software\ShellDeck"
+                      Name="StartMenuShortcut" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="SD_USER_COPY" Secure="yes">
+      <RegistrySearch Id="FindUserCopy" Root="HKCU" Key="Software\ShellDeck"
+                      Name="StartMenuShortcut" Type="raw" />
+    </Property>
+    <CustomAction Id="BlockOverMachineCopy"
+                  Error="ShellDeck is already installed for all users (in Program Files). Choose &quot;Install for all users&quot; to upgrade it, or uninstall it first from Settings &gt; Apps." />
+    <CustomAction Id="BlockOverUserCopy"
+                  Error="ShellDeck is already installed just for your account (in AppData). Choose &quot;Install just for you&quot; to upgrade it, or uninstall it first from Settings &gt; Apps." />
+    <InstallExecuteSequence>
+      <!-- runs before any file is touched; the install scope is final by now -->
+      <Custom Action="BlockOverMachineCopy" After="AppSearch"
+              Condition="SD_MACHINE_COPY AND NOT Installed AND ((ALLUSERS=2 AND MSIINSTALLPERUSER=1) OR NOT ALLUSERS)" />
+      <Custom Action="BlockOverUserCopy" After="BlockOverMachineCopy"
+              Condition="SD_USER_COPY AND NOT Installed AND (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER=1))" />
+    </InstallExecuteSequence>
+
     <!-- Files of a running ShellDeck (and its Chromium helper processes) can't be replaced:
          ask them to close, and end them if they don't within a few seconds. -->
     <util:CloseApplication Id="CloseShellDeck" Target="ShellDeck.exe"
