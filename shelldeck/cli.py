@@ -464,6 +464,26 @@ def cmd_gui(_store, _a) -> int:
     return 0
 
 
+def cmd_update() -> int:
+    from . import updater
+    try:
+        rel = updater.check()
+    except updater.UpdateError as e:
+        die(str(e))
+    if not rel:
+        print(c("✔ ", "32") + f"ShellDeck {__version__} is the latest version.")
+        return 0
+    print(c(f"ShellDeck {rel.version} is available", "1") + f" (you have {__version__})\n")
+    if rel.notes:
+        print(rel.notes[:1500] + "\n")
+    kind = updater.install_kind()
+    if kind == "source":
+        print("Update with:  pipx upgrade shelldeck   (or git pull in your checkout)")
+    else:
+        print(f"Download:  {rel.page}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="shelldeck", description="SSH server manager (shares the desktop app's vault).")
     p.add_argument("--version", action="version", version=f"shelldeck {__version__}")
@@ -494,6 +514,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("tui", help="full-screen terminal UI")
     sub.add_parser("gui", help="launch the desktop app")
     sub.add_parser("where", help="show where data is stored")
+    sub.add_parser("update", help="check GitHub for a newer ShellDeck")
     return p
 
 
@@ -521,6 +542,8 @@ def main(argv: list[str] | None = None) -> None:
         if a.cmd == "where":
             print(data_dir())
             return
+        if a.cmd == "update":
+            sys.exit(cmd_update())
         store = unlock()
         sys.exit(HANDLERS[a.cmd](store, a))
     except KeyboardInterrupt:

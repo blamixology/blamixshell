@@ -46,7 +46,12 @@ QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus, QDoubleS
   border: 1px solid {C['accent']};
 }}
 QLineEdit#Search {{ background: {C['surface']}; padding: 8px 12px; border-radius: 10px; }}
-QComboBox::drop-down {{ border: none; width: 22px; }}
+QComboBox {{ padding-right: 30px; }}
+QComboBox:hover {{ border: 1px solid {C['faint']}; }}
+QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: center right; width: 28px; border: none;
+  border-left: 1px solid {C['border']}; }}
+QComboBox::down-arrow {{ image: url(__ASSETS__/chevron-down.svg); width: 12px; height: 12px; }}
+QComboBox::down-arrow:on {{ top: 1px; }}
 QComboBox QAbstractItemView {{ background: {C['surface2']}; border: 1px solid {C['border']};
   selection-background-color: {C['hover']}; outline: none; padding: 4px; }}
 QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; }}
@@ -120,7 +125,7 @@ QProgressBar::chunk {{ background: {C['accent']}; border-radius: 3px; }}
 QCheckBox, QRadioButton {{ spacing: 8px; }}
 QCheckBox::indicator, QRadioButton::indicator {{ width: 16px; height: 16px; }}
 QCheckBox::indicator {{ border: 1px solid {C['faint']}; border-radius: 5px; background: {C['surface']}; }}
-QCheckBox::indicator:checked {{ background: {C['accent']}; border-color: {C['accent']}; }}
+QCheckBox::indicator:checked {{ background: {C['accent']}; border-color: {C['accent']}; image: url(__ASSETS__/check.svg); }}
 QRadioButton::indicator {{ border: 1px solid {C['faint']}; border-radius: 8px; background: {C['surface']}; }}
 QRadioButton::indicator {{ border-radius: 9px; }}
 QRadioButton::indicator:checked {{ border: 1px solid {C['accent']};
@@ -149,7 +154,7 @@ QRadioButton::indicator:checked {{ border: 1px solid {C['accent']};
 _ICONS = {
     "plus": '<path d="M12 5v14M5 12h14"/>',
     "search": '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/>',
-    "settings": '<circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/>',
+    "settings": '<path d="M19.28 10.70 L21.54 10.95 L21.54 13.05 L19.28 13.30 L19.23 13.59 L18.07 16.23 L19.49 18.00 L18.00 19.49 L16.23 18.07 L15.99 18.23 L13.30 19.28 L13.05 21.54 L10.95 21.54 L10.70 19.28 L10.41 19.23 L7.77 18.07 L6.00 19.49 L4.51 18.00 L5.93 16.23 L5.77 15.99 L4.72 13.30 L2.46 13.05 L2.46 10.95 L4.72 10.70 L4.77 10.41 L5.93 7.77 L4.51 6.00 L6.00 4.51 L7.77 5.93 L8.01 5.77 L10.70 4.72 L10.95 2.46 L13.05 2.46 L13.30 4.72 L13.59 4.77 L16.23 5.93 L18.00 4.51 L19.49 6.00 L18.07 7.77 L18.23 8.01 Z"/><circle cx="12" cy="12" r="3"/>',
     "folder": '<path d="M3 7.5a2 2 0 0 1 2-2h4l2 2.2h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
     "folder-open": '<path d="M3 8V7a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v1"/><path d="M3.5 19l2.3-8h15.7l-2.3 8z"/>',
     "file": '<path d="M7 3h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M14 3v5h5"/>',

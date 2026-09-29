@@ -90,6 +90,15 @@ TUI keys: `/` search · `⏎` connect · `a` add · `e` edit · `d` delete · `f
 | Ctrl+Shift+1…9 | ⌘1…9 | Switch tab |
 | Ctrl + = / − / 0 | ⌘ = / − / 0 | Font size |
 
+## Updates
+
+ShellDeck checks GitHub Releases for a newer version at most once a day (a single anonymous request to `api.github.com`; nothing about you or your servers is sent). You can switch this off, or run **Check now**, in **Settings → Updates**. From the CLI, run `shelldeck update`.
+
+When an update is found, an **Update x.y.z** button appears in the status bar. It opens the release notes with these options:
+- **MSI install:** *Install & restart* downloads the new MSI, checks its SHA-256, and upgrades in place.
+- **Portable Windows folder:** *Install & restart* downloads the new zip, swaps the program files after ShellDeck closes (your `data` folder is never touched), and restarts.
+- **macOS / Linux / pip / source:** *Release page* opens the download page (or use `pipx upgrade shelldeck` / `git pull`).
+
 ## Where data lives
 
 **Portable by default:** data goes in a `data/` folder next to the executable (next to `ShellDeck.app` on macOS, or next to `run.py` when running from source). It holds:

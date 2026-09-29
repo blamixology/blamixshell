@@ -3,15 +3,16 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import QByteArray, QSize, Qt, QTimer
+from PySide6.QtCore import QByteArray, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (QApplication, QDialog, QGridLayout, QHBoxLayout, QInputDialog,
                                QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton,
                                QSplitter, QStackedWidget, QTabBar, QTabWidget, QToolButton, QVBoxLayout,
                                QWidget)
 
-from . import importers
-from .dialogs import CommandPalette, ServerDialog, SettingsDialog, SnippetsDialog, UnlockDialog
+from . import __version__, importers
+from .dialogs import (CommandPalette, ServerDialog, SettingsDialog, SnippetsDialog, UnlockDialog,
+                      UpdateDialog)
 from .models import Server, Store
 from .server_tree import ServerTree
 from .session_tab import SessionTab
@@ -24,6 +25,12 @@ from .vault import Vault, WrongPassword
 
 STATE_COLORS = {"connected": C["ok"], "connecting": C["warn"], "failed": C["danger"],
                 "disconnected": C["faint"], "idle": C["faint"]}
+
+
+class _UpdateSignals(QObject):
+    checked = Signal(object)          # (manual, Release|None, error)
+    progress = Signal(int, int)
+    downloaded = Signal(object)       # (path, error)
 
 
 def dot_icon(color: str) -> QIcon:
@@ -230,7 +237,7 @@ class MainWindow(QMainWindow):
             b.clicked.connect(fn)
             bottom.addWidget(b)
         bottom.addStretch(1)
-        ver = QLabel("v1.0", objectName="Hint")
+        ver = QLabel(f"v{__version__}", objectName="Hint")
         bottom.addWidget(ver)
         sl.addLayout(bottom)
         root.addWidget(side)
@@ -329,6 +336,20 @@ class MainWindow(QMainWindow):
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._update_status)
         self._status_timer.start(1000)
+
+        # updates: quiet background check a few seconds after start (at most daily)
+        self._upd = _UpdateSignals()
+        self._upd.checked.connect(self._on_update_checked)
+        self._upd.downloaded.connect(self._on_update_downloaded)
+        self._upd.progress.connect(self._on_update_progress)
+        self.update_btn = QPushButton()
+        self.update_btn.setObjectName("Primary")
+        self.update_btn.setStyleSheet("padding: 1px 10px; border-radius: 7px; font-size: 8.5pt;")
+        self.update_btn.hide()
+        self.update_btn.clicked.connect(lambda: self._show_update(self._pending_release))
+        self.statusBar().addPermanentWidget(self.update_btn)
+        self._pending_release = None
+        QTimer.singleShot(4000, lambda: self.check_updates(manual=False))
 
     # ================================================================ helpers
     def _tab_close_button(self, tab: "SessionTab") -> QWidget:
@@ -631,6 +652,7 @@ class MainWindow(QMainWindow):
             ("Import ~/.ssh/config", "", self.import_ssh_config, "import"),
             ("Settings…", "", self.open_settings, "settings"),
             ("Lock vault", "", self.lock, "lock"),
+            ("Check for updates", "", lambda: self.check_updates(manual=True), "refresh"),
         ]
         for sn in self.store.snippets:
             acts.append((f"Snippet: {sn.name}", sn.command.replace("\n", " ⏎ ")[:60],
@@ -834,6 +856,113 @@ class MainWindow(QMainWindow):
 
     def manage_snippets(self) -> None:
         SnippetsDialog(self.store, self).exec()
+
+    # ================================================================ updates
+    def check_updates(self, manual: bool = False) -> None:
+        import threading
+        from . import updater
+        if not manual:
+            if not self.settings.get("check_updates", True):
+                return
+            if time.time() - float(self.settings.get("last_update_check", 0)) < 20 * 3600:
+                return
+        if manual:
+            self.statusBar().showMessage("Checking for updates …", 3000)
+
+        def run():
+            try:
+                rel = updater.check()
+                self._upd.checked.emit((manual, rel, ""))
+            except updater.UpdateError as e:
+                self._upd.checked.emit((manual, None, str(e)))
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_update_checked(self, payload) -> None:
+        from . import __version__
+        manual, rel, err = payload
+        if not err:
+            self.settings["last_update_check"] = time.time()
+            self.settings.save()
+        if err:
+            if manual:
+                QMessageBox.warning(self, "Updates", err)
+            return
+        if not rel:
+            if manual:
+                QMessageBox.information(self, "Updates", f"You're up to date (ShellDeck {__version__}).")
+            return
+        self._pending_release = rel
+        self.update_btn.setText(f"⬆  Update {rel.version}")
+        self.update_btn.show()
+        if manual or rel.version != self.settings.get("skip_version"):
+            if manual:
+                self._show_update(rel)
+            else:
+                self.statusBar().showMessage(f"ShellDeck {rel.version} is available: click the button on the right.", 8000)
+        else:
+            self.update_btn.hide()   # user skipped this version
+
+    def _show_update(self, rel) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        from . import __version__, updater
+        if not rel:
+            return
+        asset = updater.pick_asset(rel)
+        dlg = UpdateDialog(rel, __version__, can_install=asset is not None, parent=self)
+        dlg.exec()
+        if dlg.choice == "skip":
+            self.settings["skip_version"] = rel.version
+            self.settings.save()
+            self.update_btn.hide()
+        elif dlg.choice == "page":
+            QDesktopServices.openUrl(QUrl(rel.page))
+        elif dlg.choice == "install" and asset:
+            live = [p for p in self.all_panes() if p.state == "connected"]
+            if live and QMessageBox.question(
+                    self, "Install update?",
+                    f"ShellDeck will close to install the update, disconnecting {len(live)} session(s). Continue?"
+            ) != QMessageBox.Yes:
+                return
+            self._download_update(asset)
+
+    def _download_update(self, asset) -> None:
+        import tempfile
+        import threading
+        from pathlib import Path
+        from . import updater
+        self.update_btn.setEnabled(False)
+        self.update_btn.setText("Downloading update …")
+
+        def run():
+            try:
+                path = updater.download(asset, Path(tempfile.gettempdir()) / "shelldeck-update",
+                                        lambda d, t: self._upd.progress.emit(d, t))
+                self._upd.downloaded.emit((str(path), ""))
+            except updater.UpdateError as e:
+                self._upd.downloaded.emit(("", str(e)))
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_update_progress(self, done: int, total: int) -> None:
+        if total:
+            self.update_btn.setText(f"Downloading update … {done * 100 // total}%")
+
+    def _on_update_downloaded(self, payload) -> None:
+        from pathlib import Path
+        from . import updater
+        path, err = payload
+        self.update_btn.setEnabled(True)
+        if err:
+            self.update_btn.setText(f"⬆  Update {self._pending_release.version}")
+            QMessageBox.warning(self, "Update failed", err)
+            return
+        try:
+            updater.apply_update(Path(path))
+        except updater.UpdateError as e:
+            QMessageBox.warning(self, "Update failed", str(e))
+            return
+        self._force_quit = True
+        self.close()
 
     def open_settings(self) -> None:
         if SettingsDialog(self.settings, self.store, self).exec() == QDialog.Accepted:

@@ -428,6 +428,19 @@ class SettingsDialog(_Base):
         chg.clicked.connect(self._change_pw)
         lay.addWidget(chg, 0, Qt.AlignLeft)
 
+        from . import __version__
+        lay.addWidget(_section("Updates"))
+        urow = QHBoxLayout()
+        self.upd = QCheckBox("Check for updates automatically")
+        self.upd.setChecked(settings.get("check_updates", True))
+        urow.addWidget(self.upd, 1)
+        now = QPushButton(icon("refresh"), " Check now")
+        now.clicked.connect(lambda: self.parent() and self.parent().check_updates(manual=True))
+        urow.addWidget(now)
+        lay.addLayout(urow)
+        lay.addWidget(QLabel(f"You're running ShellDeck {__version__}. Checks GitHub Releases at most once a day; "
+                             "nothing else is sent.", objectName="Hint", wordWrap=True))
+
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Save).setObjectName("Primary")
         bb.accepted.connect(self._save)
@@ -448,6 +461,7 @@ class SettingsDialog(_Base):
         s["copy_on_select"] = self.cos.isChecked()
         s["right_click_paste"] = self.rcp.isChecked()
         s["confirm_multiline_paste"] = self.cmp.isChecked()
+        s["check_updates"] = self.upd.isChecked()
         s.save()
         self.accept()
 
@@ -652,3 +666,54 @@ class CommandPalette(QDialog):
             g = p.geometry()
             self.move(g.x() + (g.width() - self.width()) // 2, g.y() + 90)
         self.q.setFocus()
+
+
+# ======================================================================= update
+class UpdateDialog(_Base):
+    """Shows release notes; Install (download + apply), release page, skip, later."""
+
+    def __init__(self, release, current: str, can_install: bool, parent=None):
+        super().__init__(parent)
+        self.release = release
+        self.choice = "later"
+        self.setWindowTitle("Update available")
+        self.setMinimumSize(680, 460)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 20, 22, 18)
+        lay.setSpacing(10)
+        lay.addWidget(QLabel(f"ShellDeck {release.version} is available", objectName="H2"))
+        lay.addWidget(QLabel(f"You have {current}.", objectName="Muted"))
+        from PySide6.QtWidgets import QTextBrowser, QProgressBar
+        notes = QTextBrowser()
+        notes.setOpenExternalLinks(True)
+        notes.setMarkdown(release.notes or "_No release notes._")
+        lay.addWidget(notes, 1)
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(6)
+        self.progress.hide()
+        self.status = QLabel(objectName="Hint")
+        self.status.setWordWrap(True)
+        lay.addWidget(self.progress)
+        lay.addWidget(self.status)
+        row = QHBoxLayout()
+        skip = QPushButton("Skip this version")
+        skip.clicked.connect(lambda: self._done("skip"))
+        page = QPushButton(icon("link"), " Release page")
+        page.clicked.connect(lambda: self._done("page"))
+        later = QPushButton("Later")
+        later.clicked.connect(lambda: self._done("later"))
+        row.addWidget(skip)
+        row.addStretch(1)
+        row.addWidget(later)
+        row.addWidget(page)
+        if can_install:
+            self.install_btn = QPushButton(icon("download", "#0b0d12"), " Install && restart", objectName="Primary")
+            self.install_btn.clicked.connect(lambda: self._done("install"))
+            self.install_btn.setDefault(True)
+            row.addWidget(self.install_btn)
+        lay.addLayout(row)
+
+    def _done(self, choice: str) -> None:
+        self.choice = choice
+        self.accept()

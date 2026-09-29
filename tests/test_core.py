@@ -228,3 +228,44 @@ def test_sftp_skips_login_script_noise():
     # clean server: nothing skipped
     ch = _SkipLoginNoise(FakeChan([version]))
     assert ch.recv(100) == version and ch.skipped == b""
+
+
+def test_updater_versions_assets_and_download(tmp_path, monkeypatch):
+    import hashlib
+    import http.server
+    import threading
+    from shelldeck import updater
+
+    assert updater.is_newer("v1.2.0", "1.1.9") and not updater.is_newer("v1.0.0", "1.0.0")
+    assert updater.is_newer("1.10.0", "1.9.3") and not updater.is_newer("garbage", "1.0.0")
+    rel = updater.Release("1.2.0", "v1.2.0", "", "", [
+        updater.Asset("ShellDeck-1.2.0-x64.msi", "u1"), updater.Asset("ShellDeck-windows-x64.zip", "u2"),
+        updater.Asset("ShellDeck-macos-arm64.zip", "u3")])
+    assert updater.pick_asset(rel, "msi").url == "u1"
+    assert updater.pick_asset(rel, "portable").url == "u2"
+    assert updater.pick_asset(rel, "mac") is None
+
+    payload = b"new version bits" * 1000
+    good = hashlib.sha256(payload).hexdigest()
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}/f"
+    p = updater.download(updater.Asset("f.msi", url, len(payload), good), tmp_path)
+    assert p.read_bytes() == payload
+    with pytest.raises(updater.UpdateError, match="checksum"):
+        updater.download(updater.Asset("g.msi", url, len(payload), "00" * 32), tmp_path)
+    assert not (tmp_path / "g.msi").exists()
+    srv.shutdown()
+
+    script = updater.portable_update_script(tmp_path / "new", tmp_path / "app", 1234)
+    assert "/XD data" in script and "ShellDeck.exe" in script and "PID eq 1234" in script

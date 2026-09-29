@@ -64,13 +64,16 @@ jobs:
         include:
           - { os: windows-latest, name: windows-x64 }
           - { os: macos-latest,   name: macos-arm64 }
-          - { os: macos-15-intel,       name: macos-x64 }
+          - { os: macos-15-intel, name: macos-x64 }
           - { os: ubuntu-22.04,   name: linux-x64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
+      - name: Stamp version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python packaging/stamp_version.py "${{ github.ref_name }}"
       - name: Install
         run: pip install -r requirements.txt pyinstaller pillow
 
