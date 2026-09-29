@@ -9,7 +9,12 @@ description = "Modern SSH client: server manager, split panes, SFTP, encrypted v
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-dependencies = ["paramiko>=3.4", "cryptography>=42"]
+dependencies = [
+  "paramiko>=3.4",
+  # cryptography 49+ ships no Intel-mac wheel (a source build links Homebrew OpenSSL and breaks bundling)
+  'cryptography>=42,<49; sys_platform == "darwin" and platform_machine == "x86_64"',
+  'cryptography>=42; sys_platform != "darwin" or platform_machine != "x86_64"',
+]
 
 [project.optional-dependencies]
 gui = ["PySide6>=6.7"]
