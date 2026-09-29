@@ -56,7 +56,13 @@ function Invoke-Msi($msiArgs, $log) {
 }
 function Test-Installed($dir) {
   $exe = Join-Path $dir "ShellDeck.exe"
-  if (-not (Test-Path $exe)) { throw "ShellDeck.exe not found at $exe" }
+  if (-not (Test-Path $exe)) {
+    # show where it actually went, to make failures easy to diagnose
+    $found = @("${env:ProgramFiles}", "${env:ProgramFiles(x86)}", "$env:LOCALAPPDATA\Programs", "$env:LOCALAPPDATA\Apps") |
+      ForEach-Object { Get-ChildItem -Path $_ -Filter ShellDeck.exe -Recurse -Depth 2 -ErrorAction SilentlyContinue } |
+      ForEach-Object { $_.FullName }
+    throw "ShellDeck.exe not found at $exe. Found instead: $($found -join ', ')"
+  }
   $env:SHELLDECK_SELFTEST = "1"; $env:QT_QPA_PLATFORM = "offscreen"
   $p = Start-Process $exe -Wait -PassThru
   Remove-Item Env:SHELLDECK_SELFTEST, Env:QT_QPA_PLATFORM

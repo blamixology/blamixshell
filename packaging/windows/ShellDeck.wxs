@@ -37,6 +37,13 @@
     <Property Id="WixAppFolder" Value="WixPerMachineFolder" />
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
     <ui:WixUI Id="WixUI_Advanced" />
+    <!-- WixUI_Advanced defaults to the 32-bit Program Files and %LOCALAPPDATA%\Apps.
+         Point it at the 64-bit Program Files and the standard per-user %LOCALAPPDATA%\Programs,
+         for interactive AND silent installs (Sequence="both"). -->
+    <SetProperty Id="WixPerMachineFolder" Value="[ProgramFiles64Folder][ApplicationFolderName]"
+                 After="WixSetDefaultPerMachineFolder" Sequence="both" />
+    <SetProperty Id="WixPerUserFolder" Value="[LocalAppDataFolder]Programs\[ApplicationFolderName]"
+                 After="WixSetDefaultPerUserFolder" Sequence="both" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="APPLICATIONFOLDER" Name="ShellDeck" />
