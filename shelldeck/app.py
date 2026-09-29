@@ -176,6 +176,7 @@ class MainWindow(QMainWindow):
 
         # ---------------- sidebar
         side = QWidget(objectName="Sidebar")
+        self.side = side
         side.setAttribute(Qt.WA_StyledBackground, True)
         side.setMinimumWidth(230)
         sl = QVBoxLayout(side)
@@ -257,6 +258,10 @@ class MainWindow(QMainWindow):
         pal_l.setContentsMargins(0, 0, 10, 0)
         pal_l.addStretch(1)
         pal_l.addWidget(kbl)
+        self.btn_side = self._tool("sidebar", "Show / hide server list (Ctrl+Shift+L)", self.toggle_sidebar,
+                                   checkable=True)
+        self.btn_side.setIcon(icon("sidebar", C["muted"], 18))
+        tl.addWidget(self.btn_side)
         tl.addWidget(pal, 1)
         tl.addStretch(1)
         self.btn_split_r = self._tool("split-h", "Split right (Ctrl+Shift+D)", lambda: self.split(Qt.Horizontal))
@@ -303,7 +308,10 @@ class MainWindow(QMainWindow):
         root.setStretchFactor(2, 0)
         root.setSizes([int(settings.get("sidebar_width", 280)), 900, 360])
         self.sftp.setVisible(bool(settings.get("sftp_visible")))
-        self.btn_sftp.setChecked(self.sftp.isVisible())
+        side_on = bool(settings.get("sidebar_visible", True))
+        side.setVisible(side_on)
+        self.btn_side.setChecked(side_on)   # (isVisible() is False until the window is shown)
+        self.btn_sftp.setChecked(bool(settings.get("sftp_visible")))
 
         # ---------------- status bar
         sb = self.statusBar()
@@ -356,7 +364,7 @@ class MainWindow(QMainWindow):
 
     def _install_shortcuts(self) -> None:
         mapping = {"P": "p", "T": "t", "W": "w", "D": "d", "E": "e", "B": "b", "S": "s",
-                   "N": "n", "R": "r", "V": "v"}
+                   "N": "n", "R": "r", "V": "v", "L": "l"}
         # On macOS Qt's "Ctrl" is the Cmd key: Cmd+P, Cmd+D … (Cmd+Shift+… works too)
         prefixes = ["Ctrl+Shift+", "Ctrl+"] if IS_MAC else ["Ctrl+Shift+"]
         for prefix in prefixes:
@@ -391,6 +399,7 @@ class MainWindow(QMainWindow):
             "ctrl+shift+r": lambda: pane and pane.reconnect(),
             "ctrl+shift+v": lambda: pane and pane.paste(),
             "ctrl+shift+k": lambda: self.btn_snip.showMenu(),
+            "ctrl+shift+l": lambda: (self.btn_side.toggle(), self.toggle_sidebar()),
             "nexttab": lambda: self.tabs.count() and self.tabs.setCurrentIndex(
                 (self.tabs.currentIndex() + 1) % self.tabs.count()),
             "prevtab": lambda: self.tabs.count() and self.tabs.setCurrentIndex(
@@ -573,6 +582,19 @@ class MainWindow(QMainWindow):
             f"Broadcast {'ON: typing goes to all ' + str(len(t.panes())) + ' panes' if t.broadcast else 'off'}", 3000)
         self._update_status()
 
+    def toggle_sidebar(self) -> None:
+        vis = self.btn_side.isChecked()
+        self.side.setVisible(vis)
+        if vis:
+            sizes = self.root_split.sizes()
+            want = int(self.settings.get("sidebar_width", 280))
+            if sizes[0] < 200:
+                sizes[1] = max(300, sizes[1] - want)
+                sizes[0] = want
+                self.root_split.setSizes(sizes)
+        self.settings["sidebar_visible"] = vis
+        self.settings.save()
+
     def toggle_sftp(self) -> None:
         vis = self.btn_sftp.isChecked()
         self.sftp.setVisible(vis)
@@ -598,6 +620,7 @@ class MainWindow(QMainWindow):
             ("New server…", "Ctrl+Shift+N", self.new_server, "plus"),
             ("Split right", "Ctrl+Shift+D", lambda: self.split(Qt.Horizontal), "split-h"),
             ("Split down", "Ctrl+Shift+E", lambda: self.split(Qt.Vertical), "split-v"),
+            ("Toggle server list", "Ctrl+Shift+L", lambda: (self.btn_side.toggle(), self.toggle_sidebar()), "sidebar"),
             ("Toggle files panel", "Ctrl+Shift+S", lambda: (self.btn_sftp.toggle(), self.toggle_sftp()), "folder"),
             ("Toggle broadcast", "Ctrl+Shift+B", lambda: (self.btn_bcast.toggle(), self.toggle_broadcast()), "broadcast"),
             ("Reconnect", "Ctrl+Shift+R", lambda: self.active_pane() and self.active_pane().reconnect(), "refresh"),
@@ -843,7 +866,8 @@ class MainWindow(QMainWindow):
             e.ignore()
             return
         self.settings["window_geometry"] = bytes(self.saveGeometry().toBase64()).decode()
-        self.settings["sidebar_width"] = self.root_split.sizes()[0]
+        if self.side.isVisible():
+            self.settings["sidebar_width"] = self.root_split.sizes()[0]
         self.settings.save()
         for p in self.all_panes():
             p.shutdown()

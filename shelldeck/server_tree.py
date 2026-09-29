@@ -26,12 +26,19 @@ class _Delegate(QStyledItemDelegate):
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         r = option.rect.adjusted(2, 1, -4, -1)
+        depth, parent = 0, index.parent()
+        while parent.isValid():
+            depth += 1
+            parent = parent.parent()
+        indent = depth * 14
         hovered = option.state & QStyle.State_MouseOver
         selected = option.state & QStyle.State_Selected
         if selected or hovered:
+            # highlight the whole row, including the indentation area on the left
+            full = QRect(2, r.top(), self.tree.viewport().width() - 6, r.height())
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(C["surface2"] if selected else C["hover"]))
-            p.drawRoundedRect(r, 8, 8)
+            p.drawRoundedRect(full, 8, 8)
         base = QFont(option.font)
 
         if kind == "server":
@@ -42,8 +49,8 @@ class _Delegate(QStyledItemDelegate):
             # color bar
             if s.color:
                 p.setBrush(QColor(s.color))
-                p.drawRoundedRect(QRect(r.left() + 6, r.top() + 9, 3, r.height() - 18), 1.5, 1.5)
-            x = r.left() + 16
+                p.drawRoundedRect(QRect(r.left() + 6 + indent, r.top() + 9, 3, r.height() - 18), 1.5, 1.5)
+            x = r.left() + 16 + indent
             ic = icon("server", s.color or C["faint"], 18)
             ic.paint(p, QRect(x, r.top() + (r.height() - 18) // 2, 18, 18))
             x += 28
@@ -90,7 +97,7 @@ class _Delegate(QStyledItemDelegate):
                        QFontMetrics(sf).elidedText(sub, Qt.ElideRight, avail))
         else:
             expanded = self.tree.isExpanded(index)
-            x = r.left() + 4
+            x = r.left() + 4 + indent
             chev = "▾" if expanded else "▸"
             p.setPen(QColor(C["faint"]))
             p.drawText(QRect(x, r.top(), 12, r.height()), Qt.AlignCenter, chev)
@@ -125,10 +132,11 @@ class ServerTree(QTreeWidget):
     def __init__(self, store: Store, parent=None):
         super().__init__(parent)
         self.store = store
+        self.setObjectName("ServerTree")
         self.live: set[str] = set()
         self.collapsed: set[str] = set()
         self.setHeaderHidden(True)
-        self.setIndentation(12)
+        self.setIndentation(0)   # nesting is drawn by the delegate (no Qt branch area)
         self.setRootIsDecorated(False)
         self.setItemDelegate(_Delegate(self))
         self.setMouseTracking(True)
@@ -147,6 +155,11 @@ class ServerTree(QTreeWidget):
         self.itemExpanded.connect(lambda it: self.collapsed.discard(it.data(0, KEY)))
         self.itemCollapsed.connect(lambda it: self.collapsed.add(it.data(0, KEY)))
         self._query = ""
+
+    def drawBranches(self, painter, rect, index):  # noqa: N802
+        # rows draw their own chevrons; the default branch area would paint the
+        # selection in the accent color as a separate block on the left
+        pass
 
     def _click(self, item: QTreeWidgetItem, _col: int) -> None:
         if item.data(0, KIND) in ("group", "favs"):
