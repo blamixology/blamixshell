@@ -7,6 +7,9 @@ _Generated automatically from the commit history between release tags. Don't edi
 ### New
 - Add agent forwarding (ssh -A), vault backups and sync between computers, server and group colors (c85e872)
 
+### Fixes
+- Fix macOS CI: short socket path for the agent-forwarding test (db94ebe)
+
 ## [1.2.1](https://github.com/blamixology/blamixshell/releases/tag/v1.2.1) - 2026-09-30
 
 ### Improvements
