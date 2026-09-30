@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.3.0](https://github.com/blamixology/blamixshell/releases/tag/v1.3.0) - 2026-09-30
+
+### New
+- Add agent forwarding (ssh -A), vault backups and sync between computers, server and group colors (c85e872)
+
 ## [1.2.1](https://github.com/blamixology/blamixshell/releases/tag/v1.2.1) - 2026-09-30
 
 ### Improvements
