@@ -2,6 +2,12 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.2.1](https://github.com/blamixology/blamixshell/releases/tag/v1.2.1) - 2026-09-30
+
+### Improvements
+- Improve release script: tests, confirmation, version checks; skip CI for CHANGELOG-only pushes (c76b3ac)
+- Updater: never wait forever for the old app, no console window, restart the renamed app, log to %TEMP% (9797d05)
+
 ## [1.2.0](https://github.com/blamixology/blamixshell/releases/tag/v1.2.0) - 2026-09-30
 
 ### Improvements
