@@ -1,4 +1,5 @@
-# Manually (re)generate the notes of an existing release + CHANGELOG.md.
+# Manually (re)generate the notes of an existing release.
+# (CHANGELOG.md is updated locally by ./release.sh, never by CI.)
 # GitHub → Actions → "Regenerate release notes" → Run workflow → enter a tag (e.g. v1.0.1).
 name: Regenerate release notes
 
@@ -25,12 +26,3 @@ jobs:
           python3 packaging/release_notes.py "${{ inputs.tag }}" --repo "${{ github.repository }}" > notes.md
           cat notes.md
           gh release edit "${{ inputs.tag }}" --notes-file notes.md
-      - name: Regenerate CHANGELOG.md
-        run: |
-          python3 packaging/release_notes.py --changelog --repo "${{ github.repository }}" > CHANGELOG.md
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md
-          if git diff --cached --quiet; then echo "CHANGELOG unchanged"; exit 0; fi
-          git commit -m "Update CHANGELOG [skip ci]"
-          git push origin main
