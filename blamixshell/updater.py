@@ -151,15 +151,35 @@ def download(asset: Asset, dest_dir: Path, progress=lambda done, total: None) ->
 
 
 # ---------------------------------------------------------------- applying (Windows)
-def _wait_and_kill_helpers(pid: int, app_dir: Path) -> str:
-    """Batch lines: wait for BlamixShell (pid) to exit, then end any Chromium helper
-    processes left over from *this* install folder, so no file stays locked."""
-    ps = (f"Get-Process QtWebEngineProcess,BlamixShell -ErrorAction SilentlyContinue | "
+UPDATE_LOG = "blamixshell-update.log"   # in %TEMP%: what the update script did, for support
+
+
+def _log(line: str) -> str:
+    # redirection first: "code 0>>file" would be read as a redirect of handle 0
+    return f'>>"%TEMP%\\{UPDATE_LOG}" echo %DATE% %TIME% {line}'
+
+
+def _wait_and_kill_helpers(pid: int, app_dir: Path, max_wait: int = 20) -> str:
+    """Batch lines: wait (at most max_wait seconds) for the app (pid) to exit, force-end
+    it if it hangs, then end any leftover app / Chromium helper processes started from
+    *this* install folder, so no file stays locked.
+    Uses `ping` to sleep: `timeout` fails when the script runs without a console."""
+    ps = (f"Get-Process QtWebEngineProcess,BlamixShell,ShellDeck -ErrorAction SilentlyContinue | "
           f"Where-Object {{ $_.Path -like '{app_dir}\\*' }} | Stop-Process -Force")
-    return f""":wait
-tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul && (timeout /t 1 /nobreak >nul & goto wait)
+    return f"""{_log(f"update started, waiting for pid {pid}")}
+set /a waited=0
+:wait
+tasklist /FI "PID eq {pid}" /NH 2>nul | find "{pid}" >nul || goto gone
+if %waited% GEQ {max_wait} goto kill
+set /a waited+=1
+ping -n 2 127.0.0.1 >nul
+goto wait
+:kill
+{_log(f"pid {pid} still running after {max_wait}s: ending it")}
+taskkill /PID {pid} /F >nul 2>&1
+:gone
 powershell -NoProfile -Command "{ps}" >nul 2>&1
-timeout /t 1 /nobreak >nul
+ping -n 2 127.0.0.1 >nul
 """
 
 
@@ -177,10 +197,18 @@ def msi_scope_args(app_dir: Path) -> str:
 
 def msi_update_script(msi: Path, app_dir: Path, pid: int) -> str:
     log = Path(tempfile.gettempdir()) / "blamixshell-update-msi.log"
+    # after the upgrade the app may live in a new folder (ShellDeck -> BlamixShell rename)
+    candidates = [app_dir / "BlamixShell.exe", app_dir.parent / "BlamixShell" / "BlamixShell.exe"]
+    starts = " ".join(f'"{c}"' for c in candidates)
     return f"""@echo off
 setlocal
-{_wait_and_kill_helpers(pid, app_dir)}msiexec /i "{msi}" {msi_scope_args(app_dir)} /passive /norestart /l*v "{log}"
-if exist "{app_dir}\\BlamixShell.exe" start "" "{app_dir}\\BlamixShell.exe"
+{_wait_and_kill_helpers(pid, app_dir)}{_log("running msiexec")}
+msiexec /i "{msi}" {msi_scope_args(app_dir)} /passive /norestart /l*v "{log}"
+set rc=%ERRORLEVEL%
+{_log("msiexec finished with code %rc%")}
+if not "%rc%"=="0" if not "%rc%"=="3010" goto end
+for %%E in ({starts}) do if exist %%E ( start "" %%E & goto end )
+:end
 (goto) 2>nul & del "%~f0"
 """
 
@@ -192,8 +220,7 @@ def portable_update_script(new_dir: Path, app_dir: Path, pid: int) -> str:
 setlocal
 {_wait_and_kill_helpers(pid, app_dir)}robocopy "{new_dir}" "{app_dir}" /MIR /XD data /R:5 /W:1 /NFL /NDL /NJH /NJS >nul
 if %ERRORLEVEL% GEQ 8 (
-  echo Update failed while copying files. Your data folder was not touched.
-  pause
+  {_log("copying the new files failed; data folder untouched")}
   exit /b 1
 )
 start "" "{app_dir}\\BlamixShell.exe"
@@ -205,14 +232,16 @@ rmdir /s /q "{new_dir.parent}" 2>nul
 def apply_update(path: Path, kind: str | None = None) -> None:
     """Start installing the downloaded update. The caller must quit the app right after."""
     kind = kind or install_kind()
-    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    # CREATE_NO_WINDOW gives the script a hidden console that its children (tasklist,
+    # ping, powershell) share. (With DETACHED_PROCESS every child would pop up a window.)
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
     if kind == "msi":
         # wait until BlamixShell has fully exited (incl. helper processes), then run the
         # MSI: /passive = progress bar only; MajorUpgrade replaces the old version
         app_dir = Path(sys.executable).resolve().parent
         script = Path(tempfile.gettempdir()) / f"blamixshell-update-{os.getpid()}.bat"
         script.write_text(msi_update_script(path, app_dir, os.getpid()), encoding="utf-8")
-        subprocess.Popen(["cmd", "/c", str(script)], creationflags=flags | 0x08000000, close_fds=True)
+        subprocess.Popen(["cmd", "/c", str(script)], creationflags=flags, close_fds=True)
         return
     if kind == "portable":
         app_dir = Path(sys.executable).resolve().parent
@@ -225,7 +254,6 @@ def apply_update(path: Path, kind: str | None = None) -> None:
             raise UpdateError("The downloaded package doesn't contain BlamixShell.exe")
         script = work.parent / f"blamixshell-update-{os.getpid()}.bat"
         script.write_text(portable_update_script(new_dir, app_dir, os.getpid()), encoding="utf-8")
-        subprocess.Popen(["cmd", "/c", str(script)], creationflags=flags | 0x08000000,  # CREATE_NO_WINDOW
-                         close_fds=True)
+        subprocess.Popen(["cmd", "/c", str(script)], creationflags=flags, close_fds=True)
         return
     raise UpdateError("Automatic install isn't available for this installation; use the release page.")

@@ -318,3 +318,11 @@ def test_updater_msi_keeps_install_scope(tmp_path, monkeypatch):
     assert updater.msi_scope_args(per_machine) == "ALLUSERS=1"
     script = updater.msi_update_script(tmp_path / "new.msi", per_user, 1234)
     assert "MSIINSTALLPERUSER=1" in script and "/passive" in script
+    # never waits forever for the old app, and doesn't use `timeout` (fails without a console)
+    assert "taskkill /PID 1234 /F" in script and "timeout" not in script
+    assert "goto wait" in script and "GEQ 20 goto kill" in script
+    # restarts the new app, also when the install folder was renamed (ShellDeck -> BlamixShell)
+    old_dir = local / "Programs" / "ShellDeck"
+    script = updater.msi_update_script(tmp_path / "new.msi", old_dir, 1)
+    assert str(local / "Programs" / "BlamixShell" / "BlamixShell.exe") in script
+    assert all(not ln.rstrip().endswith(('0>>', '1>>', '2>>')) and ' 0>>' not in ln for ln in script.splitlines())

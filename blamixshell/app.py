@@ -1,6 +1,7 @@
 """Main window."""
 from __future__ import annotations
 
+import os
 import time
 
 from PySide6.QtCore import QByteArray, QObject, QSize, Qt, QTimer, Signal
@@ -1053,7 +1054,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Update failed", str(e))
             return
         self._force_quit = True
-        self.close()
+        self.close()          # saves settings and the session layout (closeEvent)
+        # The update script waits for this process to end. Don't rely on a clean Qt
+        # shutdown (an open dialog or a hung web engine can keep the process alive).
+        os._exit(0)
 
     def _help_menu(self, parent) -> QMenu:
         from . import links
