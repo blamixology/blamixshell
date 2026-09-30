@@ -2,7 +2,12 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
-## [1.1.0](https://github.com/blamixology/shelldeck/releases/tag/v1.1.0) - 2026-09-30
+## [1.2.0](https://github.com/blamixology/blamixshell/releases/tag/v1.2.0) - 2026-09-30
+
+### Improvements
+- Rename ShellDeck to BlamixShell (data and MSI installs carry over); roadmap gaps; AI disclosure (da8c0a5)
+
+## [1.1.0](https://github.com/blamixology/blamixshell/releases/tag/v1.1.0) - 2026-09-30
 
 ### New
 - Add port forwarding (L/R/D), 2FA keyboard-interactive login, session restore; roadmap; realistic MSI upgrade tests (47bffb4)
@@ -13,12 +18,12 @@ _Generated automatically from the commit history between release tags. Don't edi
 ### Improvements
 - Command palette drops down from the search bar, fits its results, shows a no-match hint (a16d6a6)
 
-## [1.0.4](https://github.com/blamixology/shelldeck/releases/tag/v1.0.4) - 2026-09-30
+## [1.0.4](https://github.com/blamixology/blamixshell/releases/tag/v1.0.4) - 2026-09-30
 
 ### Improvements
 - MSI: block installing over a copy of the other scope (all users vs just me) with a clear message (de767b8)
 
-## [1.0.3](https://github.com/blamixology/shelldeck/releases/tag/v1.0.3) - 2026-09-29
+## [1.0.3](https://github.com/blamixology/blamixshell/releases/tag/v1.0.3) - 2026-09-29
 
 ### Fixes
 - Fix MSI upgrades: close running app, remove old version after init, keep install scope on update (426a8c9)
@@ -26,12 +31,12 @@ _Generated automatically from the commit history between release tags. Don't edi
 ### Improvements
 - Auto-generate CHANGELOG.md and release notes from commits between tags (320b543)
 
-## [1.0.2](https://github.com/blamixology/shelldeck/releases/tag/v1.0.2) - 2026-09-29
+## [1.0.2](https://github.com/blamixology/blamixshell/releases/tag/v1.0.2) - 2026-09-29
 
 ### Improvements
 - MSI: single embedded cabinet (a346cf8)
 
-## [1.0.1](https://github.com/blamixology/shelldeck/releases/tag/v1.0.1) - 2026-09-29
+## [1.0.1](https://github.com/blamixology/blamixshell/releases/tag/v1.0.1) - 2026-09-29
 
 ### Fixes
 - Server list: full-row selection, toggle sidebar (Ctrl+Shift+L); fix toolbar toggle state at startup (8b51765)
@@ -40,7 +45,7 @@ _Generated automatically from the commit history between release tags. Don't edi
 ### Improvements
 - Update checker (GitHub Releases, SHA-256 verified); settings UI: dropdown arrows, checkmarks, gear icon (fa13c04)
 
-## [1.0.0](https://github.com/blamixology/shelldeck/releases/tag/v1.0.0) - 2026-09-29
+## [1.0.0](https://github.com/blamixology/blamixshell/releases/tag/v1.0.0) - 2026-09-29
 
 ### New
 - Add Windows MSI installer (per-user or all-users), test it in CI; run tests on all OSes + live SSH before builds (f8b6d5a)
