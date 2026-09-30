@@ -45,6 +45,8 @@ Or build a portable folder with no Python needed on the target: `./build_cli.sh`
 ### Prebuilt downloads
 Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml`) build Windows, macOS (Apple Silicon + Intel) and Linux packages plus the Linux CLI, then attach them to a GitHub Release.
 
+**Making a release (maintainers):** run `./release.sh v1.2.3` (Git Bash on Windows). It syncs with GitHub, runs the tests if they're installed, shows the release notes and asks before publishing. Then it commits the regenerated `CHANGELOG.md`, tags that commit, and pushes `main` and the tag together. CI never commits to `main`. Use `./release.sh --dry-run v1.2.3` to preview. Release notes and the changelog come from commit messages: commits starting with "Fix" are listed under Fixes, "Add"/"New"/"Support" under New, everything else under Improvements.
+
 ## Features
 
 - **Server manager:** nested groups (`Prod/EU`), tags, colors and favorites. Drag and drop, search, or filter with `tag:prod`. A green dot marks servers with a live session. **Connect to all** opens every server in a group, tiled.

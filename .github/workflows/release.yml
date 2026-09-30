@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    # release.sh pushes main + the tag together; the main push only adds the CHANGELOG
+    # commit, so skip that run (path filters don't apply to tags: the tag run still builds)
+    paths-ignore: ["CHANGELOG.md"]
   pull_request:
   workflow_dispatch:
 
