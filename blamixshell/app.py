@@ -307,7 +307,8 @@ class MainWindow(QMainWindow):
         self.snip_menu.aboutToShow.connect(self._fill_snippets)
         self.btn_snip.setMenu(self.snip_menu)
         self.btn_sftp = self._tool("folder", "Files / SFTP (Ctrl+Shift+S)", self.toggle_sftp, checkable=True)
-        for b in (self.btn_split_r, self.btn_split_d, self.btn_bcast, self.btn_snip, self.btn_sftp):
+        self.btn_dash = self._tool("gauge", "Server dashboard (Ctrl+Shift+I)", lambda: self.open_dashboard())
+        for b in (self.btn_split_r, self.btn_split_d, self.btn_bcast, self.btn_snip, self.btn_dash, self.btn_sftp):
             tl.addWidget(b)
         cl.addWidget(tb)
 
@@ -427,7 +428,7 @@ class MainWindow(QMainWindow):
 
     def _install_shortcuts(self) -> None:
         mapping = {"P": "p", "T": "t", "W": "w", "D": "d", "E": "e", "B": "b", "S": "s",
-                   "N": "n", "R": "r", "V": "v", "L": "l"}
+                   "N": "n", "R": "r", "V": "v", "L": "l", "I": "i"}
         # On macOS Qt's "Ctrl" is the Cmd key: Cmd+P, Cmd+D … (Cmd+Shift+… works too)
         prefixes = ["Ctrl+Shift+", "Ctrl+"] if IS_MAC else ["Ctrl+Shift+"]
         for prefix in prefixes:
@@ -458,6 +459,7 @@ class MainWindow(QMainWindow):
             "ctrl+shift+e": lambda: self.split(Qt.Vertical),
             "ctrl+shift+b": lambda: (self.btn_bcast.toggle(), self.toggle_broadcast()),
             "ctrl+shift+s": lambda: (self.btn_sftp.toggle(), self.toggle_sftp()),
+            "ctrl+shift+i": lambda: self.open_dashboard(),
             "ctrl+shift+n": self.new_server,
             "ctrl+shift+r": lambda: pane and pane.reconnect(),
             "ctrl+shift+v": lambda: pane and pane.paste(),
@@ -580,6 +582,7 @@ class MainWindow(QMainWindow):
         pane.close_requested.connect(self.close_pane)
         pane.shortcut.connect(lambda _p, n: self.handle_shortcut(n))
         pane.state_changed.connect(self._on_pane_state)
+        pane.dashboard_requested.connect(self.open_dashboard)
         if touch and server.id in self.store.servers:
             self.store.touch(server.id)
         return pane
@@ -775,6 +778,7 @@ class MainWindow(QMainWindow):
             ("Split down", "Ctrl+Shift+E", lambda: self.split(Qt.Vertical), "split-v"),
             ("Toggle server list", "Ctrl+Shift+L", lambda: (self.btn_side.toggle(), self.toggle_sidebar()), "sidebar"),
             ("Toggle files panel", "Ctrl+Shift+S", lambda: (self.btn_sftp.toggle(), self.toggle_sftp()), "folder"),
+            ("Server dashboard", "Ctrl+Shift+I", lambda: self.open_dashboard(), "gauge"),
             ("Toggle broadcast", "Ctrl+Shift+B", lambda: (self.btn_bcast.toggle(), self.toggle_broadcast()), "broadcast"),
             ("Reconnect", "Ctrl+Shift+R", lambda: self.active_pane() and self.active_pane().reconnect(), "refresh"),
             ("Clear terminal", "", lambda: self.active_pane() and self.active_pane().view.bridge.command.emit("clear"), "terminal"),
@@ -891,6 +895,7 @@ class MainWindow(QMainWindow):
             a1.setEnabled(has_tab)
             a2.setEnabled(has_tab)
             m.addSeparator()
+            m.addAction(icon("gauge"), "Dashboard", lambda: self.dashboard_for_server(key))
             m.addAction(icon("edit"), "Edit…", lambda: self.edit_server(key))
             m.addAction(icon("copy"), "Duplicate", lambda: self.duplicate_server(key))
             m.addAction(icon("star", C["warn"]), "Unpin from favorites" if s.favorite else "Pin to favorites",
@@ -1130,6 +1135,46 @@ class MainWindow(QMainWindow):
     def show_about(self) -> None:
         from .dialogs import AboutDialog
         AboutDialog(self).exec()
+
+    # ================================================================ dashboard
+    def open_dashboard(self, pane=None) -> None:
+        """Dashboard for a terminal pane (default: the active one), reusing its connection."""
+        pane = pane or self.active_pane()
+        if pane is None:
+            self.statusBar().showMessage("Connect to a server first (or right-click a server → Dashboard).", 5000)
+            return
+        from .dashboard_ui import DashboardWindow
+        wins = getattr(self, "_dashboards", {})
+        self._dashboards = wins
+        win = wins.get(id(pane))
+        if win is None:
+            color = self.store.color_for(self.store.servers.get(pane.server.id, pane.server))
+            win = DashboardWindow(pane, color=color, send_to_terminal=lambda text, p=pane: self._type_into(p, text),
+                                  parent=self)
+            win.destroyed.connect(lambda _o=None, k=id(pane): wins.pop(k, None))
+            wins[id(pane)] = win
+        win.show()
+        win.raise_()
+        win.activateWindow()
+
+    def _type_into(self, pane, text: str) -> None:
+        pane.send_text(text)
+        for i in range(self.tabs.count()):
+            if pane in self.tabs.widget(i).panes():
+                self.tabs.setCurrentIndex(i)
+                self.tabs.widget(i).set_active(pane)
+        self.raise_()
+        self.activateWindow()
+        pane.focus_terminal()
+
+    def dashboard_for_server(self, sid: str) -> None:
+        """From the server list: use an open connection, or connect in a new tab first."""
+        for p in self.all_panes():
+            if p.server.id == sid and p.state in ("connected", "connecting"):
+                self.open_dashboard(p)
+                return
+        self.connect_server(sid)
+        self.open_dashboard(self.active_pane())
 
     def check_vault_changes(self) -> None:
         from .vault import PasswordChangedElsewhere

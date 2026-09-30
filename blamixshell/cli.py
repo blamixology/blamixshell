@@ -492,6 +492,56 @@ def cmd_connect(store: Store, a) -> int:
     return interactive_shell(s, store)
 
 
+def cmd_status(store: Store, a) -> int:
+    """One-screen overview of a server (the dashboard's Overview, in the terminal)."""
+    from . import dashboard as dash
+    s = find_server(store, a.target) or adhoc_server(a.target)
+    if not s:
+        die(f"No server matching “{a.target}”")
+    conn = Connector(store)
+    try:
+        client, chain = conn.open(s)
+    except AuthConfigError as e:
+        die(str(e))
+    except Exception as e:
+        die(friendly_error(e))
+    try:
+        r = dash.Runner(client)
+        ov = dash.overview(r)
+        svcs, _problem = dash.services(r) if a.services else ([], "")
+    finally:
+        client.close()
+        for cl in chain:
+            cl.close()
+
+    def pct(v, warn=75, bad=90):
+        return c(f"{v:3.0f}%", "31" if v >= bad else "33" if v >= warn else "32")
+
+    def bar(v, width=24):
+        n = round(width * v / 100)
+        return c("█" * n, "31" if v >= 90 else "33" if v >= 80 else "36") + c("·" * (width - n), "90")
+    print(c(f"{s.label}", "1;36") + c(f"  {ov.host}  ·  {ov.os}  ·  kernel {ov.kernel}  ·  up {dash.human_uptime(ov.uptime_s)}", "90"))
+    if ov.cpu_percent is not None:
+        print(f"  CPU     {pct(ov.cpu_percent)}   {ov.cpus} CPUs, load {ov.load[0]:.2f} {ov.load[1]:.2f} {ov.load[2]:.2f}")
+    if ov.mem_total_kb:
+        print(f"  Memory  {pct(ov.mem_percent)}   {dash.human_kb(ov.mem_used_kb)} of {dash.human_kb(ov.mem_total_kb)}")
+    if ov.swap_total_kb:
+        print(f"  Swap    {pct(ov.swap_percent)}   of {dash.human_kb(ov.swap_total_kb)}")
+    for dk in ov.disks:
+        print(f"  {dk.mount[:22]:<22} {bar(dk.percent)} {pct(dk.percent, 80, 90)}  "
+              + c(f"{dash.human_kb(dk.used_kb)} of {dash.human_kb(dk.size_kb)}", "90"))
+    if ov.systemd in ("", "offline", "unknown"):
+        print(c("  no systemd", "90"))
+    elif ov.failed_units:
+        print(c(f"  ● {len(ov.failed_units)} failed service(s): " + ", ".join(ov.failed_units), "31"))
+    else:
+        print(c(f"  ● all services OK ({ov.systemd})", "32"))
+    for sv in svcs:
+        if sv.active == "active" or sv.failed:
+            print(f"    {c('●', '31' if sv.failed else '32')} {sv.unit:<40} {sv.sub:<10} " + c(sv.description, "90"))
+    return 1 if ov.failed_units else 0
+
+
 def cmd_tunnel(store: Store, a) -> int:
     s = find_server(store, a.target) or adhoc_server(a.target)
     if not s:
@@ -605,6 +655,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("target", help="name, id, search term or user@host[:port]")
     sp.add_argument("-A", dest="agent", action="store_true", help="forward your SSH agent (like ssh -A)")
     _tunnel_args(sp)
+    sp = sub.add_parser("status", aliases=["st"], help="server overview: CPU, memory, disks, failed services")
+    sp.add_argument("target", help="name, id, search term or user@host[:port]")
+    sp.add_argument("-s", "--services", action="store_true", help="also list running and failed services")
     sp = sub.add_parser("tunnel", aliases=["t", "fwd"], help="run port forwards without a shell")
     sp.add_argument("target", help="name, id, search term or user@host[:port]")
     _tunnel_args(sp)
@@ -637,6 +690,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 HANDLERS = {"ls": cmd_ls, "list": cmd_ls, "connect": cmd_connect, "c": cmd_connect, "ssh": cmd_connect,
             "tunnel": cmd_tunnel, "t": cmd_tunnel, "fwd": cmd_tunnel,
+            "status": cmd_status, "st": cmd_status,
             "exec": cmd_exec, "x": cmd_exec, "add": cmd_add, "rm": cmd_rm, "remove": cmd_rm,
             "import": cmd_import, "passwd": cmd_passwd}
 

@@ -62,6 +62,11 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
 - **Session restore:** your tabs and splits come back when you restart. The active tab connects right away; the others connect when you open them. Only the layout is saved (server ids), never passwords. Turn it off in Settings → Startup.
 - **Jump hosts / bastions:** any saved server can be a jump host, including chains.
 - **Agent forwarding (`ssh -A`):** per server (Advanced tab), off by default. The server can use the keys in your local agent (Pageant, the Windows OpenSSH agent or `ssh-agent`) for `git pull`, `scp` or the next hop, without copying keys. Only turn it on for servers you trust. `ForwardAgent yes` is picked up when importing `~/.ssh/config`.
+- **Server dashboard (agentless):** open it from the gauge button on a terminal, the toolbar, Ctrl+Shift+I, or right-click a server → Dashboard. It uses the connection you already have and standard commands, so nothing is installed on the server:
+  - **Overview:** OS, kernel, uptime, live CPU / memory / load / swap with a short history, disk usage bars, failed services.
+  - **Services (systemd):** filter, failed only, start / stop / restart / enable / disable (always confirmed, showing the exact command), status and logs per service.
+  - **Processes** (filter, sort by CPU or memory, end or force-kill), **Logs** (journal by service and priority, follow mode), **Ports** (listening TCP/UDP), **Updates** (pending packages for apt, dnf, yum, zypper, pacman, apk; the upgrade command is typed into your terminal for you to review, never run silently) and **Users** (login accounts, who is logged in).
+  - Actions run as root only when needed: directly as root, with passwordless sudo, or with a sudo password you type for that dashboard only; it's sent over the SSH connection and never saved.
 - **Colors for production:** give a server or a whole group a color (right-click a group → Color). Its tab, pane header and terminal background get tinted, so production looks different at a glance. The terminal tint can be turned off in Settings.
 - **Backups and sync:** one encrypted backup of the vault a day (the last 20 are kept), plus Back up now, Export, Import (adds servers, never overwrites), Restore a backup, all in Settings → Vault & backups. To use the same servers on several computers, move the vault into a synced folder (OneDrive, Dropbox, Syncthing); edits from both computers are merged, and changes show up as soon as you switch back to the window.
 - **Imports:** PuTTY sessions (Windows) and `~/.ssh/config`, including `ProxyJump` and `LocalForward` / `RemoteForward` / `DynamicForward`.
@@ -74,6 +79,8 @@ blamixshell                          TUI (or the desktop app via `blamixshell gu
 blamixshell ls [query]               list servers  (e.g. `blamixshell ls tag:prod`)
 blamixshell connect <name|user@host:port> [-A] [-L ..] [-R ..] [-D ..]
                                    interactive shell; the server's saved tunnels start too
+blamixshell status <name> [-s]         CPU, memory, disks, failed services (-s: list services);
+                                   exits with 1 when services have failed (handy for scripts)
 blamixshell tunnel <name> [-L 5432:localhost:5432] [-D 1080] [--only]
                                    run tunnels without a shell until Ctrl+C
 blamixshell exec <query> [-A] -- <cmd>  run on many servers in parallel (-A: forward your agent)
@@ -98,6 +105,7 @@ TUI keys: `/` search · `⏎` connect · `a` add · `e` edit · `d` delete · `f
 | Ctrl+Shift+C / V | ⌘C / ⌘V | Copy / paste |
 | Ctrl+Shift+F | ⌘F | Find in terminal |
 | Ctrl+Shift+S | ⌘S | Files (SFTP) panel |
+| Ctrl+Shift+I | ⌘I | Server dashboard |
 | Ctrl+Shift+B | ⌘B | Broadcast |
 | Ctrl+Shift+R | ⌘R | Reconnect |
 | Ctrl+Shift+1…9 | ⌘1…9 | Switch tab |
@@ -140,6 +148,8 @@ blamixshell/
   ssh_session.py   Qt wrapper: shell I/O thread → signals
   ssh_core.py      Qt-free SSH core: auth incl. 2FA prompts, host keys, jump hosts (shared by all front-ends)
   tunnels.py       Qt-free port forwarding: local, remote, SOCKS4/5
+  dashboard.py     Qt-free server dashboard: collectors, parsers, sudo-aware actions
+  dashboard_ui.py  dashboard window
   sftp_panel.py    SFTP browser, transfers, edit-in-place
   cli.py           command line + interactive raw-tty shell + parallel exec
   tui.py           Textual full-screen UI

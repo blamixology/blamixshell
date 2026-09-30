@@ -143,6 +143,7 @@ class TerminalPane(QWidget):
     shortcut = Signal(object, str)
     state_changed = Signal(object)
     user_input = Signal(object, bytes)     # the tab decides where input goes (broadcast)
+    dashboard_requested = Signal(object)
 
     def __init__(self, server: Server, resolve, settings, parent=None, tint: str = ""):
         super().__init__(parent)
@@ -188,6 +189,9 @@ class TerminalPane(QWidget):
         self._tunnel_states: list = []
         h.addWidget(self.tun_btn)
         h.addWidget(self.status_lbl)
+        self.btn_dash = self._tbtn("gauge", kb("Server dashboard (Ctrl+Shift+I)"),
+                                   lambda: self.dashboard_requested.emit(self))
+        h.addWidget(self.btn_dash)
         self.btn_reconnect = self._tbtn("refresh", "Reconnect (R)", self.reconnect)
         self.btn_close = self._tbtn("x", kb("Close pane (Ctrl+Shift+W)"), lambda: self.close_requested.emit(self))
         h.addWidget(self.btn_reconnect)
@@ -238,6 +242,7 @@ class TerminalPane(QWidget):
             self.header.setStyleSheet("")
         self.addr_lbl.setText(self.server.address if self.server.name else "")
         self.btn_reconnect.setVisible(self.state in ("disconnected", "failed"))
+        self.btn_dash.setVisible(self.state == "connected")
         self._tick()
 
     def _tick(self) -> None:
