@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.4.0](https://github.com/blamixology/blamixshell/releases/tag/v1.4.0) - 2026-09-30
+
+### New
+- Add server dashboard: overview, services, processes, logs, ports, updates, users; blamixshell status (b9caffc)
+
 ## [1.3.0](https://github.com/blamixology/blamixshell/releases/tag/v1.3.0) - 2026-09-30
 
 ### New
