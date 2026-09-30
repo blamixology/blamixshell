@@ -310,6 +310,48 @@ def open_client(server: Server, resolve: Callable[[str], Server | None],
     return client, chain
 
 
+# ---------------------------------------------------------------- shells / commands
+def local_agent_keys() -> int:
+    """Number of keys in the local SSH agent (Pageant / Windows OpenSSH agent / ssh-agent)."""
+    try:
+        agent = paramiko.Agent()
+        n = len(agent.get_keys())
+        agent.close()
+        return n
+    except Exception:
+        return 0
+
+
+def _session(client: paramiko.SSHClient, agent_forward: bool) -> paramiko.Channel:
+    chan = client.get_transport().open_session(timeout=15)
+    if agent_forward:
+        from paramiko.agent import AgentRequestHandler
+        # ssh -A: the server may use the local agent's keys while this session is open
+        chan._agent_handler = AgentRequestHandler(chan)   # keep it alive with the channel
+    return chan
+
+
+def open_shell(client: paramiko.SSHClient, server: Server, term: str = "xterm-256color",
+               width: int = 120, height: int = 32) -> paramiko.Channel:
+    """Interactive shell (with agent forwarding when the server has it enabled)."""
+    chan = _session(client, server.agent_forward)
+    chan.get_pty(term=term, width=width, height=height)
+    chan.invoke_shell()
+    return chan
+
+
+def exec_command(client: paramiko.SSHClient, command: str, agent_forward: bool = False,
+                 timeout: float | None = None, get_pty: bool = False):
+    """Like SSHClient.exec_command, plus optional agent forwarding.
+    Returns (stdin, stdout, stderr) file objects."""
+    chan = _session(client, agent_forward)
+    if get_pty:
+        chan.get_pty()
+    chan.settimeout(timeout)
+    chan.exec_command(command)
+    return chan.makefile_stdin("wb", -1), chan.makefile("r", -1), chan.makefile_stderr("r", -1)
+
+
 # ---------------------------------------------------------------- sftp
 _VERSION_REPLY = b"\x02\x00\x00\x00\x03"   # SSH_FXP_VERSION, protocol version 3
 

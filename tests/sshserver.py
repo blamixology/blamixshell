@@ -21,6 +21,39 @@ def host_key() -> paramiko.PKey:
     return _HOST_KEY
 
 
+def _forwarded_agent_keys(t) -> list[str]:
+    """Ask the client's forwarded agent for its keys (SSH agent protocol:
+    REQUEST_IDENTITIES -> IDENTITIES_ANSWER). Returns the key type names."""
+    import struct
+    try:
+        ch = t.open_forward_agent_channel()
+    except Exception as e:
+        return [f"ERROR {e}"]
+    ch.settimeout(5)
+    ch.sendall(struct.pack(">IB", 1, 11))
+    raw = b""
+    while len(raw) < 4 or len(raw) < 4 + struct.unpack(">I", raw[:4])[0]:
+        chunk = ch.recv(65536)
+        if not chunk:
+            break
+        raw += chunk
+    ch.close()
+    body = raw[4:]
+    if not body or body[0] != 12:
+        return ["ERROR bad agent reply"]
+    n = struct.unpack(">I", body[1:5])[0]
+    pos, names = 5, []
+    for _ in range(n):
+        ln = struct.unpack(">I", body[pos:pos + 4])[0]
+        blob = body[pos + 4:pos + 4 + ln]
+        pos += 4 + ln
+        ln2 = struct.unpack(">I", body[pos:pos + 4])[0]
+        pos += 4 + ln2                                   # comment
+        tl = struct.unpack(">I", blob[:4])[0]
+        names.append(blob[4:4 + tl].decode())
+    return names
+
+
 def _pump(a, b) -> None:
     def one(src, dst):
         try:
@@ -88,6 +121,17 @@ class _Iface(paramiko.ServerInterface):
         return True
 
     def check_channel_shell_request(self, channel):
+        threading.Thread(target=self.srv._echo, args=(channel,), daemon=True).start()
+        return True
+
+    def check_channel_exec_request(self, channel, command):
+        command = command.decode() if isinstance(command, bytes) else command
+        self.srv.commands.append(command)
+        threading.Thread(target=self.srv._run_command, args=(self.t, channel, command), daemon=True).start()
+        return True
+
+    def check_channel_forward_agent_request(self, channel):
+        self.srv.agent_requests += 1
         return True
 
     def check_channel_direct_tcpip_request(self, chanid, origin, destination):
@@ -136,6 +180,8 @@ class TestSSHServer:
         self.client_key = client_key
         self.deny_forwarding = deny_forwarding
         self.seen_responses: list[list[str]] = []
+        self.commands: list[str] = []
+        self.agent_requests = 0
         self.remote_listeners: dict[int, socket.socket] = {}
         self._sock = socket.create_server(("127.0.0.1", 0))
         self.port = self._sock.getsockname()[1]
@@ -176,11 +222,29 @@ class TestSSHServer:
             s = iface.direct.pop(ch.get_id(), None)
             if s:
                 _pump(s, ch)
-            else:   # shell: echo lines back
-                threading.Thread(target=self._echo, args=(ch,), daemon=True).start()
+            # sessions: the shell / exec request handlers take over
+
+    @staticmethod
+    def _run_command(t, ch, command) -> None:
+        """exec: `agent-keys` lists the keys of the client's forwarded agent (like
+        `ssh-add -l` on a real server); anything else is echoed back."""
+        import time
+        time.sleep(0.1)          # let paramiko confirm the exec request before we answer
+        try:
+            if command == "agent-keys":
+                ch.sendall(("\n".join(_forwarded_agent_keys(t)) or "NO-KEYS").encode() + b"\n")
+            else:
+                ch.sendall(command.encode() + b"\n")
+            ch.send_exit_status(0)
+        except Exception as e:
+            ch.sendall(f"ERROR {e}\n".encode())
+            ch.send_exit_status(1)
+        ch.close()
 
     @staticmethod
     def _echo(ch) -> None:
+        import time
+        time.sleep(0.05)         # after paramiko confirmed the shell request
         try:
             ch.sendall(b"welcome\r\n$ ")
             while True:

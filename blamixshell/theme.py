@@ -191,6 +191,15 @@ _ICONS = {
 _cache: dict[tuple, QIcon] = {}
 
 
+def blend(base: str, color: str, amount: float) -> str:
+    """Mix `color` into `base` (0 = base, 1 = color). Used to tint production servers."""
+    a, b = QColor(base), QColor(color)
+    if not b.isValid():
+        return base
+    mix = lambda x, y: round(x + (y - x) * amount)  # noqa: E731
+    return QColor(mix(a.red(), b.red()), mix(a.green(), b.green()), mix(a.blue(), b.blue())).name()
+
+
 def icon(name: str, color: str | None = None, size: int = 18) -> QIcon:
     color = color or C["muted"]
     key = (name, color, size)

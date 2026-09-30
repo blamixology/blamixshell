@@ -17,7 +17,7 @@ from .models import Server
 from .paths import assets_dir
 from .ssh_session import ShellSession
 from .platform_ui import kb
-from .theme import C, icon
+from .theme import C, blend, icon
 
 _QWEBCHANNEL_JS: str | None = None
 _HTML_TEMPLATE: str | None = None
@@ -144,9 +144,10 @@ class TerminalPane(QWidget):
     state_changed = Signal(object)
     user_input = Signal(object, bytes)     # the tab decides where input goes (broadcast)
 
-    def __init__(self, server: Server, resolve, settings, parent=None):
+    def __init__(self, server: Server, resolve, settings, parent=None, tint: str = ""):
         super().__init__(parent)
         self.server = server
+        self.tint = tint                 # server / group color (production guard)
         self._resolve = resolve
         self.settings = settings
         self.session: ShellSession | None = None
@@ -193,7 +194,7 @@ class TerminalPane(QWidget):
         h.addWidget(self.btn_close)
         lay.addWidget(self.header)
 
-        self.view = TerminalView(settings.terminal_options(), self)
+        self.view = TerminalView(self._term_options(), self)
         lay.addWidget(self.view, 1)
         b = self.view.bridge
         b.sig_ready.connect(self._on_ready)
@@ -228,8 +229,13 @@ class TerminalPane(QWidget):
                   "disconnected": C["faint"], "idle": C["faint"]}
         self.dot.setStyleSheet(f"color:{colors.get(self.state, C['faint'])}; font-size:9pt;")
         self.title_lbl.setText(self.server.label)
-        if self.server.color:
-            self.title_lbl.setStyleSheet(f"font-weight:600; font-size:9pt; color:{self.server.color};")
+        color = self.tint or self.server.color
+        self.title_lbl.setStyleSheet("font-weight:600; font-size:9pt;" + (f" color:{color};" if color else ""))
+        if color:   # a colored strip + tinted header: production looks different at a glance
+            self.header.setStyleSheet(f"#PaneHeader {{ background: {blend(C['surface'], color, 0.16)};"
+                                      f" border-left: 3px solid {color}; }}")
+        else:
+            self.header.setStyleSheet("")
         self.addr_lbl.setText(self.server.address if self.server.name else "")
         self.btn_reconnect.setVisible(self.state in ("disconnected", "failed"))
         self._tick()
@@ -310,8 +316,27 @@ class TerminalPane(QWidget):
         self.view.setFocus()
         self.view.bridge.command.emit("focus")
 
+    def _term_options(self) -> dict:
+        opts = self.settings.terminal_options()
+        if self.tint and self.settings.get("tint_terminals", True):
+            theme = dict(opts["theme"])
+            theme["background"] = blend(theme["background"], self.tint, 0.09)
+            theme["cursorAccent"] = theme["background"]
+            opts["theme"] = theme
+        return opts
+
+    def set_tint(self, color: str) -> None:
+        if color == self.tint:
+            return
+        self.tint = color
+        self._refresh_header()
+        self.apply_settings()
+
     def apply_settings(self) -> None:
-        self.view.bridge.options.emit(json.dumps(self.settings.terminal_options()))
+        opts = self._term_options()
+        self.view.page().setBackgroundColor(opts["theme"]["background"])
+        self.view.bridge.options.emit(json.dumps(opts))
+        self._refresh_header()
 
     # ---------------------------------------------------------- session
     def defer(self) -> None:

@@ -76,6 +76,7 @@ def parse_ssh_config(text: str, base_dir: Path | None = None) -> list[Server]:
             username=o.get("user", ""), auth="key" if ident else "agent", key_path=ident,
             group="Imported/ssh-config", tags=["ssh-config"],
         )
+        s.agent_forward = str(o.get("forwardagent", "no")).lower() == "yes"
         for key, kind in (("localforward", "L"), ("remoteforward", "R"), ("dynamicforward", "D")):
             vals = o.get(key) or []
             for spec in [vals] if isinstance(vals, str) else vals:

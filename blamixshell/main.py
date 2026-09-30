@@ -28,7 +28,7 @@ def main() -> None:
     from .app import MainWindow
     from .dialogs import UnlockDialog
     from .models import Store
-    from .paths import assets_dir, vault_path
+    from .paths import assets_dir, default_vault_path, set_vault_path, vault_path
     from .settings import Settings
     from .theme import apply_palette
     from .vault import Vault, VaultError, WrongPassword
@@ -40,6 +40,24 @@ def main() -> None:
     app.setDesktopFileName("blamixshell")   # matches the Linux .desktop entry
 
     path = vault_path()
+    # a vault moved to OneDrive / a USB stick that isn't there right now: never create
+    # a fresh empty vault in its place
+    while path != default_vault_path() and not Vault.exists(path):
+        from PySide6.QtWidgets import QMessageBox
+        box = QMessageBox(QMessageBox.Warning, "BlamixShell",
+                          f"Your vault is set to\n{path}\nbut that file isn't there right now "
+                          "(drive not connected, or still syncing?).")
+        retry = box.addButton("Try again", QMessageBox.AcceptRole)
+        local = box.addButton("Use the local vault instead", QMessageBox.DestructiveRole)
+        box.addButton("Quit", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is retry:
+            continue
+        if box.clickedButton() is local:
+            set_vault_path(None)
+            path = vault_path()
+            break
+        sys.exit(0)
     create = not Vault.exists(path)
     holder: dict = {}
 

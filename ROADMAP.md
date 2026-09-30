@@ -9,6 +9,14 @@ Legend: ✅ done · 🚧 in progress · 🗓 planned · 💡 later / maybe
 
 | | Feature | What it means |
 |---|---|---|
+| ✅ | **Agent forwarding** | `ssh -A` per server (off by default), and `-A` for `blamixshell connect` / `exec`. |
+| ✅ | **Vault backup / sync** | Daily encrypted backups, export / import / restore, and a vault in a synced folder (OneDrive, Syncthing, …) with automatic merging between computers. |
+| ✅ | **Per-server appearance** | Server and group colors tint the tab, pane header and terminal, so production is visibly different. |
+
+## Released in 1.1 and 1.2
+
+| | Feature | What it means |
+|---|---|---|
 | ✅ | **Port forwarding / tunnels** | Local (`-L`), remote (`-R`) and dynamic SOCKS (`-D`) tunnels saved per server, started with the connection, status shown in the pane header. Also `blamixshell tunnel <server>` for headless use. |
 | ✅ | **2FA / keyboard-interactive login** | Servers that ask for a verification code (Google Authenticator, Duo, PAM OTP) or any other prompt; works for jump hosts too. |
 | ✅ | **New name: BlamixShell** | Formerly ShellDeck. Data and Windows installs carry over automatically. |
@@ -20,9 +28,6 @@ Legend: ✅ done · 🚧 in progress · 🗓 planned · 💡 later / maybe
 |---|---|---|
 | 🗓 | **Local terminal tabs** | PowerShell, cmd, WSL or Git Bash in the same window (ConPTY on Windows), bash/zsh on macOS and Linux. |
 | 🗓 | **Session logging** | Record a terminal to a file, on demand or always for a server, with optional timestamps. |
-| 🗓 | **Agent forwarding** | `ssh -A`: use your local keys for `git pull` on the server or the next hop. |
-| 🗓 | **Vault backup / sync** | Export and import the encrypted vault, or keep it in a folder you choose (OneDrive, Syncthing, …) to have the same servers on every machine. |
-| 🗓 | **Per-server appearance** | Terminal theme and tab tint per server or group, so production is visibly different. |
 
 ## Gaps vs. other tools
 

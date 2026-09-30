@@ -102,8 +102,31 @@ def migrate_data(target: Path, sources: list[Path]) -> Path | None:
     return None
 
 
-def vault_path() -> Path:
+VAULT_POINTER = "vault-location.txt"   # optional: the vault lives elsewhere (OneDrive, a USB stick …)
+
+
+def default_vault_path() -> Path:
     return data_dir() / "vault.sdv"
+
+
+def vault_path() -> Path:
+    """The vault file: data/vault.sdv, unless vault-location.txt points somewhere else.
+    Settings, known_hosts and backups always stay local."""
+    pointer = data_dir() / VAULT_POINTER
+    try:
+        target = pointer.read_text(encoding="utf-8").strip()
+    except OSError:
+        target = ""
+    return Path(os.path.expandvars(os.path.expanduser(target))) if target else default_vault_path()
+
+
+def set_vault_path(path: Path | None) -> None:
+    """Point at another vault file (None = back to the default location)."""
+    pointer = data_dir() / VAULT_POINTER
+    if path is None or Path(path) == default_vault_path():
+        pointer.unlink(missing_ok=True)
+    else:
+        pointer.write_text(str(Path(path)), encoding="utf-8")
 
 
 def settings_path() -> Path:

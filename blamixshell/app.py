@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
@@ -32,6 +33,23 @@ class _UpdateSignals(QObject):
     checked = Signal(object)          # (manual, Release|None, error)
     progress = Signal(int, int)
     downloaded = Signal(object)       # (path, error)
+
+
+def tab_icon(state_color: str, tint: str = "") -> QIcon:
+    """Tab icon: the server color as a small bar (production = red), then the state dot."""
+    pm = QPixmap(36, 20)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    if tint:
+        p.setBrush(QColor(tint))
+        p.drawRoundedRect(2, 2, 6, 16, 3, 3)
+    p.setBrush(QColor(state_color))
+    p.drawEllipse(16 if tint else 6, 6, 8, 8)
+    p.end()
+    pm.setDevicePixelRatio(2)
+    return QIcon(pm)
 
 
 def dot_icon(color: str) -> QIcon:
@@ -300,7 +318,7 @@ class MainWindow(QMainWindow):
         self.tabs.setTabsClosable(False)   # we add our own close button with proper spacing
         self.tabs.setMovable(True)
         self.tabs.setElideMode(Qt.ElideRight)
-        self.tabs.setIconSize(QSize(10, 10))
+        self.tabs.setIconSize(QSize(18, 10))
         self.tabs.tabBar().setDrawBase(False)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -358,6 +376,14 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.update_btn)
         self._pending_release = None
         QTimer.singleShot(4000, lambda: self.check_updates(manual=False))
+
+        # shared vault (OneDrive / Syncthing / USB): pick up changes from other computers
+        self.store.notify = lambda msg: self.statusBar().showMessage(msg, 10000)
+        self._vault_timer = QTimer(self)
+        self._vault_timer.timeout.connect(self.check_vault_changes)
+        self._vault_timer.start(5000)
+        QApplication.instance().applicationStateChanged.connect(
+            lambda st: st == Qt.ApplicationActive and self.check_vault_changes())
 
         # session restore: the layout is saved shortly after every change and on exit
         self.persist_layout = False      # set by restore_session() (not in self-test runs)
@@ -473,6 +499,10 @@ class MainWindow(QMainWindow):
 
     def refresh_all(self) -> None:
         self.tree.rebuild(self.search.text())
+        for p in self.all_panes():     # colors may have changed (server edited, group color)
+            p.set_tint(self.store.color_for(self.store.servers.get(p.server.id, p.server)))
+        if hasattr(self, "tabs"):
+            self._color_tabs()
         n = len(self.store.servers)
         self.count_lbl.setText(f"{n} server{'s' if n != 1 else ''}")
         self.welcome.refresh()
@@ -520,12 +550,23 @@ class MainWindow(QMainWindow):
         for i in range(self.tabs.count()):
             t = self.tabs.widget(i)
             self.tabs.setTabText(i, t.title())
-            self.tabs.setTabIcon(i, dot_icon(STATE_COLORS.get(t.state(), C["faint"])))
+            self.tabs.setTabIcon(i, tab_icon(STATE_COLORS.get(t.state(), C["faint"]), self._tab_tint(t)))
             ps = t.panes()
             self.tabs.setTabToolTip(i, "\n".join(f"{p.server.label} ({p.server.address}): {p.state}" for p in ps))
+        self._color_tabs()
         self._sync_sftp()
         self._update_status()
         self._layout_timer.start()
+
+    @staticmethod
+    def _tab_tint(t) -> str:
+        p = t.active or (t.panes() or [None])[0]
+        return p.tint if p is not None else ""
+
+    def _color_tabs(self) -> None:
+        for i in range(self.tabs.count()):
+            t = self.tabs.widget(i)
+            self.tabs.setTabIcon(i, tab_icon(STATE_COLORS.get(t.state(), C["faint"]), self._tab_tint(t)))
 
     def _sync_sftp(self) -> None:
         if not self.sftp.isVisible():
@@ -535,7 +576,7 @@ class MainWindow(QMainWindow):
 
     # ================================================================ connect
     def _make_pane(self, server: Server, touch: bool = True) -> TerminalPane:
-        pane = TerminalPane(server, self.store.servers.get, self.settings)
+        pane = TerminalPane(server, self.store.servers.get, self.settings, tint=self.store.color_for(server))
         pane.close_requested.connect(self.close_pane)
         pane.shortcut.connect(lambda _p, n: self.handle_shortcut(n))
         pane.state_changed.connect(self._on_pane_state)
@@ -551,7 +592,7 @@ class MainWindow(QMainWindow):
         return tab
 
     def _add_tab(self, tab: SessionTab) -> int:
-        idx = self.tabs.addTab(tab, dot_icon(C["faint"]), tab.title())
+        idx = self.tabs.addTab(tab, tab_icon(C["faint"], self._tab_tint(tab)), tab.title())
         self.tabs.tabBar().setTabButton(idx, QTabBar.RightSide, self._tab_close_button(tab))
         return idx
 
@@ -871,12 +912,26 @@ class MainWindow(QMainWindow):
             m.addAction(icon("plus"), "New server here…", lambda: self.new_server(key))
             m.addAction(icon("folder-plus"), "New subgroup…", lambda: self.new_group(key))
             m.addAction(icon("edit"), "Rename…", lambda: self.rename_group(key))
+            cm = m.addMenu(icon("folder", self.store.group_colors.get(key) or C["muted"]), "Color")
+            from .models import COLORS
+            names = {"": "No color", "#ff6b6b": "Red (production)", "#ffa94d": "Orange", "#ffd43b": "Yellow",
+                     "#69db7c": "Green", "#38d9a9": "Teal", "#4dabf7": "Blue", "#748ffc": "Indigo",
+                     "#b197fc": "Violet", "#f783ac": "Pink"}
+            for col in COLORS:
+                a = cm.addAction(dot_icon(col) if col else icon("x"), names.get(col, col),
+                                 lambda c=col: self._set_group_color(key, c))
+                a.setCheckable(True)
+                a.setChecked(self.store.group_colors.get(key, "") == col)
             m.addSeparator()
             m.addAction(icon("trash", C["danger"]), "Delete group", lambda: self.delete_group(key))
         else:
             m.addAction(icon("plus"), "New server…", self.new_server)
             m.addAction(icon("folder-plus"), "New group…", lambda: self.new_group(""))
         m.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _set_group_color(self, path: str, color: str) -> None:
+        self.store.set_group_color(path, color)
+        self.refresh_all()
 
     def _move_to_new_group(self, sid: str) -> None:
         name, ok = QInputDialog.getText(self, "New group", "Group name (use / to nest):")
@@ -1075,6 +1130,37 @@ class MainWindow(QMainWindow):
     def show_about(self) -> None:
         from .dialogs import AboutDialog
         AboutDialog(self).exec()
+
+    def check_vault_changes(self) -> None:
+        from .vault import PasswordChangedElsewhere
+        try:
+            changed = self.store.reload_if_changed()
+        except PasswordChangedElsewhere:
+            self._vault_timer.stop()
+            QMessageBox.information(
+                self, "Vault changed",
+                "Your vault was re-encrypted with a new master password on another computer.\n\n"
+                "BlamixShell will restart so you can unlock it with the new password.")
+            self.restart()
+            return
+        except Exception:
+            return
+        if changed:
+            self.refresh_all()
+            self.statusBar().showMessage("Servers updated from another computer", 6000)
+
+    def restart(self) -> None:
+        """Start a new BlamixShell and close this one (after switching vault files)."""
+        import sys
+        from PySide6.QtCore import QProcess
+        if getattr(sys, "frozen", False):
+            QProcess.startDetached(sys.executable, [])
+        else:
+            QProcess.startDetached(sys.executable, ["-m", "blamixshell.main"],
+                                   str(Path(__file__).resolve().parent.parent))
+        self._force_quit = True
+        self.close()
+        os._exit(0)
 
     def open_settings(self) -> None:
         if SettingsDialog(self.settings, self.store, self).exec() == QDialog.Accepted:

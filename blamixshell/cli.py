@@ -21,9 +21,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import __version__
 from .models import Server, Store, Tunnel
-from .paths import data_dir, vault_path
-from .ssh_core import (AuthConfigError, ChangedHostKey, UnknownHostKey, fingerprint,
-                       friendly_error, open_client, trust_host_key)
+from .paths import VAULT_POINTER, data_dir, default_vault_path, vault_path
+from .ssh_core import (AuthConfigError, ChangedHostKey, UnknownHostKey, exec_command, fingerprint,
+                       friendly_error, open_client, open_shell, trust_host_key)
 from .vault import Vault, VaultError, WrongPassword
 
 # ----------------------------------------------------------------- output helpers
@@ -49,6 +49,10 @@ def confirm(question: str, default: bool = False) -> bool:
 # ----------------------------------------------------------------- vault
 def unlock(create_if_missing: bool = True) -> Store:
     path = vault_path()
+    if not Vault.exists(path) and path != default_vault_path():
+        die(f"Your vault is set to {path}, but that file isn't there (drive not connected, "
+            "or still syncing?). Fix it in the desktop app, or delete "
+            f"{data_dir() / VAULT_POINTER} to use the local vault.")
     if not Vault.exists(path):
         if not create_if_missing:
             die(f"No vault at {path}")
@@ -214,8 +218,10 @@ def interactive_shell(server: Server, store: Store) -> int:
         store.touch(server.id)
 
     size = os.get_terminal_size() if sys.stdout.isatty() else os.terminal_size((120, 32))
-    chan = client.invoke_shell(term=os.environ.get("TERM", "xterm-256color"),
-                               width=size.columns, height=size.lines)
+    chan = open_shell(client, server, term=os.environ.get("TERM", "xterm-256color"),
+                      width=size.columns, height=size.lines)
+    if server.agent_forward:
+        print(c("  agent forwarding on", "90"))
     if server.startup_cmd:
         chan.send((server.startup_cmd.rstrip("\n") + "\n").encode())
     tunnels = start_tunnels(client, server)
@@ -367,7 +373,7 @@ def run_many(store: Store, servers: list[Server], command: str, accept_new: bool
             results[s.id] = (None, msg, time.time() - t0)
             return
         try:
-            _in, out, errs = client.exec_command(command, timeout=timeout, get_pty=False)
+            _in, out, errs = exec_command(client, command, agent_forward=s.agent_forward, timeout=timeout)
             ch = out.channel
 
             def pump(stream, is_err):
@@ -480,7 +486,10 @@ def cmd_connect(store: Store, a) -> int:
     s = find_server(store, a.target) or adhoc_server(a.target)
     if not s:
         die(f"No server matching “{a.target}”")
-    return interactive_shell(add_cli_tunnels(s, a), store)
+    s = add_cli_tunnels(s, a)
+    if a.agent:
+        s.agent_forward = True
+    return interactive_shell(s, store)
 
 
 def cmd_tunnel(store: Store, a) -> int:
@@ -506,6 +515,10 @@ def cmd_exec(store: Store, a) -> int:
     else:
         servers = [s for s in store.servers.values() if s.matches(query)]
     servers.sort(key=lambda s: s.label.lower())
+    if a.agent:
+        servers = [s.copy() for s in servers]
+        for s in servers:
+            s.agent_forward = True
     if not servers:
         die(f"No servers match “{query}”")
     print(c(f"Running on {len(servers)} server(s): ", "1") + ", ".join(s.label for s in servers))
@@ -590,6 +603,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--json", action="store_true")
     sp = sub.add_parser("connect", aliases=["c", "ssh"], help="open an interactive shell")
     sp.add_argument("target", help="name, id, search term or user@host[:port]")
+    sp.add_argument("-A", dest="agent", action="store_true", help="forward your SSH agent (like ssh -A)")
     _tunnel_args(sp)
     sp = sub.add_parser("tunnel", aliases=["t", "fwd"], help="run port forwards without a shell")
     sp.add_argument("target", help="name, id, search term or user@host[:port]")
@@ -602,6 +616,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-p", "--parallel", type=int, default=10)
     sp.add_argument("-t", "--timeout", type=float, default=None, help="per-command timeout in seconds")
     sp.add_argument("--accept-new", action="store_true", help="trust unknown host keys (never changed ones)")
+    sp.add_argument("-A", dest="agent", action="store_true", help="forward your SSH agent (like ssh -A)")
     sp = sub.add_parser("add", help="add a server")
     for f in ("name", "host", "user", "auth", "key", "group", "tags", "jump"):
         sp.add_argument(f"--{f}")
@@ -644,6 +659,8 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(cmd_gui(None, a))
         if a.cmd == "where":
             print(data_dir())
+            if vault_path() != default_vault_path():
+                print(f"vault: {vault_path()}")
             return
         if a.cmd == "update":
             sys.exit(cmd_update())

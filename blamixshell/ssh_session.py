@@ -12,7 +12,8 @@ from PySide6.QtCore import QObject, Signal
 from .models import Server
 from .ssh_core import (AuthConfigError, ChangedHostKey, UnknownHostKey,  # noqa: F401 (re-exported)
                        fingerprint, friendly_error, host_id, load_known_hosts,
-                       load_private_key, open_client, open_sftp, test_connection, trust_host_key)
+                       load_private_key, local_agent_keys, open_client, open_sftp, open_shell,
+                       test_connection, trust_host_key)
 from .tunnels import TunnelManager
 
 
@@ -120,7 +121,12 @@ class ShellSession(QObject):
                                                    interactive=self._ask)
             self.status.emit("opening shell …")
             cols, rows = self._size
-            chan = self.client.invoke_shell(term="xterm-256color", width=cols, height=rows)
+            chan = open_shell(self.client, self.server, width=cols, height=rows)
+            if self.server.agent_forward:
+                n = local_agent_keys()
+                self.tunnel_message.emit(
+                    f"agent forwarding on ({n} key{'s' if n != 1 else ''} in your local agent)" if n else
+                    "agent forwarding on, but your local SSH agent has no keys", not n)
             chan.settimeout(None)
             self.chan = chan
             self.connected_at = time.time()

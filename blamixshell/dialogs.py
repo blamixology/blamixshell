@@ -6,7 +6,8 @@ import threading
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-                               QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
+                               QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
+                               QInputDialog,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
                                QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSpinBox,
                                QStackedWidget, QTabWidget, QToolButton, QVBoxLayout, QWidget)
@@ -482,6 +483,8 @@ class ServerDialog(_Base):
         colrow.addStretch(1)
         self._pick_color(s.color)
         f2.addRow("Color", colrow)
+        f2.addRow("", QLabel("Tints this server's tab, header and terminal. ∅ = use the group's color "
+                             "(right-click a group → Color).", objectName="Hint", wordWrap=True))
         f2.addRow("", self.fav)
         self.notes = QPlainTextEdit(s.notes)
         self.notes.setPlaceholderText("Notes: what runs here, who owns it, runbook links …")
@@ -508,6 +511,15 @@ class ServerDialog(_Base):
         self.keepalive.setValue(s.keepalive)
         self.startup = QLineEdit(s.startup_cmd, placeholderText="e.g. cd /srv/app && tmux attach || tmux")
         f3.addRow("Jump host", self.jump)
+        self.agent_fwd = QCheckBox("Forward my SSH agent (like ssh -A)")
+        self.agent_fwd.setChecked(s.agent_forward)
+        self.agent_fwd.setToolTip("Lets this server use the keys in your local agent (Pageant / OpenSSH agent) "
+                                  "while you're connected: git pull, scp or ssh to the next hop without copying keys.")
+        f3.addRow("Agent", self.agent_fwd)
+        agent_hint = QLabel("Only for servers you trust: while you're connected, anyone with root on the server "
+                            "can use your agent to log in where your keys work.", objectName="Hint")
+        agent_hint.setWordWrap(True)
+        f3.addRow("", agent_hint)
         f3.addRow("Keepalive", self.keepalive)
         f3.addRow("Run on connect", self.startup)
         self.tunnel_editor = TunnelEditor(s.tunnels)
@@ -587,6 +599,7 @@ class ServerDialog(_Base):
         s.favorite = self.fav.isChecked()
         s.notes = self.notes.toPlainText()
         s.jump_id = self.jump.currentData() or ""
+        s.agent_forward = self.agent_fwd.isChecked()
         s.keepalive = self.keepalive.value()
         s.startup_cmd = self.startup.text()
         s.tunnels = self.tunnel_editor.tunnels()
@@ -631,15 +644,25 @@ class SettingsDialog(_Base):
         self.settings = settings
         self.store = store
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(580)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 20, 22, 18)
         lay.addWidget(QLabel("Settings", objectName="H2"))
+        tabs = QTabWidget()
+        lay.addWidget(tabs, 1)
+
+        def page(title: str):
+            w = QWidget()
+            pl = QVBoxLayout(w)
+            pl.setContentsMargins(4, 14, 4, 4)
+            pl.setSpacing(8)
+            tabs.addTab(w, title)
+            return pl
+        lt, lg, lv = page("Terminal"), page("General"), page("Vault && backups")
 
         f = QFormLayout()
         f.setVerticalSpacing(10)
         f.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        lay.addWidget(_section("Terminal"))
         self.font = QComboBox()
         self.font.setEditable(True)
         mono = [fam for fam in QFontDatabase.families() if QFontDatabase.isFixedPitch(fam)]
@@ -673,16 +696,21 @@ class SettingsDialog(_Base):
         f.addRow("Cursor", self.cursor)
         f.addRow("", self.blink)
         f.addRow("Scrollback lines", self.scroll)
-        lay.addLayout(f)
+        self.tint = QCheckBox("Tint the terminal of colored servers")
+        self.tint.setToolTip("Servers or groups with a color (e.g. production in red) get a tinted background")
+        self.tint.setChecked(settings.get("tint_terminals", True))
+        f.addRow("", self.tint)
+        lt.addLayout(f)
+        lt.addStretch(1)
 
-        lay.addWidget(_section("Startup"))
+        lg.addWidget(_section("Startup"))
         self.restore = QCheckBox("Reopen my tabs and splits from last time")
         self.restore.setChecked(settings.get("restore_tabs", True))
-        lay.addWidget(self.restore)
-        lay.addWidget(QLabel("Only the active tab connects right away; the others connect when you open them.",
+        lg.addWidget(self.restore)
+        lg.addWidget(QLabel("Only the active tab connects right away; the others connect when you open them.",
                              objectName="Hint", wordWrap=True))
 
-        lay.addWidget(_section("Clipboard"))
+        lg.addWidget(_section("Clipboard"))
         self.cos = QCheckBox("Copy on select (like PuTTY)")
         self.cos.setChecked(settings["copy_on_select"])
         self.rcp = QCheckBox("Right-click pastes")
@@ -690,15 +718,10 @@ class SettingsDialog(_Base):
         self.cmp = QCheckBox("Confirm before pasting multiple lines")
         self.cmp.setChecked(settings["confirm_multiline_paste"])
         for cb in (self.cos, self.rcp, self.cmp):
-            lay.addWidget(cb)
-
-        lay.addWidget(_section("Security"))
-        chg = QPushButton(icon("lock"), " Change master password…")
-        chg.clicked.connect(self._change_pw)
-        lay.addWidget(chg, 0, Qt.AlignLeft)
+            lg.addWidget(cb)
 
         from . import __version__
-        lay.addWidget(_section("Updates"))
+        lg.addWidget(_section("Updates"))
         urow = QHBoxLayout()
         self.upd = QCheckBox("Check for updates automatically")
         self.upd.setChecked(settings.get("check_updates", True))
@@ -706,10 +729,42 @@ class SettingsDialog(_Base):
         now = QPushButton(icon("refresh"), " Check now")
         now.clicked.connect(lambda: self.parent() and self.parent().check_updates(manual=True))
         urow.addWidget(now)
-        lay.addLayout(urow)
-        lay.addWidget(QLabel(f"You're running BlamixShell {__version__}. Checks GitHub Releases at most once a day; "
+        lg.addLayout(urow)
+        lg.addWidget(QLabel(f"You're running BlamixShell {__version__}. Checks GitHub Releases at most once a day; "
                              "nothing else is sent.", objectName="Hint", wordWrap=True))
 
+        lg.addStretch(1)
+        self.vault_lbl = QLabel(objectName="Hint")
+        self.vault_lbl.setWordWrap(True)
+        self.vault_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lv.addWidget(self.vault_lbl)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+        buttons = [
+            ("lock", "Change master password…", self._change_pw),
+            ("download", "Back up now", self._backup_now),
+            ("folder-open", "Open backups folder", self._open_backups),
+            ("upload", "Export vault…", self._export_vault),
+            ("import", "Import servers from a vault…", self._import_vault),
+            ("refresh", "Restore a backup…", self._restore_backup),
+            ("folder", "Move vault to a folder…", self._move_vault),
+            ("link", "Use another vault file…", self._use_other_vault),
+        ]
+        for i, (ic, text, fn) in enumerate(buttons):
+            b = QPushButton(icon(ic), " " + text)
+            b.setStyleSheet("text-align: left; padding-left: 10px;")
+            b.clicked.connect(fn)
+            grid.addWidget(b, i // 2, i % 2)
+        lv.addLayout(grid)
+        lv.addWidget(QLabel("Same servers on several computers: move the vault into a synced folder "
+                             "(OneDrive, Dropbox, Syncthing), then on the other computer choose "
+                             "“Use another vault file”. Changes from both sides are merged. "
+                             "Settings and trusted host keys stay per computer.",
+                             objectName="Hint", wordWrap=True))
+        self._refresh_vault_label()
+
+        lv.addStretch(1)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Save).setObjectName("Primary")
         bb.accepted.connect(self._save)
@@ -727,6 +782,7 @@ class SettingsDialog(_Base):
         s["cursor_style"] = self.cursor.currentText()
         s["cursor_blink"] = self.blink.isChecked()
         s["scrollback"] = self.scroll.value()
+        s["tint_terminals"] = self.tint.isChecked()
         s["copy_on_select"] = self.cos.isChecked()
         s["right_click_paste"] = self.rcp.isChecked()
         s["confirm_multiline_paste"] = self.cmp.isChecked()
@@ -736,6 +792,135 @@ class SettingsDialog(_Base):
             s["last_session"] = {}
         s.save()
         self.accept()
+
+    # ---- vault & backups ------------------------------------------------------
+    def _refresh_vault_label(self) -> None:
+        from .paths import default_vault_path
+        where = self.store.vault.path
+        n = len(self.store.backups())
+        self.vault_lbl.setText(f"Vault file: {where}" + ("" if where == default_vault_path() else "  (moved)")
+                               + f"\nBackups: {n} in {self.store.backup_dir} (one a day, the last 20 are kept)")
+
+    def _backup_now(self) -> None:
+        dest = self.store.backup_now("manual")
+        self._refresh_vault_label()
+        QMessageBox.information(self, "Backup", f"Saved an encrypted copy:\n{dest}")
+
+    def _open_backups(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        self.store.backup_dir.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.store.backup_dir)))
+
+    def _export_vault(self) -> None:
+        import shutil
+        import time
+        from pathlib import Path
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export vault", str(Path.home() / f"blamixshell-vault-{time.strftime('%Y-%m-%d')}.sdv"),
+            "BlamixShell vault (*.sdv)")
+        if not path:
+            return
+        self.store.save()
+        shutil.copy2(self.store.vault.path, path)
+        QMessageBox.information(self, "Export vault",
+                                "Exported. The file stays encrypted with your master password: "
+                                "you'll need it to import or open this file.")
+
+    def _ask_vault_password(self, title: str, path) -> str | None:
+        pw, ok = QInputDialog.getText(self, title, f"Master password of\n{path}:", QLineEdit.Password)
+        return pw if ok else None
+
+    def _import_vault(self) -> None:
+        from .vault import VaultError, WrongPassword
+        path, _ = QFileDialog.getOpenFileName(self, "Import servers from a vault", "", "BlamixShell vault (*.sdv)")
+        if not path:
+            return
+        pw = self._ask_vault_password("Import", path)
+        if pw is None:
+            return
+        try:
+            added, snips = self.store.import_vault(path, pw)
+        except WrongPassword:
+            QMessageBox.warning(self, "Import", "Wrong master password for that vault.")
+            return
+        except VaultError as e:
+            QMessageBox.warning(self, "Import", str(e))
+            return
+        if self.parent():
+            self.parent().refresh_all()
+        QMessageBox.information(self, "Import", f"Added {added} server(s) and {snips} snippet(s). "
+                                "Servers you already had were left unchanged.")
+
+    def _restore_backup(self) -> None:
+        from .vault import VaultError, WrongPassword
+        path, _ = QFileDialog.getOpenFileName(self, "Restore a backup", str(self.store.backup_dir),
+                                              "BlamixShell vault (*.sdv)")
+        if not path:
+            return
+        if QMessageBox.question(self, "Restore a backup",
+                                "Replace all your servers, keys and snippets with this backup?\n\n"
+                                "Your current vault is backed up first, so you can undo this.") != QMessageBox.Yes:
+            return
+        pw = self._ask_vault_password("Restore", path)
+        if pw is None:
+            return
+        try:
+            self.store.restore_backup(path, pw)
+        except WrongPassword:
+            QMessageBox.warning(self, "Restore", "Wrong master password for that backup.")
+            return
+        except VaultError as e:
+            QMessageBox.warning(self, "Restore", str(e))
+            return
+        if self.parent():
+            self.parent().refresh_all()
+        self._refresh_vault_label()
+        QMessageBox.information(self, "Restore", "Backup restored.")
+
+    def _move_vault(self) -> None:
+        from pathlib import Path
+        from .paths import default_vault_path, set_vault_path
+        folder = QFileDialog.getExistingDirectory(self, "Move the vault to a folder (e.g. OneDrive)")
+        if not folder:
+            return
+        target = Path(folder) / "vault.sdv"
+        if target == self.store.vault.path:
+            return
+        if target.exists():
+            if QMessageBox.question(
+                    self, "Vault already there",
+                    f"{target} already exists (from another computer?).\n\nSwitch to that vault? "
+                    "BlamixShell restarts and asks for its master password. Your current vault "
+                    "stays where it is.") == QMessageBox.Yes:
+                set_vault_path(target)
+                self._restart()
+            return
+        old = self.store.vault.path
+        self.store.move_vault(target)
+        set_vault_path(target if target != default_vault_path() else None)
+        self._refresh_vault_label()
+        QMessageBox.information(self, "Vault moved",
+                                f"The vault is now {target}.\n\nThe old file stays at {old} as a backup; "
+                                "delete it when you're happy. On another computer, choose "
+                                "“Use another vault file” and pick this file.")
+
+    def _use_other_vault(self) -> None:
+        from .paths import set_vault_path
+        path, _ = QFileDialog.getOpenFileName(self, "Use another vault file", "", "BlamixShell vault (*.sdv)")
+        if not path:
+            return
+        if QMessageBox.question(self, "Use another vault file",
+                                f"Switch to {path}?\n\nBlamixShell restarts and asks for that vault's "
+                                "master password. Your current vault file isn't changed.") != QMessageBox.Yes:
+            return
+        set_vault_path(path)
+        self._restart()
+
+    def _restart(self) -> None:
+        self.accept()
+        if self.parent() and hasattr(self.parent(), "restart"):
+            self.parent().restart()
 
     def _change_pw(self) -> None:
         dlg = QDialog(self)
@@ -754,7 +939,7 @@ class SettingsDialog(_Base):
         if len(a.text()) < 8 or a.text() != b.text():
             QMessageBox.warning(self, "Not changed", "Passwords must match and be at least 8 characters.")
             return
-        self.store.vault.change_password(a.text(), self.store.to_dict())
+        self.store.change_password(a.text())
         QMessageBox.information(self, "Done", "Master password changed.")
 
 

@@ -61,6 +61,9 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
 - **Tunnels (port forwarding):** per-server local (`-L`), remote (`-R`) and SOCKS (`-D`) tunnels that start with the connection. The pane header shows how many are up and how many connections are open; click it to copy a tunnel's address. If a server is open in several panes, its tunnels run once.
 - **Session restore:** your tabs and splits come back when you restart. The active tab connects right away; the others connect when you open them. Only the layout is saved (server ids), never passwords. Turn it off in Settings → Startup.
 - **Jump hosts / bastions:** any saved server can be a jump host, including chains.
+- **Agent forwarding (`ssh -A`):** per server (Advanced tab), off by default. The server can use the keys in your local agent (Pageant, the Windows OpenSSH agent or `ssh-agent`) for `git pull`, `scp` or the next hop, without copying keys. Only turn it on for servers you trust. `ForwardAgent yes` is picked up when importing `~/.ssh/config`.
+- **Colors for production:** give a server or a whole group a color (right-click a group → Color). Its tab, pane header and terminal background get tinted, so production looks different at a glance. The terminal tint can be turned off in Settings.
+- **Backups and sync:** one encrypted backup of the vault a day (the last 20 are kept), plus Back up now, Export, Import (adds servers, never overwrites), Restore a backup, all in Settings → Vault & backups. To use the same servers on several computers, move the vault into a synced folder (OneDrive, Dropbox, Syncthing); edits from both computers are merged, and changes show up as soon as you switch back to the window.
 - **Imports:** PuTTY sessions (Windows) and `~/.ssh/config`, including `ProxyJump` and `LocalForward` / `RemoteForward` / `DynamicForward`.
 - **Snippets:** saved commands, one click away.
 
@@ -69,11 +72,11 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
 ```text
 blamixshell                          TUI (or the desktop app via `blamixshell gui`)
 blamixshell ls [query]               list servers  (e.g. `blamixshell ls tag:prod`)
-blamixshell connect <name|user@host:port> [-L ..] [-R ..] [-D ..]
+blamixshell connect <name|user@host:port> [-A] [-L ..] [-R ..] [-D ..]
                                    interactive shell; the server's saved tunnels start too
 blamixshell tunnel <name> [-L 5432:localhost:5432] [-D 1080] [--only]
                                    run tunnels without a shell until Ctrl+C
-blamixshell exec <query> -- <cmd>    run on many servers in parallel, colored per-host output
+blamixshell exec <query> [-A] -- <cmd>  run on many servers in parallel (-A: forward your agent)
       e.g.  blamixshell exec group:Prod/EU -- 'df -h / | tail -1'
             blamixshell exec tag:web --accept-new -y -- sudo systemctl reload nginx
 blamixshell add [--name --host --user --auth --key --group --tags --jump]

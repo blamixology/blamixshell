@@ -56,6 +56,7 @@ DEFAULTS = {
     "copy_on_select": True,
     "right_click_paste": True,
     "confirm_multiline_paste": True,
+    "tint_terminals": True,         # colored servers (e.g. prod in red) tint the terminal background
     "sftp_visible": False,
     "window_geometry": "",
     "sidebar_width": 280,

@@ -26,6 +26,11 @@ class WrongPassword(VaultError):
     pass
 
 
+class PasswordChangedElsewhere(VaultError):
+    """The vault file was re-encrypted with a different master password (on another
+    computer sharing it): it has to be unlocked again."""
+
+
 def _derive(password: str, salt: bytes, n_log2: int) -> bytes:
     kdf = Scrypt(salt=salt, length=32, n=2 ** n_log2, r=8, p=1)
     return kdf.derive(password.encode("utf-8"))
@@ -37,6 +42,35 @@ class Vault:
         self._key = key
         self._salt = salt
         self._n_log2 = n_log2
+        self._sig = self._disk_sig()
+
+    # ---- change detection (vault shared through OneDrive, Syncthing, a USB stick …)
+    def _disk_sig(self) -> tuple[int, int] | None:
+        try:
+            st = self.path.stat()
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+
+    def changed_on_disk(self) -> bool:
+        """True if something else wrote the file since we last read or saved it."""
+        sig = self._disk_sig()
+        return sig is not None and sig != self._sig
+
+    def read_disk(self) -> dict:
+        """Decrypt the current file with the key we already have (no password needed),
+        and remember it as seen. Raises PasswordChangedElsewhere if it was re-keyed."""
+        raw = self.path.read_bytes()
+        if len(raw) < 4 + 16 + 1 + 12 + 16 or raw[:4] != MAGIC:
+            raise VaultError("The vault file on disk is damaged or incomplete (still syncing?)")
+        if raw[4:20] != self._salt or raw[20] != self._n_log2:
+            raise PasswordChangedElsewhere("The vault was re-encrypted with another master password")
+        try:
+            plain = AESGCM(self._key).decrypt(raw[21:33], raw[33:], MAGIC)
+        except InvalidTag:
+            raise VaultError("The vault file on disk is damaged or incomplete (still syncing?)") from None
+        self._sig = self._disk_sig()
+        return json.loads(plain.decode("utf-8"))
 
     # ---- lifecycle -------------------------------------------------------
     @staticmethod
@@ -79,6 +113,7 @@ class Vault:
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp.write_bytes(blob)
         os.replace(tmp, self.path)  # atomic: never leaves a half-written vault
+        self._sig = self._disk_sig()
 
     def change_password(self, new_password: str, data: dict) -> None:
         if not new_password:

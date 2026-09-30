@@ -46,12 +46,13 @@ class _Delegate(QStyledItemDelegate):
             if not s:
                 p.restore()
                 return
-            # color bar
-            if s.color:
-                p.setBrush(QColor(s.color))
+            color = self.tree.store.color_for(s)
+            # color bar (own color, or inherited from the group)
+            if color:
+                p.setBrush(QColor(color))
                 p.drawRoundedRect(QRect(r.left() + 6 + indent, r.top() + 9, 3, r.height() - 18), 1.5, 1.5)
             x = r.left() + 16 + indent
-            ic = icon("server", s.color or C["faint"], 18)
+            ic = icon("server", color or C["faint"], 18)
             ic.paint(p, QRect(x, r.top() + (r.height() - 18) // 2, 18, 18))
             x += 28
             # live dot
@@ -105,7 +106,8 @@ class _Delegate(QStyledItemDelegate):
             if kind == "favs":
                 ic = icon("star", C["warn"], 15)
             else:
-                ic = icon("folder-open" if expanded else "folder", C["muted"], 15)
+                gcol = self.tree.store.group_colors.get(index.data(KEY) or "")
+                ic = icon("folder-open" if expanded else "folder", gcol or C["muted"], 15)
             ic.paint(p, QRect(x, r.top() + (r.height() - 15) // 2, 15, 15))
             x += 22
             gf = QFont(base)

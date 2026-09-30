@@ -297,3 +297,60 @@ def test_live_keyboard_interactive_uses_saved_password():
     assert client.get_transport().is_authenticated() and len(asked) == 1
     assert "password" in asked[0][0][0].lower() and asked[0][0][1] is False
     _close(client, chain)
+
+
+# ------------------------------------------------------------------ agent forwarding (ssh -A)
+@pytest.fixture
+def local_agent(tmp_path, monkeypatch):
+    """A real ssh-agent with one key loaded (POSIX; Windows uses Pageant/OpenSSH agent)."""
+    import shutil
+    import subprocess
+    if sys.platform == "win32" or not shutil.which("ssh-agent") or not shutil.which("ssh-add"):
+        pytest.skip("needs ssh-agent")
+    sock = str(tmp_path / "agent.sock")
+    proc = subprocess.Popen(["ssh-agent", "-D", "-a", sock], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(50):
+        if os.path.exists(sock):
+            break
+        time.sleep(0.05)
+    key = tmp_path / "id_ed25519"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
+    monkeypatch.setenv("SSH_AUTH_SOCK", sock)
+    subprocess.run(["ssh-add", "-q", str(key)], check=True, env={**os.environ, "SSH_AUTH_SOCK": sock})
+    yield sock
+    proc.terminate()
+
+
+def _run(client, cmd, agent_forward):
+    from blamixshell.ssh_core import exec_command
+    _i, out, _e = exec_command(client, cmd, agent_forward=agent_forward, timeout=10)
+    return out.read().decode().strip()
+
+
+def test_agent_forwarding_exec_and_shell(local_agent):
+    from blamixshell.ssh_core import local_agent_keys, open_shell
+    assert local_agent_keys() == 1
+    with TestSSHServer("password") as srv:
+        s = _server(srv, password=PASSWORD)
+        client, chain = open_client(s, lambda _i: None)
+        assert _run(client, "agent-keys", agent_forward=False).startswith(("ERROR", "NO-KEYS"))
+        assert srv.agent_requests == 0                       # off by default: nothing is forwarded
+        assert _run(client, "agent-keys", agent_forward=True) == "ssh-ed25519"
+        assert srv.agent_requests == 1
+        s.agent_forward = True
+        chan = open_shell(client, s)                         # the desktop/CLI shell path asks too
+        assert srv.agent_requests == 2
+        chan.close()
+        _close(client, chain)
+
+
+@pytest.mark.skipif(not LIVE, reason="no live sshd")
+def test_live_agent_forwarding(local_agent):
+    """Real OpenSSH: `ssh-add -l` on the server sees the local agent's key only with -A."""
+    # OpenSSH keeps a forwarded agent for the whole connection: check "off" first
+    client, chain = _open_trusting(_live_server(LIVE))
+    try:
+        assert "ED25519" not in _run(client, "ssh-add -l 2>&1", agent_forward=False)
+        assert "ED25519" in _run(client, "ssh-add -l", agent_forward=True)
+    finally:
+        _close(client, chain)
