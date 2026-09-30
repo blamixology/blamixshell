@@ -307,18 +307,26 @@ def local_agent(tmp_path, monkeypatch):
     import subprocess
     if sys.platform == "win32" or not shutil.which("ssh-agent") or not shutil.which("ssh-add"):
         pytest.skip("needs ssh-agent")
-    sock = str(tmp_path / "agent.sock")
+    import tempfile
+    # macOS limits unix socket paths to 104 chars and pytest's tmp_path there is longer
+    short = tempfile.mkdtemp(prefix="sa-", dir="/tmp")
+    sock = os.path.join(short, "a.sock")
     proc = subprocess.Popen(["ssh-agent", "-D", "-a", sock], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for _ in range(50):
-        if os.path.exists(sock):
+    for _ in range(100):
+        if os.path.exists(sock) or proc.poll() is not None:
             break
         time.sleep(0.05)
+    if not os.path.exists(sock):
+        proc.kill()
+        pytest.skip("ssh-agent did not start")
     key = tmp_path / "id_ed25519"
     subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
     monkeypatch.setenv("SSH_AUTH_SOCK", sock)
     subprocess.run(["ssh-add", "-q", str(key)], check=True, env={**os.environ, "SSH_AUTH_SOCK": sock})
     yield sock
     proc.terminate()
+    import shutil as _sh
+    _sh.rmtree(short, ignore_errors=True)
 
 
 def _run(client, cmd, agent_forward):
