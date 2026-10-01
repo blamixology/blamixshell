@@ -2,3 +2,4 @@ PySide6>=6.7
 paramiko>=3.4
 cryptography>=42,<49 ; sys_platform == "darwin" and platform_machine == "x86_64"  # no Intel-mac wheels from 49 on
 cryptography>=42 ; sys_platform != "darwin" or platform_machine != "x86_64"
+pywinpty>=2.0.13 ; sys_platform == "win32"   # terminals for AWS SSM shells (ConPTY)

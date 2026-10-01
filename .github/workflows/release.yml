@@ -92,7 +92,7 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean --onedir --windowed --name BlamixShell `
             --icon blamixshell/assets/app.ico --add-data "blamixshell/assets;blamixshell/assets" `
-            --exclude-module tkinter run.py
+            --collect-all winpty --exclude-module tkinter run.py
           python packaging/prune_qt.py dist/BlamixShell
           $env:BLAMIXSHELL_SELFTEST = "1"; $env:QT_QPA_PLATFORM = "offscreen"
           $p = Start-Process dist/BlamixShell/BlamixShell.exe -Wait -PassThru

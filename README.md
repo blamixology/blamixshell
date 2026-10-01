@@ -69,6 +69,12 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
   - Actions run as root only when needed: directly as root, with passwordless sudo, or with a sudo password you type for that dashboard only; it's sent over the SSH connection and never saved.
 - **Colors for production:** give a server or a whole group a color (right-click a group → Color). Its tab, pane header and terminal background get tinted, so production looks different at a glance. The terminal tint can be turned off in Settings.
 - **Backups and sync:** one encrypted backup of the vault a day (the last 20 are kept), plus Back up now, Export, Import (adds servers, never overwrites), Restore a backup, all in Settings → Vault & backups. To use the same servers on several computers, move the vault into a synced folder (OneDrive, Dropbox, Syncthing); edits from both computers are merged, and changes show up as soon as you switch back to the window.
+- **AWS Systems Manager (SSM):** reach EC2 instances without an open SSH port or a bastion. It uses your AWS CLI v2 profiles and AWS's Session Manager plugin.
+  - **SSH over SSM:** a normal SSH connection carried by Session Manager (like `ProxyCommand aws ssm start-session …`). Files, tunnels and the dashboard work as on any server.
+  - **EC2 Instance Connect (optional):** each connection pushes a one-time key (valid 60 s) with `ec2-instance-connect send-ssh-public-key`. No keys or passwords live on the instance.
+  - **SSM shell:** Session Manager's own shell, for instances without SSH (and Windows instances, which get PowerShell). Terminal only.
+  - **AWS SSO:** when the SSO session has expired, BlamixShell offers to sign in (`aws sso login`, in your browser) and reconnects. Panes of the same profile share one sign-in. There's also **+ → AWS SSO sign-in…**.
+  - **Import from AWS:** pick a profile and region to list the instances Session Manager can reach (Name tag, platform, agent status), then add them as a group (`AWS/<profile>/<region>`). Importing again updates existing entries instead of duplicating them.
 - **Imports:** PuTTY sessions (Windows) and `~/.ssh/config`, including `ProxyJump` and `LocalForward` / `RemoteForward` / `DynamicForward`.
 - **Snippets:** saved commands, one click away.
 
@@ -87,6 +93,11 @@ blamixshell exec <query> [-A] -- <cmd>  run on many servers in parallel (-A: for
       e.g.  blamixshell exec group:Prod/EU -- 'df -h / | tail -1'
             blamixshell exec tag:web --accept-new -y -- sudo systemctl reload nginx
 blamixshell add [--name --host --user --auth --key --group --tags --jump]
+                 [--ssm ssh|shell --aws-profile P --aws-region R --eic]   (host = instance id)
+blamixshell aws login [--profile P]   AWS SSO sign-in (aws sso login)
+blamixshell aws instances [--profile P] [--region R] [--online] [--json]
+                                   EC2 instances reachable through Session Manager
+blamixshell aws import [--profile P] [--region R] [--group G] [--user U] [--shell] [--no-eic]
 blamixshell rm <name>
 blamixshell import ssh-config|putty
 blamixshell passwd                   change the master password
@@ -146,7 +157,10 @@ blamixshell/
   session_tab.py   tab with nested split panes, broadcast routing
   terminal.py      xterm.js <-> Python bridge (QWebChannel), pane UI
   ssh_session.py   Qt wrapper: shell I/O thread → signals
-  ssh_core.py      Qt-free SSH core: auth incl. 2FA prompts, host keys, jump hosts (shared by all front-ends)
+  ssh_core.py      Qt-free SSH core: auth incl. 2FA prompts, host keys, jump hosts, SSH over SSM (shared by all front-ends)
+  aws.py           Qt-free AWS support (through the AWS CLI): SSM proxy, SSO, Instance Connect, instance listing
+  aws_ui.py        AWS sign-in and import dialogs
+  pty_process.py   local programs in a terminal (ConPTY / pty), used for SSM shells
   tunnels.py       Qt-free port forwarding: local, remote, SOCKS4/5
   dashboard.py     Qt-free server dashboard: collectors, parsers, sudo-aware actions
   dashboard_ui.py  dashboard window

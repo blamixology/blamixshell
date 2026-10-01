@@ -109,7 +109,15 @@ class ServerForm(ModalScreen[Server | None]):
         with VerticalScroll(id="form"):
             yield Label(Text("New server" if self.is_new else f"Edit {s.label}", style=f"bold {ACCENT}"))
             yield self._row("Name", Input(s.name, placeholder="api-prod-1", id="name"))
-            yield self._row("Host", Input(s.host, placeholder="host or IP (user@host:port ok)", id="host"))
+            yield self._row("Connect via", Select([("SSH", "ssh"), ("SSH over AWS SSM", "ssm-ssh"),
+                                                   ("AWS SSM shell (no SSH)", "ssm-shell")],
+                                                  value=s.connection, allow_blank=False, id="via"))
+            yield self._row("AWS profile", Input(s.aws_profile, placeholder="default", id="aws_profile"))
+            yield self._row("AWS region", Input(s.aws_region, placeholder="profile's region", id="aws_region"))
+            yield self._row("Instance Connect", Select([("No", "no"), ("Yes: one-time key per connection", "yes")],
+                                                       value="yes" if s.eic else "no", allow_blank=False, id="eic"))
+            yield self._row("Host", Input(s.host, placeholder="host or IP (user@host:port ok) · i-… for SSM",
+                                          id="host"))
             yield self._row("Port", Input(str(s.port), id="port", type="integer"))
             yield self._row("Username", Input(s.username, id="user"))
             yield self._row("Auth", Select([("Password", "password"), ("Private key", "key"),
@@ -137,11 +145,12 @@ class ServerForm(ModalScreen[Server | None]):
     def action_save(self) -> None:
         s = self.server
         host = self._val("host")
-        if "@" in host:
+        via = str(self.query_one("#via", Select).value)
+        if "@" in host and via == "ssh":
             u, host = host.rsplit("@", 1)
             if not self._val("user"):
                 self.query_one("#user", Input).value = u
-        if host.count(":") == 1:
+        if host.count(":") == 1 and via == "ssh":
             host, p = host.split(":")
             if p.isdigit():
                 self.query_one("#port", Input).value = p
@@ -164,6 +173,12 @@ class ServerForm(ModalScreen[Server | None]):
         j = self.query_one("#jump", Select).value
         s.jump_id = "" if j in (NO_SELECTION, Select.BLANK, None) else str(j)
         s.startup_cmd = self._val("startup")
+        s.connection = via
+        s.aws_profile = "" if self._val("aws_profile") == "default" else self._val("aws_profile")
+        s.aws_region = self._val("aws_region")
+        s.eic = self.query_one("#eic", Select).value == "yes"
+        if s.is_ssm:
+            s.jump_id = ""
         self.dismiss(s)
 
     @on(Button.Pressed, "#save")

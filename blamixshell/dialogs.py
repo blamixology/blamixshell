@@ -396,9 +396,45 @@ class ServerDialog(_Base):
         hp.addWidget(QLabel("Port"))
         hp.addWidget(self.port)
         self.user = QLineEdit(s.username, placeholderText="root, ubuntu, deploy …")
+        self._form = f
+        self._hp = hp
+        # how to reach it: direct SSH, or through AWS Systems Manager
+        self.via = QComboBox()
+        for key, text in (("ssh", "SSH"), ("ssm-ssh", "SSH over AWS SSM (no open port needed)"),
+                          ("ssm-shell", "AWS SSM shell (no SSH on the instance)")):
+            self.via.addItem(text, key)
+        self.via.setCurrentIndex(max(self.via.findData(s.connection), 0))
         f.addRow("Name", self.name)
+        f.addRow("Connect via", self.via)
+        self.aws_row = QWidget()
+        ar = QHBoxLayout(self.aws_row)
+        ar.setContentsMargins(0, 0, 0, 0)
+        from . import aws
+        self.aws_profile = QComboBox()
+        self.aws_profile.setEditable(True)
+        self.aws_profile.addItems([""] + aws.profiles())
+        self.aws_profile.setCurrentText(s.aws_profile)
+        self.aws_profile.lineEdit().setPlaceholderText("default")
+        self.aws_profile.setMinimumWidth(170)
+        self.aws_region = QComboBox()
+        self.aws_region.setEditable(True)
+        self.aws_region.addItems([""] + aws.REGIONS)
+        self.aws_region.setCurrentText(s.aws_region)
+        self.aws_region.lineEdit().setPlaceholderText("profile's region")
+        self.aws_login = QPushButton(icon("lock"), " Sign in")
+        self.aws_login.setToolTip("aws sso login for this profile")
+        self.aws_login.clicked.connect(self._aws_sign_in)
+        ar.addWidget(self.aws_profile, 1)
+        ar.addWidget(QLabel("Region"))
+        ar.addWidget(self.aws_region)
+        ar.addWidget(self.aws_login)
+        f.addRow("AWS profile", self.aws_row)
         f.addRow("Host", hp)
         f.addRow("Username", self.user)
+        self.eic = QCheckBox("Use EC2 Instance Connect: a one-time key for each connection (no keys "
+                             "or passwords stored on the instance)")
+        self.eic.setChecked(s.eic)
+        f.addRow("", self.eic)
 
         authrow = QHBoxLayout()
         self.auth_group = QButtonGroup(self)
@@ -446,10 +482,14 @@ class ServerDialog(_Base):
         for p in (pw_page, key_page, agent_page):
             self.auth_stack.addWidget(p)
         f.addRow("", self.auth_stack)
+        self._authrow = authrow
         self.auth_group.idToggled.connect(lambda i, on: on and self.auth_stack.setCurrentIndex(i))
         if not self.auth_group.checkedButton():
             self.auth_group.button(0).setChecked(True)
         self.auth_stack.setCurrentIndex(self.auth_group.checkedId())
+        self.aws_hint = QLabel(objectName="Hint", wordWrap=True)
+        self.aws_hint.setOpenExternalLinks(True)
+        f.addRow("", self.aws_hint)
         tabs.addTab(w, "Connection")
 
         # -- organize tab
@@ -526,6 +566,9 @@ class ServerDialog(_Base):
         tabs.addTab(self.tunnel_editor, "Tunnels" + (f" ({len(s.tunnels)})" if s.tunnels else ""))
         tabs.addTab(w3, "Advanced")
         self._tabs = tabs
+        self.via.currentIndexChanged.connect(lambda _i: self._via_changed())
+        self.eic.toggled.connect(lambda _on: self._via_changed())
+        self.aws_profile.currentTextChanged.connect(lambda _t: self._via_changed())
 
         # -- buttons
         self.test_lbl = QLabel(objectName="Hint")
@@ -547,7 +590,48 @@ class ServerDialog(_Base):
         root.addLayout(row)
         self._tester = _Tester()
         self._tester.done.connect(self._test_done)
+        self._via_changed()
         (self.name if not s.host else self.host).setFocus()
+
+    def _via_changed(self) -> None:
+        from . import aws
+        via = self.via.currentData()
+        ssm, shell = via != "ssh", via == "ssm-shell"
+        f = self._form
+        f.setRowVisible(self.aws_row, ssm)
+        f.setRowVisible(self.eic, via == "ssm-ssh")
+        f.setRowVisible(self.user, not shell)
+        f.setRowVisible(self._authrow, not shell and not (via == "ssm-ssh" and self.eic.isChecked()))
+        f.setRowVisible(self.auth_stack, not shell and not (via == "ssm-ssh" and self.eic.isChecked()))
+        f.setRowVisible(self.aws_hint, ssm)
+        self.port.setEnabled(not shell)
+        label = f.labelForField(self._hp)
+        if label:
+            label.setText("Instance ID" if ssm else "Host")
+        self.host.setPlaceholderText("i-0123456789abcdef0" if ssm else "hostname or IP  (user@host:port works too)")
+        self.aws_login.setVisible(ssm and aws.is_sso_profile(self.aws_profile.currentText().strip()))
+        self.jump.setEnabled(not ssm)
+        self.jump.setToolTip("SSM connects through AWS, not through a jump host." if ssm else "")
+        self._tabs.setTabEnabled(self._tabs.indexOf(self.tunnel_editor), not shell)
+        hint = ""
+        if ssm and not aws.cli():
+            hint = (f"<span style='color:{C['warn']}'>Needs the AWS CLI v2</span> "
+                    f"(<a style='color:{C['accent']}' href='{aws.CLI_INSTALL_URL}'>install</a>) and the "
+                    f"<a style='color:{C['accent']}' href='{aws.PLUGIN_INSTALL_URL}'>Session Manager plugin</a>.")
+        elif ssm and not aws.plugin():
+            hint = (f"<span style='color:{C['warn']}'>Needs AWS's Session Manager plugin</span> "
+                    f"(<a style='color:{C['accent']}' href='{aws.PLUGIN_INSTALL_URL}'>install</a>).")
+        elif shell:
+            hint = "Opens Session Manager's own shell (as ssm-user). Files, tunnels and the dashboard need SSH."
+        elif via == "ssm-ssh":
+            hint = "SSH runs inside an SSM session: files, tunnels and the dashboard work as usual."
+        self.aws_hint.setText(hint)
+
+    def _aws_sign_in(self) -> None:
+        from .aws_ui import ensure_login
+        p = self.aws_profile.currentText().strip()
+        ensure_login(self, "" if p == "default" else p, lambda: self.test_lbl.setText("✔ Signed in to AWS."),
+                     ask=False)
 
     def _pick_color(self, col: str) -> None:
         self._color = col
@@ -563,6 +647,9 @@ class ServerDialog(_Base):
 
     def _split_host(self) -> None:
         t = self.host.text().strip()
+        if self.via.currentData() != "ssh":
+            self.host.setText(t)
+            return
         if t.startswith("ssh "):
             t = t[4:].strip()
         if "@" in t:
@@ -603,6 +690,13 @@ class ServerDialog(_Base):
         s.keepalive = self.keepalive.value()
         s.startup_cmd = self.startup.text()
         s.tunnels = self.tunnel_editor.tunnels()
+        s.connection = self.via.currentData()
+        p = self.aws_profile.currentText().strip()
+        s.aws_profile = "" if p == "default" else p
+        s.aws_region = self.aws_region.currentText().strip()
+        s.eic = self.eic.isChecked()
+        if s.is_ssm:
+            s.jump_id = ""
         return s
 
     def _test(self) -> None:
@@ -624,7 +718,16 @@ class ServerDialog(_Base):
     def _save(self) -> None:
         s = self._collect()
         if not s.host:
-            QMessageBox.warning(self, "Missing host", "Please enter a host name or IP.")
+            QMessageBox.warning(self, "Missing host", "Please enter an instance ID." if s.is_ssm
+                                else "Please enter a host name or IP.")
+            return
+        from . import aws
+        if s.is_ssm and not aws.is_instance_id(s.host) and QMessageBox.question(
+                self, "Instance ID?", f"“{s.host}” doesn't look like an instance ID (i-… or mi-…). Save anyway?") \
+                != QMessageBox.Yes:
+            return
+        if s.connection == "ssm-ssh" and s.eic and not s.username:
+            QMessageBox.warning(self, "Username", "EC2 Instance Connect needs the OS user (ec2-user, ubuntu …).")
             return
         bad = self.tunnel_editor.problems()
         if bad:

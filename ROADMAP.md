@@ -9,6 +9,12 @@ Legend: ✅ done · 🚧 in progress · 🗓 planned · 💡 later / maybe
 
 | | Feature | What it means |
 |---|---|---|
+| ✅ | **AWS Systems Manager** | SSH over SSM (files, tunnels, dashboard work), plain SSM shells, EC2 Instance Connect one-time keys, AWS SSO sign-in with automatic reconnect, and import of SSM-managed instances. CLI: `blamixshell aws login / instances / import`. |
+
+## Released in 1.4
+
+| | Feature | What it means |
+|---|---|---|
 | ✅ | **Server dashboard** | Agentless, over the existing SSH connection: overview (CPU, memory, load, disks), services with confirmed actions (systemd, SysV init, OpenRC, supervisord), processes, logs, ports, pending updates, users. Also `blamixshell status <server>`. |
 
 ## Released in 1.3
@@ -32,7 +38,7 @@ Legend: ✅ done · 🚧 in progress · 🗓 planned · 💡 later / maybe
 
 | | Feature | What it means |
 |---|---|---|
-| 🗓 | **Local terminal tabs** | PowerShell, cmd, WSL or Git Bash in the same window (ConPTY on Windows), bash/zsh on macOS and Linux. |
+| 🗓 | **Local terminal tabs** | PowerShell, cmd, WSL or Git Bash in the same window (ConPTY on Windows), bash/zsh on macOS and Linux. The terminal layer is already in place (it runs SSM shells). |
 | 🗓 | **Session logging** | Record a terminal to a file, on demand or always for a server, with optional timestamps. |
 
 ## Gaps vs. other tools

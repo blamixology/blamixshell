@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QDialog, QHBoxLayout, QInputDialog, QLabel, QLine
 
 from .models import Server
 from .paths import assets_dir
-from .ssh_session import ShellSession
+from .ssh_session import ShellSession, make_session
 from .platform_ui import kb
 from .theme import C, blend, icon
 
@@ -242,7 +242,7 @@ class TerminalPane(QWidget):
             self.header.setStyleSheet("")
         self.addr_lbl.setText(self.server.address if self.server.name else "")
         self.btn_reconnect.setVisible(self.state in ("disconnected", "failed"))
-        self.btn_dash.setVisible(self.state == "connected")
+        self.btn_dash.setVisible(self.state == "connected" and self.server.uses_ssh)
         self._tick()
 
     def _tick(self) -> None:
@@ -352,7 +352,7 @@ class TerminalPane(QWidget):
 
     def start(self) -> None:
         self.deferred = False
-        if self.server.auth == "password" and not self.server.password and not self._session_password:
+        if self.server.needs_password and not self.server.password and not self._session_password:
             pw, ok = QInputDialog.getText(self, f"Password for {self.server.label}",
                                           f"Password for {self.server.address}:", QLineEdit.Password)
             if not ok:
@@ -373,7 +373,7 @@ class TerminalPane(QWidget):
         srv = self.server.copy()
         if self._session_password:
             srv.password = self._session_password
-        s = ShellSession(srv, self._resolve, self)
+        s = make_session(srv, self._resolve, self)
         s.output.connect(self.write_output)
         s.status.connect(lambda m: (self.write_status(m), self.status_lbl.setText(m)))
         s.connected.connect(self._on_connected)
@@ -383,6 +383,7 @@ class TerminalPane(QWidget):
         s.auth_prompt.connect(self._on_auth_prompt)
         s.tunnels_changed.connect(self._on_tunnels)
         s.tunnel_message.connect(lambda m, err: self.write_status(m, "33" if err else "90"))
+        s.aws_login_required.connect(self._on_aws_login)
         self.session = s
         self._set_state("connecting", "connecting …")
         cols, rows = self._size
@@ -408,6 +409,18 @@ class TerminalPane(QWidget):
         self.write_status("Press R to retry.", "90")
         if "Authentication" in reason and self.server.auth == "password":
             self._session_password = ""   # ask again next time
+
+    def _on_aws_login(self, profile: str) -> None:
+        from .aws_ui import ensure_login
+        if time.time() - getattr(self, "_aws_login_at", 0) < 90:
+            return      # just signed in and it still fails: don't loop, the error is shown
+        self._aws_login_at = time.time()
+        self.write_status("Sign in to AWS to continue …", "36")
+
+        def again():
+            if self.state in ("failed", "disconnected"):
+                self.reconnect()
+        QTimer.singleShot(0, lambda: ensure_login(self, profile, again))
 
     def _on_auth_prompt(self, label: str, title: str, instructions: str, prompts: list) -> None:
         from .dialogs import AuthPromptDialog

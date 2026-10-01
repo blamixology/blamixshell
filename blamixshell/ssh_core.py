@@ -150,6 +150,12 @@ class _Client(paramiko.SSHClient):
     prompts through a callback (paramiko's own falls back to stdin input())."""
 
     interactive: InteractiveHandler | None = None
+    proxy = None                     # aws.ProcessSocket when connected through SSM
+
+    def close(self):
+        super().close()
+        if self.proxy is not None:
+            self.proxy.close()
 
     def _auth(self, username, password, pkey, key_filenames, allow_agent,
               look_for_keys, passphrase):  # noqa: PLR0912 (it's a sequence of fallbacks)
@@ -250,6 +256,10 @@ class _Client(paramiko.SSHClient):
 def _connect_kwargs(server: Server) -> dict:
     kw: dict = dict(username=server.username or None, timeout=12, banner_timeout=20,
                     auth_timeout=25, allow_agent=False, look_for_keys=False)
+    if server.connection == "ssm-ssh":
+        kw["banner_timeout"] = 45      # SSM needs a few seconds to set up the session
+    if server.connection == "ssm-ssh" and server.eic:
+        return kw                      # the one-time EC2 Instance Connect key is added by open_client
     if server.auth == "password":
         kw["password"] = server.password
     elif server.auth == "key":
@@ -269,9 +279,22 @@ def open_client(server: Server, resolve: Callable[[str], Server | None],
     server's prompts and returns the answers, or None to cancel."""
     if _depth > 4:
         raise AuthConfigError("Jump host chain is too long (loop?)")
+    if server.connection == "ssm-shell":
+        raise AuthConfigError(f"{server.label} is an AWS SSM shell (no SSH): use it as a terminal only.")
     sock = None
+    proxy = None
     chain: list[paramiko.SSHClient] = []
-    if server.jump_id:
+    kwargs = _connect_kwargs(server)
+    if server.connection == "ssm-ssh":
+        from . import aws
+        if server.eic:
+            log("sending a one-time key with EC2 Instance Connect …")
+            kwargs["pkey"], public = aws.ephemeral_key()
+            aws.send_ssh_public_key(server, public)
+        log(f"starting AWS SSM session to {server.host} …")
+        proxy = aws.open_ssh_proxy(server)
+        sock = proxy.sock
+    elif server.jump_id:
         jump = resolve(server.jump_id)
         if not jump:
             raise AuthConfigError("The configured jump host no longer exists")
@@ -283,11 +306,13 @@ def open_client(server: Server, resolve: Callable[[str], Server | None],
 
     client = _Client()
     client.interactive = interactive
+    client.proxy = proxy
     client._host_keys = load_known_hosts()       # read-only view; we save via trust_host_key
     client.set_missing_host_key_policy(_AskPolicy())
-    log(f"connecting to {server.host}:{server.port} …")
+    if proxy is None:
+        log(f"connecting to {server.host}:{server.port} …")
     try:
-        client.connect(server.host, port=int(server.port), sock=sock, **_connect_kwargs(server))
+        client.connect(server.host, port=int(server.port), sock=sock, **kwargs)
     except paramiko.BadHostKeyException as e:
         client.close()
         for c in chain:
@@ -299,10 +324,14 @@ def open_client(server: Server, resolve: Callable[[str], Server | None],
             c.close()
         # paramiko reports the bare host; normalise to known_hosts format
         raise UnknownHostKey(host_id(server.host, server.port), e.key) from None
-    except Exception:
+    except Exception as e:
+        err = proxy.error_text() if proxy is not None else ""
         client.close()
         for c in chain:
             c.close()
+        if err.strip() and not isinstance(e, paramiko.AuthenticationException):
+            from . import aws
+            raise aws.classify(err, server.aws_profile) from None   # why the SSM session failed
         raise
     tr = client.get_transport()
     if tr and server.keepalive:
@@ -406,7 +435,8 @@ def open_sftp(client: paramiko.SSHClient) -> tuple[paramiko.SFTPClient, str]:
 
 
 def friendly_error(e: Exception) -> str:
-    if isinstance(e, (AuthCancelled, NeedsInput)):
+    from .aws import AwsError
+    if isinstance(e, (AuthCancelled, NeedsInput, AwsError)):
         return str(e)
     if isinstance(e, paramiko.AuthenticationException):
         msg = str(e)
@@ -430,6 +460,8 @@ def friendly_error(e: Exception) -> str:
 
 def test_connection(server: Server, resolve) -> str:
     """Blocking connectivity check used by the server dialog. Returns '' on success."""
+    if server.connection == "ssm-shell":
+        return test_ssm_shell(server)
     try:
         client, chain = open_client(server, resolve)
         client.close()
@@ -447,3 +479,17 @@ def test_connection(server: Server, resolve) -> str:
         return str(e)
     except Exception as e:
         return friendly_error(e)
+
+
+def test_ssm_shell(server: Server) -> str:
+    """Checks for a plain SSM shell server: CLI, plugin, credentials. '' on success."""
+    from . import aws
+    try:
+        if not aws.cli():
+            raise aws.CliMissing()
+        if not aws.plugin() and "BLAMIXSHELL_AWS" not in __import__("os").environ:
+            raise aws.PluginMissing()
+        arn = aws.check_credentials(server.aws_profile, server.aws_region)
+        return f"OK. Signed in to AWS as {arn.split(':')[-1] or arn}."
+    except aws.AwsError as e:
+        return str(e)

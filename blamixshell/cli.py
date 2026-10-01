@@ -6,6 +6,7 @@ interactively, and run commands across many servers. No Qt needed.
     blamixshell connect NAME    interactive shell (NAME, id, or user@host[:port]); -L/-R/-D add tunnels
     blamixshell tunnel NAME     run a server's saved tunnels (plus -L/-R/-D) without a shell
     blamixshell exec QUERY -- CMD   run CMD on every matching server in parallel
+    blamixshell aws login|instances|import   AWS SSO sign-in, list / import SSM-managed EC2 instances
     blamixshell add | rm NAME | import ssh-config|putty | passwd | gui
 """
 from __future__ import annotations
@@ -19,7 +20,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import __version__
+from . import __version__, aws
 from .models import Server, Store, Tunnel
 from .paths import VAULT_POINTER, data_dir, default_vault_path, vault_path
 from .ssh_core import (AuthConfigError, ChangedHostKey, UnknownHostKey, exec_command, fingerprint,
@@ -127,7 +128,7 @@ class Connector:
     def prepare(self, server: Server) -> Server:
         """Copy of the server with a password filled in (prompting once if needed)."""
         s = server.copy()
-        if s.auth == "password" and not s.password:
+        if s.needs_password and not s.password:
             with self._lock:
                 if s.id not in self._pw:
                     if not self.interactive:
@@ -170,6 +171,10 @@ class Connector:
                     trust_host_key(e.host_id, e.key)
                     continue
                 raise AuthConfigError("Host key not trusted") from None
+            except aws.LoginRequired as e:
+                if not (e.sso and self.interactive and aws_login(e.profile)):
+                    raise AuthConfigError(str(e)) from None
+                continue
             except ChangedHostKey as e:
                 msg = (f"HOST KEY FOR {e.host_id} HAS CHANGED!\n"
                        f"  new key: {e.key.get_name()} {fingerprint(e.key)}\n"
@@ -197,8 +202,46 @@ class Connector:
         raise AuthConfigError("Giving up after several attempts")
 
 
+def aws_login(profile: str) -> bool:
+    """`aws sso login` in this terminal (the browser opens). True when it worked."""
+    import subprocess
+    cmd = aws.cli()
+    if not cmd:
+        print(c(str(aws.CliMissing()), "31"))
+        return False
+    print(c(f"Signing in to AWS SSO (profile {profile or 'default'}) …", "36"))
+    code = subprocess.call(cmd + ["sso", "login"] + (["--profile", profile] if profile else []), env=aws.env())
+    return code == 0
+
+
+def ssm_shell(server: Server, store: Store) -> int:
+    """A plain AWS Session Manager shell: the AWS CLI takes over this terminal."""
+    import subprocess
+    print(c(f"→ {server.label}", "1;36") + c(f"  {server.address}", "90"))
+    try:
+        for _attempt in range(2):
+            try:
+                aws.check_credentials(server.aws_profile, server.aws_region)
+                break
+            except aws.LoginRequired as e:
+                if not (e.sso and sys.stdin.isatty() and aws_login(e.profile)):
+                    raise
+        if not aws.plugin() and "BLAMIXSHELL_AWS" not in os.environ:
+            raise aws.PluginMissing()
+        argv = aws.shell_argv(server)
+    except aws.AwsError as e:
+        die(str(e))
+    if server.id in store.servers:
+        store.touch(server.id)
+    code = subprocess.call(argv, env=aws.env())
+    print(c(f"\n← disconnected from {server.label}", "90"))
+    return code
+
+
 def interactive_shell(server: Server, store: Store) -> int:
     """Hand the local terminal to a remote shell (raw mode, resize-aware)."""
+    if server.connection == "ssm-shell":
+        return ssm_shell(server, store)
     if os.name != "posix":
         die("Interactive sessions from the CLI need macOS/Linux. On Windows use the desktop app.")
     import select
@@ -449,6 +492,21 @@ def cmd_add(store: Store, a) -> int:
         s.port = int(p)
     if a.port:
         s.port = a.port
+    if a.ssm:
+        s.connection = "ssm-shell" if a.ssm == "shell" else "ssm-ssh"
+        s.aws_profile, s.aws_region = a.aws_profile or "", a.aws_region or ""
+        s.eic = a.eic and a.ssm == "ssh"
+        if not aws.is_instance_id(s.host):
+            print(c(f"note: “{s.host}” doesn't look like an instance id (i-…)", "33"))
+    if s.connection == "ssm-shell" or s.eic:
+        s.username = a.user or s.username or ("" if s.connection == "ssm-shell" else _ask("OS user", "ec2-user"))
+        s.name = a.name or _ask("Name", s.host)
+        s.group = a.group if a.group is not None else _ask("Group (e.g. AWS/prod)", "")
+        tags = a.tags if a.tags is not None else ""
+        s.tags = [t.strip() for t in tags.split(",") if t.strip()]
+        store.upsert(s)
+        print(c("✔ ", "32") + f"Saved {s.label} ({s.address})")
+        return 0
     s.username = a.user or s.username or _ask("Username", getpass.getuser())
     s.name = a.name or _ask("Name", s.host)
     s.auth = a.auth or _ask("Auth (password/key/agent)", "password")
@@ -498,6 +556,8 @@ def cmd_status(store: Store, a) -> int:
     s = find_server(store, a.target) or adhoc_server(a.target)
     if not s:
         die(f"No server matching “{a.target}”")
+    if not s.uses_ssh:
+        die(f"{s.label} is an AWS SSM shell: status needs SSH (switch it to SSH over SSM).")
     conn = Connector(store)
     try:
         client, chain = conn.open(s)
@@ -555,6 +615,8 @@ def cmd_tunnel(store: Store, a) -> int:
     s = find_server(store, a.target) or adhoc_server(a.target)
     if not s:
         die(f"No server matching “{a.target}”")
+    if not s.uses_ssh:
+        die(f"{s.label} is an AWS SSM shell: tunnels need SSH (switch it to SSH over SSM).")
     s = s.copy()
     if a.only:
         s.tunnels = []
@@ -578,6 +640,10 @@ def cmd_exec(store: Store, a) -> int:
         servers = [s.copy() for s in servers]
         for s in servers:
             s.agent_forward = True
+    shells = [s for s in servers if not s.uses_ssh]
+    servers = [s for s in servers if s.uses_ssh]
+    if shells:
+        print(c("Skipping AWS SSM shell servers (exec needs SSH): " + ", ".join(s.label for s in shells), "33"))
     if not servers:
         die(f"No servers match “{query}”")
     print(c(f"Running on {len(servers)} server(s): ", "1") + ", ".join(s.label for s in servers))
@@ -595,6 +661,47 @@ def cmd_import(store: Store, a) -> int:
         die("PuTTY sessions live in the Windows registry; use: blamixshell import ssh-config")
     added = store.import_servers(servers)
     print(c("✔ ", "32") + f"Imported {added} new server(s) ({len(servers) - added} already existed)")
+    return 0
+
+
+def cmd_aws(store: Store | None, a) -> int:
+    """blamixshell aws login | instances | import"""
+    profile = "" if a.profile in (None, "default") else a.profile
+    if a.action == "login":
+        if not aws.cli():
+            die(str(aws.CliMissing()))
+        return 0 if aws_login(profile) else 1
+    try:
+        for _attempt in range(2):
+            try:
+                insts, note = aws.list_instances(profile, a.region or "")
+                break
+            except aws.LoginRequired as e:
+                if not (e.sso and sys.stdin.isatty() and aws_login(e.profile)):
+                    raise
+    except aws.AwsError as e:
+        die(str(e))
+    if a.online:
+        insts = [i for i in insts if i.online]
+    if a.action == "instances":
+        if a.json:
+            print(json.dumps([i.__dict__ for i in insts], indent=2))
+            return 0
+        for i in insts:
+            dot = c("●", "32" if i.online else "90")
+            print(f" {dot} {i.label[:32]:<32} {i.id:<21} {(i.platform_name or i.platform)[:28]:<28} "
+                  + c(f"{i.ping}{' · ' + i.state if i.state else ''}  {i.ip}", "90"))
+        print(c(f"\n{len(insts)} instance(s)" + (f"  ·  {note}" if note else ""), "90"))
+        return 0
+    # import
+    assert store is not None
+    if not insts:
+        die("No instances to import.")
+    added, updated = aws.import_instances(store, insts, profile, a.region or "",
+                                          "ssm-shell" if a.shell else "ssm-ssh", a.user or "",
+                                          not a.no_eic, a.group or "")
+    group = a.group or aws.default_group(profile, a.region or "")
+    print(c("✔ ", "32") + f"Added {added}, updated {updated} server(s) in {group}")
     return 0
 
 
@@ -679,10 +786,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-t", "--timeout", type=float, default=None, help="per-command timeout in seconds")
     sp.add_argument("--accept-new", action="store_true", help="trust unknown host keys (never changed ones)")
     sp.add_argument("-A", dest="agent", action="store_true", help="forward your SSH agent (like ssh -A)")
+    sp = sub.add_parser("aws", help="AWS: SSO sign-in, list or import SSM-managed instances")
+    sp.add_argument("action", choices=["login", "instances", "import"])
+    sp.add_argument("--profile", help="AWS CLI profile (default: AWS_PROFILE / default)")
+    sp.add_argument("--region", help="AWS region (default: the profile's)")
+    sp.add_argument("--online", action="store_true", help="only instances whose SSM agent is online")
+    sp.add_argument("--json", action="store_true", help="instances: JSON output")
+    sp.add_argument("--group", help="import: server group (default AWS/<profile>/<region>)")
+    sp.add_argument("--user", help="import: SSH user (default: from the OS: ubuntu, ec2-user …)")
+    sp.add_argument("--shell", action="store_true", help="import as plain SSM shells (no SSH)")
+    sp.add_argument("--no-eic", action="store_true", help="import: don't use EC2 Instance Connect keys")
     sp = sub.add_parser("add", help="add a server")
     for f in ("name", "host", "user", "auth", "key", "group", "tags", "jump"):
         sp.add_argument(f"--{f}")
     sp.add_argument("--port", type=int)
+    sp.add_argument("--ssm", choices=["ssh", "shell"], help="connect through AWS SSM (host = instance id)")
+    sp.add_argument("--aws-profile")
+    sp.add_argument("--aws-region")
+    sp.add_argument("--eic", action="store_true", help="with --ssm ssh: EC2 Instance Connect one-time keys")
     sp.add_argument("--no-password", action="store_true", help="don't store a password (ask on connect)")
     sp = sub.add_parser("rm", aliases=["remove"], help="delete a server")
     sp.add_argument("target")
@@ -701,7 +822,7 @@ HANDLERS = {"ls": cmd_ls, "list": cmd_ls, "connect": cmd_connect, "c": cmd_conne
             "tunnel": cmd_tunnel, "t": cmd_tunnel, "fwd": cmd_tunnel,
             "status": cmd_status, "st": cmd_status,
             "exec": cmd_exec, "x": cmd_exec, "add": cmd_add, "rm": cmd_rm, "remove": cmd_rm,
-            "import": cmd_import, "passwd": cmd_passwd}
+            "import": cmd_import, "passwd": cmd_passwd, "aws": cmd_aws}
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -727,6 +848,8 @@ def main(argv: list[str] | None = None) -> None:
             return
         if a.cmd == "update":
             sys.exit(cmd_update())
+        if a.cmd == "aws" and a.action != "import":
+            sys.exit(cmd_aws(None, a))
         store = unlock()
         sys.exit(HANDLERS[a.cmd](store, a))
     except KeyboardInterrupt:

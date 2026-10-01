@@ -120,7 +120,8 @@ class WelcomePage(QWidget):
         row = QHBoxLayout()
         for ic, label, fn in [("plus", "New server", win.new_server),
                               ("import", "Import from PuTTY", win.import_putty),
-                              ("import", "Import ~/.ssh/config", win.import_ssh_config)]:
+                              ("import", "Import ~/.ssh/config", win.import_ssh_config),
+                              ("cloud", "Import from AWS", win.import_aws)]:
             b = QPushButton(icon(ic), " " + label)
             b.clicked.connect(fn)
             row.addWidget(b)
@@ -228,6 +229,9 @@ class MainWindow(QMainWindow):
         addm.addSeparator()
         addm.addAction(icon("import"), "Import from PuTTY", self.import_putty)
         addm.addAction(icon("import"), "Import ~/.ssh/config", self.import_ssh_config)
+        addm.addAction(icon("cloud"), "Import from AWS (SSM)…", self.import_aws)
+        addm.addSeparator()
+        addm.addAction(icon("lock"), "AWS SSO sign-in…", self.aws_sign_in)
         add.setMenu(addm)
         brand.addWidget(add)
         sl.addLayout(brand)
@@ -574,7 +578,7 @@ class MainWindow(QMainWindow):
         if not self.sftp.isVisible():
             return
         p = self.active_pane()
-        self.sftp.set_session(p.session if p and p.state == "connected" else None)
+        self.sftp.set_session(p.session if p and p.state == "connected" and p.server.uses_ssh else None)
 
     # ================================================================ connect
     def _make_pane(self, server: Server, touch: bool = True) -> TerminalPane:
@@ -786,6 +790,8 @@ class MainWindow(QMainWindow):
             ("Manage snippets…", "", self.manage_snippets, "code"),
             ("Import from PuTTY", "", self.import_putty, "import"),
             ("Import ~/.ssh/config", "", self.import_ssh_config, "import"),
+            ("Import from AWS (SSM)…", "", self.import_aws, "cloud"),
+            ("AWS SSO sign-in…", "", self.aws_sign_in, "lock"),
             ("Settings…", "", self.open_settings, "settings"),
             ("Lock vault", "", self.lock, "lock"),
             ("Check for updates", "", lambda: self.check_updates(manual=True), "refresh"),
@@ -895,7 +901,8 @@ class MainWindow(QMainWindow):
             a1.setEnabled(has_tab)
             a2.setEnabled(has_tab)
             m.addSeparator()
-            m.addAction(icon("gauge"), "Dashboard", lambda: self.dashboard_for_server(key))
+            if s.uses_ssh:
+                m.addAction(icon("gauge"), "Dashboard", lambda: self.dashboard_for_server(key))
             m.addAction(icon("edit"), "Edit…", lambda: self.edit_server(key))
             m.addAction(icon("copy"), "Duplicate", lambda: self.duplicate_server(key))
             m.addAction(icon("star", C["warn"]), "Unpin from favorites" if s.favorite else "Pin to favorites",
@@ -907,7 +914,10 @@ class MainWindow(QMainWindow):
             mv.addSeparator()
             mv.addAction(icon("folder-plus"), "New group…", lambda: self._move_to_new_group(key))
             m.addSeparator()
-            m.addAction(icon("copy"), "Copy ssh command", lambda: QGuiApplication.clipboard().setText(s.ssh_command()))
+            m.addAction(icon("copy"), "Copy aws command" if s.connection == "ssm-shell" else "Copy ssh command",
+                        lambda: QGuiApplication.clipboard().setText(s.ssh_command()))
+            if s.is_ssm:
+                m.addAction(icon("lock"), "AWS SSO sign-in", lambda: self.aws_sign_in(s.aws_profile))
             m.addAction(icon("copy"), "Copy host", lambda: QGuiApplication.clipboard().setText(s.host))
             m.addSeparator()
             m.addAction(icon("trash", C["danger"]), "Delete", lambda: self.delete_server(key))
@@ -979,6 +989,36 @@ class MainWindow(QMainWindow):
                                     "import only works on Windows. Use Import ~/.ssh/config instead.")
             return
         self._import(importers.putty_sessions(), "PuTTY")
+
+    def import_aws(self) -> None:
+        from .aws_ui import AwsImportDialog
+        dlg = AwsImportDialog(self.store, self)
+        dlg.exec()
+        if dlg.added or dlg.updated:
+            self.refresh_all()
+
+    def aws_sign_in(self, profile: str | None = None) -> None:
+        from . import aws
+        from .aws_ui import ensure_login
+        if profile is None:
+            profs = [p for p in aws.profiles() if aws.is_sso_profile(p)]
+            if not aws.cli():
+                QMessageBox.information(self, "AWS sign-in", "The AWS CLI v2 isn't installed. Get it from "
+                                        f"{aws.CLI_INSTALL_URL}")
+                return
+            if not profs:
+                QMessageBox.information(self, "AWS sign-in", "No AWS profiles use SSO yet. Set one up "
+                                        "with `aws configure sso` in a terminal.")
+                return
+            if len(profs) == 1:
+                profile = profs[0]
+            else:
+                profile, ok = QInputDialog.getItem(self, "AWS sign-in", "Profile:", profs, 0, False)
+                if not ok:
+                    return
+        ensure_login(self, "" if profile == "default" else profile,
+                     lambda: self.statusBar().showMessage(f"Signed in to AWS ({profile or 'default'})", 6000),
+                     ask=False)
 
     def import_ssh_config(self) -> None:
         try:
@@ -1142,6 +1182,9 @@ class MainWindow(QMainWindow):
         pane = pane or self.active_pane()
         if pane is None:
             self.statusBar().showMessage("Connect to a server first (or right-click a server → Dashboard).", 5000)
+            return
+        if not pane.server.uses_ssh:
+            self.statusBar().showMessage("The dashboard needs SSH: switch this server to “SSH over AWS SSM”.", 6000)
             return
         from .dashboard_ui import DashboardWindow
         wins = getattr(self, "_dashboards", {})

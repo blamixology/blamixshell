@@ -111,6 +111,12 @@ class Server:
     keepalive: int = 30
     startup_cmd: str = ""
     tunnels: list[Tunnel] = field(default_factory=list)
+    # AWS Systems Manager: "ssh" (direct), "ssm-ssh" (SSH tunnelled through SSM, host = instance
+    # id) or "ssm-shell" (plain Session Manager shell, no SSH). Profile/region "" = AWS defaults.
+    connection: str = "ssh"
+    aws_profile: str = ""
+    aws_region: str = ""
+    eic: bool = False               # EC2 Instance Connect: push a one-time key before connecting
     notes: str = ""
     last_connected: float = 0.0
     connect_count: int = 0
@@ -122,12 +128,37 @@ class Server:
 
     @property
     def address(self) -> str:
+        if self.connection == "ssm-shell":
+            return f"{self.host} (SSM)"
         user = f"{self.username}@" if self.username else ""
         port = f":{self.port}" if self.port and self.port != 22 else ""
-        return f"{user}{self.host}{port}"
+        return f"{user}{self.host}{port}" + (" (SSM)" if self.connection == "ssm-ssh" else "")
+
+    @property
+    def is_ssm(self) -> bool:
+        return self.connection in ("ssm-ssh", "ssm-shell")
+
+    @property
+    def uses_ssh(self) -> bool:
+        """False for a plain SSM shell: no SFTP, tunnels, dashboard or host keys there."""
+        return self.connection != "ssm-shell"
+
+    @property
+    def needs_password(self) -> bool:
+        return self.auth == "password" and self.uses_ssh and not self.eic
+
+    def aws_args(self) -> list[str]:
+        return (["--profile", self.aws_profile] if self.aws_profile else []) + \
+               (["--region", self.aws_region] if self.aws_region else [])
 
     def ssh_command(self) -> str:
+        if self.connection == "ssm-shell":
+            return " ".join(["aws", "ssm", "start-session", "--target", self.host, *self.aws_args()])
         parts = ["ssh"]
+        if self.connection == "ssm-ssh":
+            proxy = " ".join(["aws", "ssm", "start-session", "--target", "%h", "--document-name",
+                              "AWS-StartSSHSession", "--parameters", "portNumber=%p", *self.aws_args()])
+            parts += ["-o", f'"ProxyCommand={proxy}"']
         if self.port and self.port != 22:
             parts += ["-p", str(self.port)]
         if self.auth == "key" and self.key_path:
@@ -146,7 +177,8 @@ class Server:
                     return False
                 continue
             hay = " ".join([self.name, self.host, self.username, self.group,
-                            " ".join(self.tags), self.notes]).lower()
+                            " ".join(self.tags), self.notes, self.aws_profile, self.aws_region,
+                            "ssm aws" if self.is_ssm else ""]).lower()
             if term not in hay:
                 return False
         return True
@@ -156,6 +188,8 @@ class Server:
         known = {f.name for f in fields(cls)}
         s = cls(**{k: v for k, v in d.items() if k in known})
         s.port = int(s.port or 22)
+        if s.connection not in ("ssh", "ssm-ssh", "ssm-shell"):
+            s.connection = "ssh"
         s.tags = [t for t in (s.tags or []) if t]
         s.tunnels = [t if isinstance(t, Tunnel) else Tunnel.from_dict(t) for t in (s.tunnels or [])]
         return s

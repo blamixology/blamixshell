@@ -85,6 +85,8 @@ class _Iface(paramiko.ServerInterface):
         m = self.srv.mode
         if m == "password":
             return "password"
+        if m == "pubkey":
+            return "publickey"
         if m == "otp":
             return "keyboard-interactive"
         if m == "key+otp":
@@ -96,6 +98,15 @@ class _Iface(paramiko.ServerInterface):
         return paramiko.AUTH_SUCCESSFUL if ok else paramiko.AUTH_FAILED
 
     def check_auth_publickey(self, username, key):
+        if self.srv.mode == "pubkey" and self.srv.authorized_file:   # like EC2 Instance Connect
+            import os
+            if os.path.exists(self.srv.authorized_file):
+                with open(self.srv.authorized_file) as f:
+                    for line in f:
+                        p = line.split()
+                        if len(p) >= 3 and p[0] == username and p[2] == key.get_base64():
+                            return paramiko.AUTH_SUCCESSFUL
+            return paramiko.AUTH_FAILED
         if self.srv.mode == "key+otp" and self.srv.client_key and key == self.srv.client_key:
             self.key_ok = True
             return paramiko.AUTH_PARTIALLY_SUCCESSFUL
@@ -175,8 +186,9 @@ class TestSSHServer:
     __test__ = False   # not a pytest test class
 
     def __init__(self, mode: str = "password", client_key: paramiko.PKey | None = None,
-                 deny_forwarding: bool = False):
+                 deny_forwarding: bool = False, authorized_file: str = ""):
         self.mode = mode
+        self.authorized_file = authorized_file   # "user keytype base64" lines (pubkey mode)
         self.client_key = client_key
         self.deny_forwarding = deny_forwarding
         self.seen_responses: list[list[str]] = []

@@ -120,10 +120,35 @@ def _selftest(app) -> int:
         time.sleep(0.05)
     ok = pane._ready
     print("SELFTEST", "OK: terminal engine loaded" if ok else "FAILED: terminal did not load")
+    pty_ok = _selftest_pty()
+    ok = ok and pty_ok
     win._force_quit = True
     for p in win.all_panes():
         p.shutdown()
     return 0 if ok else 3
+
+
+def _selftest_pty() -> bool:
+    """Local terminals (used for AWS SSM shells): ConPTY / pty must work in the packaged app."""
+    import sys
+    import time
+    from .pty_process import PtyProcess
+    argv = ["cmd.exe", "/c", "echo pty-ok"] if sys.platform == "win32" else ["/bin/echo", "pty-ok"]
+    try:
+        p = PtyProcess(argv, None, 80, 24)
+        out, end = b"", time.time() + 15
+        while b"pty-ok" not in out and time.time() < end:
+            chunk = p.read()
+            if not chunk:
+                break
+            out += chunk
+        p.close()
+        ok = b"pty-ok" in out
+    except Exception as e:
+        print("SELFTEST", f"FAILED: local terminal: {e}")
+        return False
+    print("SELFTEST", "OK: local terminal" if ok else "FAILED: local terminal printed nothing")
+    return ok
 
 
 if __name__ == "__main__":
