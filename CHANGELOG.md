@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.5.3](https://github.com/blamixology/blamixshell/releases/tag/v1.5.3) - 2026-10-01
+
+### Fixes
+- Splits: fix nested splits closing terminals; rotate split; split with another server (8ef80b6)
+
 ## [1.5.2](https://github.com/blamixology/blamixshell/releases/tag/v1.5.2) - 2026-10-01
 
 ### Fixes
