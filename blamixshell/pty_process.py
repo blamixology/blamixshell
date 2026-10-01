@@ -35,8 +35,14 @@ class PtyProcess:
         try:
             self._proc = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, env=env,
                                           close_fds=True, preexec_fn=make_controlling_tty)
-        finally:
+        except Exception:
             os.close(slave)
+            os.close(master)
+            raise
+        # Keep our copy of the terminal's other side open: macOS throws away unread output
+        # once the last holder closes it, so a program that exits quickly (an error message
+        # from the AWS CLI) would otherwise vanish. read() notices the exit by polling.
+        self._slave = slave
         self._fd = master
         self._win = None
 
@@ -70,13 +76,36 @@ class PtyProcess:
                 self._reap()
                 return b""
             return data.encode("utf-8", "replace") if isinstance(data, str) else data
-        try:
-            data = os.read(self._fd, size)
-        except OSError:          # EIO: the terminal's other side closed (program exited)
-            data = b""
-        if not data:
-            self._reap()
-        return data
+        import select
+        while True:
+            try:
+                ready, _, _ = select.select([self._fd], [], [], 0.2)
+            except (OSError, ValueError):
+                ready = []
+                if self._proc.poll() is None:
+                    continue
+            if ready:
+                try:
+                    data = os.read(self._fd, size)
+                except OSError:      # EIO: the terminal closed
+                    data = b""
+                if data:
+                    return data
+            if self._proc.poll() is not None:
+                # the program ended: hand out whatever it printed last, then report the end
+                try:
+                    ready, _, _ = select.select([self._fd], [], [], 0.05)
+                    if ready:
+                        data = os.read(self._fd, size)
+                        if data:
+                            return data
+                except OSError:
+                    pass
+                self._reap()
+                return b""
+            if ready:            # readable but empty and still running: avoid a busy loop
+                import time
+                time.sleep(0.05)
 
     def write(self, data: bytes) -> None:
         if self._win is not None:
@@ -129,6 +158,10 @@ class PtyProcess:
                         self._proc.wait(2)
                     except subprocess.TimeoutExpired:
                         self._proc.kill()
-                os.close(self._fd)
+                for fd in (self._fd, self._slave):
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
         except Exception:
             pass

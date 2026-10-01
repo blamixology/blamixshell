@@ -277,3 +277,23 @@ def test_import_dialog(fake, store, qapp):
     assert d.table.rowCount() == 3
     d._import()
     assert d.added == 3 and "Added 3" in d.note.text() and len(store.servers) == 3
+
+
+def test_pty_keeps_output_of_a_program_that_exits_at_once():
+    """The AWS CLI prints an error and exits immediately (expired SSO): that text must arrive."""
+    if sys.platform == "win32":
+        argv = ["cmd.exe", "/c", "echo fast-error"]
+    else:
+        argv = ["/bin/sh", "-c", "echo fast-error >&2; exit 3"]
+    from blamixshell.pty_process import PtyProcess
+    p = PtyProcess(argv, None, 80, 24)
+    out, end = b"", time.time() + 15
+    while time.time() < end:
+        chunk = p.read()
+        if not chunk:
+            break
+        out += chunk
+    p.close()
+    assert b"fast-error" in out
+    if sys.platform != "win32":
+        assert p.exit_code == 3

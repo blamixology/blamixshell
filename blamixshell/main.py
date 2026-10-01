@@ -133,7 +133,8 @@ def _selftest_pty() -> bool:
     import sys
     import time
     from .pty_process import PtyProcess
-    argv = ["cmd.exe", "/c", "echo pty-ok"] if sys.platform == "win32" else ["/bin/echo", "pty-ok"]
+    # a quick exit on purpose: the output must still arrive (macOS drops it unless handled)
+    argv = ["cmd.exe", "/c", "echo pty-ok"] if sys.platform == "win32" else ["/bin/sh", "-c", "echo pty-ok; exit 3"]
     try:
         p = PtyProcess(argv, None, 80, 24)
         out, end = b"", time.time() + 15
