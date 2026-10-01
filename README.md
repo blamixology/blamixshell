@@ -188,6 +188,12 @@ Security reviews are very welcome. The parts that matter most are the vault encr
 (`blamixshell/vault.py`) and host-key checking (`blamixshell/ssh_core.py`). Please report security
 issues privately through GitHub's **Report a vulnerability** (Security tab) rather than a public issue.
 
+## Made by
+
+<img src="blamixshell/assets/blamixology.png" alt="Blamixology Tech" height="36">
+
+BlamixShell is built and maintained by [Blamixology](https://blamixology.ro/en): custom software, automation and AI solutions.
+
 ## Support
 
 BlamixShell is free and open source, with no paid tier and no locked features. If it saves you time,

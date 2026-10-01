@@ -1170,6 +1170,7 @@ class MainWindow(QMainWindow):
         m.addAction(icon("edit"), "Report a problem", lambda: open_url(links.ISSUES_URL))
         m.addSeparator()
         m.addAction(icon("coffee", C["warn"]), "Buy me a coffee", lambda: open_url(links.KOFI_URL))
+        m.addAction(icon("link"), "Made by Blamixology", lambda: open_url(links.COMPANY_URL))
         return m
 
     def show_about(self) -> None:

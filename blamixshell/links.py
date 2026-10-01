@@ -11,3 +11,7 @@ NOTICES_URL = f"{REPO_URL}/blob/main/THIRD_PARTY_NOTICES.md"
 # only shown in About and the Help menu (never as popups).
 KOFI_URL = "https://ko-fi.com/blamixology"              # one-off "buy me a coffee"
 SPONSOR_URL = "https://github.com/sponsors/blamixology"  # GitHub Sponsors (0% fee)
+
+# Who builds it (shown quietly in About, the Help menu and the README)
+COMPANY = "Blamixology"
+COMPANY_URL = "https://blamixology.ro/en"

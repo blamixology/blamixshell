@@ -1376,6 +1376,26 @@ class AboutDialog(_Base):
         bl.addLayout(row)
         lay.addWidget(box)
 
+        # made by: a quiet credit - the logo, and under it the link (both open the company site)
+        lay.addSpacing(6)
+        from PySide6.QtGui import QPixmap
+        from .paths import assets_dir
+        pm = QPixmap(str(assets_dir() / "blamixology.png"))
+        if not pm.isNull():
+            dpr = self.devicePixelRatioF()
+            pm = pm.scaledToHeight(int(34 * dpr), Qt.SmoothTransformation)
+            pm.setDevicePixelRatio(dpr)
+            brand = QLabel()
+            brand.setPixmap(pm)
+            brand.setCursor(Qt.PointingHandCursor)
+            brand.setToolTip(links.COMPANY_URL)
+            brand.mousePressEvent = lambda _e: open_url(links.COMPANY_URL)
+            lay.addWidget(brand)
+        made = QLabel(f"<span style='color:{C['muted']}'>Made by:</span> "
+                      f"<a style='color:{a}' href='{links.COMPANY_URL}'>blamixology.ro</a>")
+        made.setOpenExternalLinks(True)
+        lay.addWidget(made)
+
         row = QHBoxLayout()
         row.addStretch(1)
         close = QPushButton("Close")
