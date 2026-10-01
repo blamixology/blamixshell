@@ -51,7 +51,7 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
 
 - **Server manager:** nested groups (`Prod/EU`), tags, colors and favorites. Drag and drop, search, or filter with `tag:prod`. A green dot marks servers with a live session. **Connect to all** opens every server in a group, tiled.
 - **Real terminal:** xterm.js with 256 colors and truecolor. vim, htop, tmux and mc work. Clickable links, find in scrollback, and 4 color themes.
-- **Tabs and splits:** split right or down without limit. Each pane shows its connection state and an uptime clock.
+- **Tabs and splits:** split right or down without limit, with the same server or another one (the arrow next to the split buttons, or right-click a server → Connect in split). **Rotate** turns a side-by-side split into a stacked one and back. Each pane shows its connection state and an uptime clock.
 - **Broadcast:** send your typing, or a snippet, to every pane in a tab.
 - **SFTP panel:** drag and drop to upload. Download, rename, delete (recursive), create folders. **Edit in place:** open a file in your editor and every save uploads it.
 - **Encrypted vault:** one AES-256-GCM file; the key comes from your master password via scrypt. The same file works on every OS and in every front-end.
@@ -111,7 +111,8 @@ TUI keys: `/` search · `⏎` connect · `a` add · `e` edit · `d` delete · `f
 | Windows / Linux | macOS | Action |
 |---|---|---|
 | Ctrl+Shift+P / T | ⌘P / ⌘T | Command palette and quick connect |
-| Ctrl+Shift+D / E | ⌘D / ⌘E | Split right / down |
+| Ctrl+Shift+D / E | ⌘D / ⌘E | Split right / down (same server; the arrow on the button picks another) |
+| Ctrl+Shift+O | ⌘O | Rotate split: side by side ↔ stacked |
 | Ctrl+Shift+W | ⌘W | Close pane |
 | Ctrl+Shift+C / V | ⌘C / ⌘V | Copy / paste |
 | Ctrl+Shift+F | ⌘F | Find in terminal |

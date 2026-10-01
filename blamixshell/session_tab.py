@@ -102,19 +102,33 @@ class SessionTab(QWidget):
             sp.setChildrenCollapsible(False)
             sp.setHandleWidth(1)
             if isinstance(parent, QSplitter):
+                # insertWidget, not replaceWidget: PySide doesn't hand a replaceWidget()'d
+                # splitter to Qt, so Python deleted it (and both terminals in it) on return
                 idx = parent.indexOf(pane)
                 sizes = parent.sizes()
-                parent.replaceWidget(idx, sp)
+                parent.insertWidget(idx, sp)
+                sp.addWidget(pane)          # moves the pane out of the outer splitter
                 parent.setSizes(sizes)
             else:
                 self._lay.replaceWidget(pane, sp)
                 self._root = sp
-            sp.addWidget(pane)
+                sp.addWidget(pane)
             sp.addWidget(new)
             sp.setSizes([1000, 1000])
         self.set_active(new)
         new.focus_terminal()
         self.changed.emit(self)
+
+    def rotate(self, pane: TerminalPane) -> bool:
+        """Side by side <-> stacked, for the split that holds `pane` (keeps every session)."""
+        parent = pane.parentWidget()
+        if not isinstance(parent, QSplitter):
+            return False
+        parent.setOrientation(Qt.Vertical if parent.orientation() == Qt.Horizontal else Qt.Horizontal)
+        parent.setSizes([1000] * parent.count())
+        pane.focus_terminal()
+        self.changed.emit(self)
+        return True
 
     def remove(self, pane: TerminalPane) -> None:
         pane.shutdown()
@@ -126,7 +140,7 @@ class SessionTab(QWidget):
             grand = parent.parentWidget()
             if isinstance(grand, QSplitter):
                 sizes = grand.sizes()
-                grand.replaceWidget(grand.indexOf(parent), only)
+                grand.insertWidget(grand.indexOf(parent), only)
                 grand.setSizes(sizes)
             else:
                 self._lay.replaceWidget(parent, only)

@@ -301,8 +301,17 @@ class MainWindow(QMainWindow):
         tl.addWidget(self.btn_side)
         tl.addWidget(pal, 1)
         tl.addStretch(1)
-        self.btn_split_r = self._tool("split-h", "Split right (Ctrl+Shift+D)", lambda: self.split(Qt.Horizontal))
-        self.btn_split_d = self._tool("split-v", "Split down (Ctrl+Shift+E)", lambda: self.split(Qt.Vertical))
+        self.btn_split_r = self._tool("split-h", "Split right (Ctrl+Shift+D): same server; "
+                                      "the arrow picks another server", lambda: self.split(Qt.Horizontal))
+        self.btn_split_d = self._tool("split-v", "Split down (Ctrl+Shift+E): same server; "
+                                      "the arrow picks another server", lambda: self.split(Qt.Vertical))
+        for b, where in ((self.btn_split_r, "right"), (self.btn_split_d, "down")):
+            b.setPopupMode(QToolButton.MenuButtonPopup)
+            menu = QMenu(b)
+            menu.aboutToShow.connect(lambda m=menu, w=where: self._fill_split_menu(m, w))
+            b.setMenu(menu)
+        self.btn_rotate = self._tool("rotate", "Rotate split: side by side ↔ stacked (Ctrl+Shift+O)",
+                                     self.rotate_split)
         self.btn_bcast = self._tool("broadcast", "Broadcast input to all panes in this tab (Ctrl+Shift+B)",
                                     self.toggle_broadcast, checkable=True)
         self.btn_snip = self._tool("code", "Snippets", None)
@@ -312,7 +321,7 @@ class MainWindow(QMainWindow):
         self.btn_snip.setMenu(self.snip_menu)
         self.btn_sftp = self._tool("folder", "Files / SFTP (Ctrl+Shift+S)", self.toggle_sftp, checkable=True)
         self.btn_dash = self._tool("gauge", "Server dashboard (Ctrl+Shift+I)", lambda: self.open_dashboard())
-        for b in (self.btn_split_r, self.btn_split_d, self.btn_bcast, self.btn_snip, self.btn_dash, self.btn_sftp):
+        for b in (self.btn_split_r, self.btn_split_d, self.btn_rotate, self.btn_bcast, self.btn_snip, self.btn_dash, self.btn_sftp):
             tl.addWidget(b)
         cl.addWidget(tb)
 
@@ -432,7 +441,7 @@ class MainWindow(QMainWindow):
 
     def _install_shortcuts(self) -> None:
         mapping = {"P": "p", "T": "t", "W": "w", "D": "d", "E": "e", "B": "b", "S": "s",
-                   "N": "n", "R": "r", "V": "v", "L": "l", "I": "i"}
+                   "N": "n", "R": "r", "V": "v", "L": "l", "I": "i", "O": "o"}
         # On macOS Qt's "Ctrl" is the Cmd key: Cmd+P, Cmd+D … (Cmd+Shift+… works too)
         prefixes = ["Ctrl+Shift+", "Ctrl+"] if IS_MAC else ["Ctrl+Shift+"]
         for prefix in prefixes:
@@ -461,6 +470,7 @@ class MainWindow(QMainWindow):
             "ctrl+shift+w": lambda: pane and self.close_pane(pane),
             "ctrl+shift+d": lambda: self.split(Qt.Horizontal),
             "ctrl+shift+e": lambda: self.split(Qt.Vertical),
+            "ctrl+shift+o": self.rotate_split,
             "ctrl+shift+b": lambda: (self.btn_bcast.toggle(), self.toggle_broadcast()),
             "ctrl+shift+s": lambda: (self.btn_sftp.toggle(), self.toggle_sftp()),
             "ctrl+shift+i": lambda: self.open_dashboard(),
@@ -705,6 +715,40 @@ class MainWindow(QMainWindow):
             return
         self._open(tab.active.server, "right" if orientation == Qt.Horizontal else "down")
 
+    def rotate_split(self) -> None:
+        tab = self.current_tab()
+        if not tab or not tab.active or not tab.rotate(tab.active):
+            self.statusBar().showMessage("Nothing to rotate: split the terminal first.", 4000)
+
+    def _fill_split_menu(self, menu: QMenu, where: str) -> None:
+        """Split button arrow: the same server, a recent one, or pick any server."""
+        menu.clear()
+        tab = self.current_tab()
+        cur = tab.active.server if tab and tab.active else None
+        if cur:
+            menu.addAction(icon("terminal"), f"{cur.label}  (same server)",
+                           lambda: self.split(Qt.Horizontal if where == "right" else Qt.Vertical))
+            menu.addSeparator()
+        recent = [s for s in self.store.recent(10) if not cur or s.id != cur.id][:8]
+        for s in recent:
+            menu.addAction(dot_icon(self.store.color_for(s)) if self.store.color_for(s) else icon("server"),
+                           s.label, lambda sid=s.id: self.connect_server(sid, where))
+        if recent:
+            menu.addSeparator()
+        menu.addAction(icon("search"), "Other server…", lambda: self.split_with(where))
+
+    def split_with(self, where: str) -> None:
+        """Open any saved server next to the active terminal (right or down)."""
+        entries = []
+        for s in sorted(self.store.servers.values(), key=lambda x: (-x.last_connected, x.label.lower())):
+            tags = "  ".join("#" + t for t in s.tags)
+            entries.append((s.label, f"{s.address}  {s.group}  {tags}".strip(),
+                            lambda sid=s.id: self.connect_server(sid, where), "server"))
+        side = "on the right" if where == "right" else "below"
+        pal = CommandPalette(entries, self, placeholder=f"Which server should open {side}?",
+                             anchor=getattr(self, "pal_btn", None))
+        pal.exec()
+
     def close_pane(self, pane: TerminalPane) -> None:
         for i in range(self.tabs.count()):
             t = self.tabs.widget(i)
@@ -780,6 +824,9 @@ class MainWindow(QMainWindow):
             ("New server…", "Ctrl+Shift+N", self.new_server, "plus"),
             ("Split right", "Ctrl+Shift+D", lambda: self.split(Qt.Horizontal), "split-h"),
             ("Split down", "Ctrl+Shift+E", lambda: self.split(Qt.Vertical), "split-v"),
+            ("Split right with another server…", "", lambda: self.split_with("right"), "split-h"),
+            ("Split down with another server…", "", lambda: self.split_with("down"), "split-v"),
+            ("Rotate split (side by side ↔ stacked)", "Ctrl+Shift+O", self.rotate_split, "rotate"),
             ("Toggle server list", "Ctrl+Shift+L", lambda: (self.btn_side.toggle(), self.toggle_sidebar()), "sidebar"),
             ("Toggle files panel", "Ctrl+Shift+S", lambda: (self.btn_sftp.toggle(), self.toggle_sftp()), "folder"),
             ("Server dashboard", "Ctrl+Shift+I", lambda: self.open_dashboard(), "gauge"),
