@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.5.2](https://github.com/blamixology/blamixshell/releases/tag/v1.5.2) - 2026-10-01
+
+### Fixes
+- Local terminal: keep the output of programs that exit at once (macOS); fixes the macOS build (28244e0)
+
 ## [1.5.1](https://github.com/blamixology/blamixshell/releases/tag/v1.5.1) - 2026-10-01
 
 ### Improvements
