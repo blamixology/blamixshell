@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.5.1](https://github.com/blamixology/blamixshell/releases/tag/v1.5.1) - 2026-10-01
+
+### Improvements
+- About: made by Blamixology (logo + link); source runs show the release version (b316dbb)
+
 ## [1.5.0](https://github.com/blamixology/blamixshell/releases/tag/v1.5.0) - 2026-10-01
 
 ### Improvements
