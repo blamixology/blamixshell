@@ -69,6 +69,7 @@ DEFAULTS = {
     "log_dir": "",                  # "" = <data>/logs
     "log_retention_days": 0,        # delete logs older than this (0 = keep)
     "health_strip": True,           # CPU / memory / disk of the active server in the status bar
+    "health_interval": 5,           # seconds between health samples
     "skip_version": "",
     "last_update_check": 0,
 }

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import time
 from dataclasses import dataclass, field
 
 import paramiko
@@ -224,7 +225,7 @@ HEALTH_SCRIPT = r"""
 echo @@stat; head -n1 /proc/stat 2>/dev/null
 echo @@load; cat /proc/loadavg 2>/dev/null
 echo @@nproc; nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null
-echo @@mem; grep -E '^(MemTotal|MemFree|MemAvailable|Buffers|Cached):' /proc/meminfo 2>/dev/null
+echo @@mem; grep -E '^(MemTotal|MemFree|MemAvailable|Buffers|Cached|SwapTotal|SwapFree):' /proc/meminfo 2>/dev/null
 echo @@df; df -Pk / 2>/dev/null
 echo @@end
 """
@@ -238,6 +239,11 @@ class Health:
     load: float | None = None        # 1-minute load average
     cpus: int = 0
     sample: tuple[int, int] | None = None   # (idle, total) for the next CPU %
+    swap: float | None = None        # % used (None: no swap)
+    loads: tuple[float, ...] = ()    # 1 / 5 / 15 minute load
+    mem_kb: tuple[int, int] | None = None    # (used, total)
+    swap_kb: tuple[int, int] | None = None
+    disk_kb: tuple[int, int] | None = None
 
 
 def parse_health(text: str, prev: tuple[int, int] | None = None) -> Health:
@@ -248,9 +254,10 @@ def parse_health(text: str, prev: tuple[int, int] | None = None) -> Health:
         busy = (h.sample[1] - prev[1]) - (h.sample[0] - prev[0])
         h.cpu = max(0.0, min(100.0, 100.0 * busy / (h.sample[1] - prev[1])))
     try:
-        h.load = float(s.get("load", "").split()[0])
+        h.loads = tuple(float(x) for x in s.get("load", "").split()[:3])
+        h.load = h.loads[0]
     except (ValueError, IndexError):
-        pass
+        h.loads = ()
     n = s.get("nproc", "").strip()
     h.cpus = int(n) if n.isdigit() else 0
     mem = {m.group(1): int(m.group(2)) for m in re.finditer(r"(\w+):\s+(\d+)", s.get("mem", ""))}
@@ -258,14 +265,28 @@ def parse_health(text: str, prev: tuple[int, int] | None = None) -> Health:
     if total:
         avail = mem.get("MemAvailable", mem.get("MemFree", 0) + mem.get("Buffers", 0) + mem.get("Cached", 0))
         h.mem = 100.0 * max(0, total - avail) / total
+        h.mem_kb = (max(0, total - avail), total)
+    swap_total = mem.get("SwapTotal", 0)
+    if swap_total:
+        used = max(0, swap_total - mem.get("SwapFree", 0))
+        h.swap = 100.0 * used / swap_total
+        h.swap_kb = (used, swap_total)
     disks = parse_df(s.get("df", ""))
     if disks:
         h.disk = disks[0].percent
+        h.disk_kb = (disks[0].used_kb, disks[0].used_kb + disks[0].avail_kb)
     return h
 
 
 def health(runner: Runner, prev: tuple[int, int] | None = None) -> Health:
-    return parse_health(runner.run(HEALTH_SCRIPT, timeout=10).out, prev)
+    h = parse_health(runner.run(HEALTH_SCRIPT, timeout=10).out, prev)
+    if h.cpu is None and h.sample is not None:
+        # first sample for this pane: take a second one shortly after so CPU % shows at once
+        time.sleep(0.6)
+        h2 = parse_health(runner.run(HEALTH_SCRIPT, timeout=10).out, h.sample)
+        if h2.cpu is not None:
+            return h2
+    return h
 
 
 # ---------------------------------------------------------------- services

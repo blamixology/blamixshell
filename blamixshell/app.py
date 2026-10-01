@@ -393,7 +393,7 @@ class MainWindow(QMainWindow):
         self._health_busy = False
         self._health_timer = QTimer(self)
         self._health_timer.timeout.connect(self._poll_health)
-        self._health_timer.start(5000)
+        self._health_timer.start(self._health_ms())
 
         self._install_shortcuts()
         self.refresh_all()
@@ -574,6 +574,12 @@ class MainWindow(QMainWindow):
         self.status_right.setText(f"🔒 vault encrypted  ·  {live} live session{'s' if live != 1 else ''}")
 
     # ================================================================ health strip
+    def _health_ms(self) -> int:
+        try:
+            return max(1, int(self.settings.get("health_interval", 5))) * 1000
+        except (TypeError, ValueError):
+            return 5000
+
     def _health_pane(self):
         p = self.active_pane()
         if (p and p.state == "connected" and p.server.uses_ssh and p.session
@@ -617,6 +623,11 @@ class MainWindow(QMainWindow):
         if h is None or pane is not self._health_pane():
             if self._health_pane() is None:
                 self.health_lbl.hide()
+            elif h is None and pane is self._health_pane() and self.health_lbl.isVisible():
+                # poll failed: keep the last numbers but say they are old
+                if "(stale)" not in self.health_lbl.text():
+                    self.health_lbl.setText(self.health_lbl.text().replace(
+                        "&nbsp;&nbsp;", f" <span style='color:{C['faint']}'>(stale)</span>&nbsp;&nbsp;"))
             return
         self._health_prev[id(pane)] = h.sample
 
@@ -626,11 +637,26 @@ class MainWindow(QMainWindow):
             col = C["danger"] if v >= bad else C["warn"] if v >= warn else C["muted"]
             return f"<span style='color:{C['faint']}'>{label}</span> <span style='color:{col}'>{fmt.format(v)}</span>"
         load_bad = (h.cpus or 1) * 1.5
-        parts = [part("CPU", h.cpu), part("RAM", h.mem), part("/", h.disk, 80, 90),
+        cpu = part("CPU", h.cpu) if h.sample else f"<span style='color:{C['faint']}'>CPU n/a</span>"
+        parts = [cpu, part("RAM", h.mem), part("/", h.disk, 80, 90),
                  part("load", h.load, (h.cpus or 1), load_bad, "{:.2f}")]
+        if h.swap is not None and h.swap >= 10:       # only when it matters
+            parts.insert(2, part("swap", h.swap, 25, 60))
         self.health_lbl.setText("  ·  ".join(parts) + "&nbsp;&nbsp;")
-        self.health_lbl.setToolTip(f"{pane.server.label}: CPU, memory, root disk, 1-minute load "
-                                   f"({h.cpus} CPU{'s' if h.cpus != 1 else ''}). Click for the dashboard.")
+        from .dashboard import human_kb
+        tip = [f"{pane.server.label} ({h.cpus} CPU{'s' if h.cpus != 1 else ''})"]
+        if h.cpu is not None:
+            tip.append(f"CPU {h.cpu:.0f}%")
+        if h.mem_kb:
+            tip.append(f"RAM {human_kb(h.mem_kb[0])} / {human_kb(h.mem_kb[1])}")
+        if h.swap_kb:
+            tip.append(f"Swap {human_kb(h.swap_kb[0])} / {human_kb(h.swap_kb[1])}")
+        if h.disk_kb:
+            tip.append(f"/ {human_kb(h.disk_kb[0])} / {human_kb(h.disk_kb[1])} used")
+        if h.loads:
+            tip.append("Load " + " ".join(f"{x:.2f}" for x in h.loads) + " (1 / 5 / 15 min)")
+        tip.append("Click for the dashboard.")
+        self.health_lbl.setToolTip("\n".join(tip))
         self.health_lbl.show()
 
     def _on_tab_changed(self, _i: int) -> None:
@@ -1450,6 +1476,7 @@ class MainWindow(QMainWindow):
                 if p.state == "connected":
                     p.apply_logging()
             self._prune_logs()
+            self._health_timer.setInterval(self._health_ms())
             if not self.settings.get("health_strip", True):
                 self.health_lbl.hide()
 

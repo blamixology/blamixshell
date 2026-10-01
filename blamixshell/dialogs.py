@@ -816,6 +816,11 @@ class SettingsDialog(_Base):
         self.health = QCheckBox("Show CPU, memory and disk of the active server in the status bar")
         self.health.setChecked(settings.get("health_strip", True))
         f.addRow("", self.health)
+        self.health_iv = QComboBox()
+        for sec in (2, 5, 10, 30):
+            self.health_iv.addItem(f"{sec} seconds", sec)
+        self.health_iv.setCurrentIndex(max(0, self.health_iv.findData(int(settings.get("health_interval", 5)))))
+        f.addRow("Status bar refresh", self.health_iv)
         lt.addLayout(f)
         lt.addStretch(1)
 
@@ -967,6 +972,7 @@ class SettingsDialog(_Base):
         if self.upd.isEnabled():
             s["check_updates"] = self.upd.isChecked()
         s["health_strip"] = self.health.isChecked()
+        s["health_interval"] = self.health_iv.currentData()
         s["command_log"] = self.cmdlog.isChecked()
         s["record_format"] = self.rec_fmt.currentData()
         s["record_timestamps"] = self.rec_ts.isChecked()
