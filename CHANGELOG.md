@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.5.0](https://github.com/blamixology/blamixshell/releases/tag/v1.5.0) - 2026-10-01
+
+### Improvements
+- AWS SSM: SSH over SSM, SSM shells, EC2 Instance Connect, SSO sign-in, instance import (e346dff)
+
 ## [1.4.1](https://github.com/blamixology/blamixshell/releases/tag/v1.4.1) - 2026-10-01
 
 ### Improvements
