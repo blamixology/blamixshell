@@ -238,7 +238,15 @@ def ssm_shell(server: Server, store: Store) -> int:
     return code
 
 
-def interactive_shell(server: Server, store: Store) -> int:
+def _log_settings() -> dict:
+    try:
+        from .settings import Settings
+        return Settings()
+    except Exception:
+        return {}
+
+
+def interactive_shell(server: Server, store: Store, record: bool = False) -> int:
     """Hand the local terminal to a remote shell (raw mode, resize-aware)."""
     if server.connection == "ssm-shell":
         return ssm_shell(server, store)
@@ -268,6 +276,16 @@ def interactive_shell(server: Server, store: Store) -> int:
     if server.startup_cmd:
         chan.send((server.startup_cmd.rstrip("\n") + "\n").encode())
     tunnels = start_tunnels(client, server)
+    recorder = None
+    if record or server.record_sessions:
+        from .session_log import Recorder, log_root
+        st = _log_settings()
+        try:
+            recorder = Recorder(log_root(st), server, st.get("record_format", "text"),
+                                bool(st.get("record_timestamps")))
+            print(c(f"  ● recording to {recorder.path}", "31"))
+        except OSError as e:
+            print(c(f"  could not start recording: {e}", "33"))
 
     def on_resize(*_a):
         try:
@@ -297,6 +315,8 @@ def interactive_shell(server: Server, store: Store) -> int:
                 if not data:
                     break
                 os.write(out, data)
+                if recorder is not None:
+                    recorder.write(data)
             if fd in r:
                 data = os.read(fd, 4096)
                 if not data:
@@ -311,6 +331,8 @@ def interactive_shell(server: Server, store: Store) -> int:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
         signal.signal(signal.SIGWINCH, old_handler)
     code = chan.recv_exit_status() if chan.exit_status_ready() else 0
+    if recorder is not None:
+        print(c(f"\n■ recording saved: {recorder.close()}", "90"), end="")
     if tunnels:
         tunnels.stop()
     client.close()
@@ -547,7 +569,7 @@ def cmd_connect(store: Store, a) -> int:
     s = add_cli_tunnels(s, a)
     if a.agent:
         s.agent_forward = True
-    return interactive_shell(s, store)
+    return interactive_shell(s, store, record=a.record)
 
 
 def cmd_status(store: Store, a) -> int:
@@ -650,6 +672,12 @@ def cmd_exec(store: Store, a) -> int:
     print(c(f"$ {command}", "90"))
     if len(servers) > 1 and not a.yes and not confirm("Continue?", default=True):
         return 1
+    st = _log_settings()
+    from .session_log import CommandLog, log_root
+    clog = CommandLog(log_root(st))
+    for s in servers:
+        if st.get("command_log") or s.log_commands:
+            clog.add(s, command, "exec")
     return run_many(store, servers, command, accept_new=a.accept_new, parallel=a.parallel,
                     timeout=a.timeout)
 
@@ -770,6 +798,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("connect", aliases=["c", "ssh"], help="open an interactive shell")
     sp.add_argument("target", help="name, id, search term or user@host[:port]")
     sp.add_argument("-A", dest="agent", action="store_true", help="forward your SSH agent (like ssh -A)")
+    sp.add_argument("--record", action="store_true", help="record the session to the logs folder")
     _tunnel_args(sp)
     sp = sub.add_parser("status", aliases=["st"], help="server overview: CPU, memory, disks, failed services")
     sp.add_argument("target", help="name, id, search term or user@host[:port]")

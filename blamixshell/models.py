@@ -117,6 +117,8 @@ class Server:
     aws_profile: str = ""
     aws_region: str = ""
     eic: bool = False               # EC2 Instance Connect: push a one-time key before connecting
+    log_commands: bool = False      # write the commands typed here to the command log
+    record_sessions: bool = False   # record every session's full output to a file
     notes: str = ""
     last_connected: float = 0.0
     connect_count: int = 0

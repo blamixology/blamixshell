@@ -161,6 +161,7 @@ _ICONS = {
     "server": '<rect x="3.5" y="4" width="17" height="7" rx="2"/><rect x="3.5" y="13" width="17" height="7" rx="2"/><path d="M7.5 7.5h.01M7.5 16.5h.01"/>',
     "terminal": '<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M7 10l3 2.5L7 15M12.5 15.5H17"/>',
     "split-h": '<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M12 4.5v15"/>',
+    "record": '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5" fill="currentColor"/>',
     "rotate": '<path d="M4.5 10a7.5 7.5 0 0 1 13.4-3.6L20 8.5"/><path d="M20 4v4.5h-4.5"/><path d="M19.5 14a7.5 7.5 0 0 1-13.4 3.6L4 15.5"/><path d="M4 20v-4.5h4.5"/>',
     "split-v": '<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M3 12h18"/>',
     "upload": '<path d="M12 16V4M7 9l5-5 5 5M4 20h16"/>',
@@ -208,7 +209,7 @@ def icon(name: str, color: str | None = None, size: int = 18) -> QIcon:
     key = (name, color, size)
     if key in _cache:
         return _cache[key]
-    body = _ICONS.get(name, _ICONS["file"])
+    body = _ICONS.get(name, _ICONS["file"]).replace("currentColor", color)
     fill = color if name == "star-filled" else "none"
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="{fill}" '
            f'stroke="{color}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">{body}</svg>')

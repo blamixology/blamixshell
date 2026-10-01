@@ -8,6 +8,8 @@
   Silent installs:
     msiexec /i BlamixShell.msi /qn ALLUSERS=1                        (all users)
     msiexec /i BlamixShell.msi /qn ALLUSERS=2 MSIINSTALLPERUSER=1    (current user)
+  Managed / offline networks: UPDATECHECK=0 turns the update check off and locks the
+  setting (UPDATECHECK=1 forces it on). The choice is kept on later upgrades.
 
   Build: see packaging/windows/build_msi.ps1
 -->
@@ -51,6 +53,18 @@
       <RegistrySearch Id="FindUserCopyOld" Root="HKCU" Key="Software\ShellDeck"
                       Name="StartMenuShortcut" Type="raw" />
     </Property>
+    <!-- UPDATECHECK=0|1: admin policy for the update check (read by updater.update_check_policy).
+         Remembered across upgrades: if the property isn't given, the installed value is reused. -->
+    <Property Id="UPDATECHECK" Secure="yes" />
+    <Property Id="SAVED_UPDATECHECK" Secure="yes">
+      <RegistrySearch Id="FindUpdateCheckMachine" Root="HKLM" Key="Software\BlamixShell"
+                      Name="UpdateCheck" Type="raw" Bitness="always64" />
+      <RegistrySearch Id="FindUpdateCheckUser" Root="HKCU" Key="Software\BlamixShell"
+                      Name="UpdateCheck" Type="raw" />
+    </Property>
+    <SetProperty Id="UPDATECHECK" Value="[SAVED_UPDATECHECK]" After="AppSearch" Sequence="both"
+                 Condition="NOT UPDATECHECK AND SAVED_UPDATECHECK" />
+
     <CustomAction Id="BlockOverMachineCopy"
                   Error="BlamixShell is already installed for all users (in Program Files). Choose &quot;Install for all users&quot; to upgrade it, or uninstall it first from Settings &gt; Apps." />
     <CustomAction Id="BlockOverUserCopy"
@@ -106,6 +120,11 @@
         <Shortcut Id="StartMenuSc" Name="BlamixShell" Description="SSH client with server manager, splits and SFTP"
                   Target="[APPLICATIONFOLDER]BlamixShell.exe" WorkingDirectory="APPLICATIONFOLDER" Icon="AppIcon" />
         <RegistryValue Root="HKMU" Key="Software\BlamixShell" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="UpdatePolicy" Directory="APPLICATIONFOLDER" Condition="UPDATECHECK"
+                 Guid="0b6f1d52-3c8e-4d0a-9f3e-6a2b9c5d7e41">
+        <RegistryValue Root="HKMU" Key="Software\BlamixShell" Name="UpdateCheck" Type="string"
+                       Value="[UPDATECHECK]" KeyPath="yes" />
       </Component>
     </Feature>
 

@@ -217,6 +217,57 @@ def overview(runner: Runner) -> Overview:
     return parse_overview(runner.run(OVERVIEW_SCRIPT, timeout=20).out)
 
 
+# ---------------------------------------------------------------- health strip (status bar)
+# Small and cheap: runs every few seconds for the active terminal. CPU % comes from the
+# difference to the previous sample, so the script never sleeps.
+HEALTH_SCRIPT = r"""
+echo @@stat; head -n1 /proc/stat 2>/dev/null
+echo @@load; cat /proc/loadavg 2>/dev/null
+echo @@nproc; nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null
+echo @@mem; grep -E '^(MemTotal|MemFree|MemAvailable|Buffers|Cached):' /proc/meminfo 2>/dev/null
+echo @@df; df -Pk / 2>/dev/null
+echo @@end
+"""
+
+
+@dataclass
+class Health:
+    cpu: float | None = None         # % (None on the first sample)
+    mem: float | None = None         # % used
+    disk: float | None = None        # % used on /
+    load: float | None = None        # 1-minute load average
+    cpus: int = 0
+    sample: tuple[int, int] | None = None   # (idle, total) for the next CPU %
+
+
+def parse_health(text: str, prev: tuple[int, int] | None = None) -> Health:
+    s = split_sections(text)
+    h = Health()
+    h.sample = _cpu_times(s.get("stat", ""))
+    if prev and h.sample and h.sample[1] > prev[1]:
+        busy = (h.sample[1] - prev[1]) - (h.sample[0] - prev[0])
+        h.cpu = max(0.0, min(100.0, 100.0 * busy / (h.sample[1] - prev[1])))
+    try:
+        h.load = float(s.get("load", "").split()[0])
+    except (ValueError, IndexError):
+        pass
+    n = s.get("nproc", "").strip()
+    h.cpus = int(n) if n.isdigit() else 0
+    mem = {m.group(1): int(m.group(2)) for m in re.finditer(r"(\w+):\s+(\d+)", s.get("mem", ""))}
+    total = mem.get("MemTotal", 0)
+    if total:
+        avail = mem.get("MemAvailable", mem.get("MemFree", 0) + mem.get("Buffers", 0) + mem.get("Cached", 0))
+        h.mem = 100.0 * max(0, total - avail) / total
+    disks = parse_df(s.get("df", ""))
+    if disks:
+        h.disk = disks[0].percent
+    return h
+
+
+def health(runner: Runner, prev: tuple[int, int] | None = None) -> Health:
+    return parse_health(runner.run(HEALTH_SCRIPT, timeout=10).out, prev)
+
+
 # ---------------------------------------------------------------- services
 # systemd (any version), OpenRC (Alpine, Gentoo), SysV init scripts (CentOS 6, older
 # Debian, containers) and supervisord, which can run next to any of them.

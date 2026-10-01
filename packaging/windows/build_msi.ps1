@@ -109,23 +109,31 @@ $nextMsi = (Resolve-Path $nextOut).Path   # (PowerShell names are case-insensiti
 $machineDir = "$env:ProgramFiles\BlamixShell"
 $userDir = "$env:LOCALAPPDATA\Programs\BlamixShell"
 
-Write-Host "== all users: install $Version, block a per-user $Next, upgrade to $Next =="
-Invoke-Msi "/i `"$msi`" /qn ALLUSERS=1 /l*v install-machine.log" "install-machine.log"
+function Get-UpdatePolicy($root) {
+  (Get-ItemProperty -Path "${root}:\Software\BlamixShell" -Name UpdateCheck -ErrorAction SilentlyContinue).UpdateCheck
+}
+
+Write-Host "== all users: install $Version (UPDATECHECK=0), block a per-user $Next, upgrade to $Next =="
+Invoke-Msi "/i `"$msi`" /qn ALLUSERS=1 UPDATECHECK=0 /l*v install-machine.log" "install-machine.log"
 Test-Installed $machineDir
 Assert-Registered $Version
+if ((Get-UpdatePolicy "HKLM") -ne "0") { throw "UPDATECHECK=0 did not set the update policy" }
 Invoke-MsiBlocked "/i `"$nextMsi`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v block-user.log" "block-user.log" "per-user install over all-users copy"
 if (Test-Path "$userDir\BlamixShell.exe") { throw "the blocked per-user install left files in $userDir" }
 Invoke-Msi "/i `"$nextMsi`" /qn ALLUSERS=1 /l*v upgrade-machine.log" "upgrade-machine.log"
 Test-Installed $machineDir
 Assert-Registered $Next
+if ((Get-UpdatePolicy "HKLM") -ne "0") { throw "the upgrade lost the UPDATECHECK=0 policy" }
 Invoke-Msi "/x `"$nextMsi`" /qn /l*v uninstall-machine.log" "uninstall-machine.log"
 if (Test-Path "$machineDir\BlamixShell.exe") { throw "uninstall left files behind" }
 if (@(Get-Registered).Count) { throw "uninstall left an Apps & features entry" }
+if ($null -ne (Get-UpdatePolicy "HKLM")) { throw "uninstall left the update policy behind" }
 
 Write-Host "== just me: install $Version, block an all-users $Next, upgrade to $Next =="
 Invoke-Msi "/i `"$msi`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v install-user.log" "install-user.log"
 Test-Installed $userDir
 Assert-Registered $Version
+if ($null -ne (Get-UpdatePolicy "HKCU")) { throw "an install without UPDATECHECK set an update policy" }
 Invoke-MsiBlocked "/i `"$nextMsi`" /qn ALLUSERS=1 /l*v block-machine.log" "block-machine.log" "all-users install over per-user copy"
 if (Test-Path "$machineDir\BlamixShell.exe") { throw "the blocked all-users install left files in $machineDir" }
 Invoke-Msi "/i `"$nextMsi`" /qn ALLUSERS=2 MSIINSTALLPERUSER=1 /l*v upgrade-user.log" "upgrade-user.log"

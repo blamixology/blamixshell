@@ -562,6 +562,14 @@ class ServerDialog(_Base):
         f3.addRow("", agent_hint)
         f3.addRow("Keepalive", self.keepalive)
         f3.addRow("Run on connect", self.startup)
+        self.log_cmds = QCheckBox("Log the commands I run here (who, when, what)")
+        self.log_cmds.setChecked(s.log_commands)
+        self.record_all = QCheckBox("Record every session to a file (full terminal output)")
+        self.record_all.setChecked(s.record_sessions)
+        f3.addRow("Logging", self.log_cmds)
+        f3.addRow("", self.record_all)
+        f3.addRow("", QLabel("Logs are plain files in the logs folder (Settings → Logging). Recordings hold "
+                             "everything the terminal shows.", objectName="Hint", wordWrap=True))
         self.tunnel_editor = TunnelEditor(s.tunnels)
         tabs.addTab(self.tunnel_editor, "Tunnels" + (f" ({len(s.tunnels)})" if s.tunnels else ""))
         tabs.addTab(w3, "Advanced")
@@ -689,6 +697,8 @@ class ServerDialog(_Base):
         s.agent_forward = self.agent_fwd.isChecked()
         s.keepalive = self.keepalive.value()
         s.startup_cmd = self.startup.text()
+        s.log_commands = self.log_cmds.isChecked()
+        s.record_sessions = self.record_all.isChecked()
         s.tunnels = self.tunnel_editor.tunnels()
         s.connection = self.via.currentData()
         p = self.aws_profile.currentText().strip()
@@ -761,7 +771,7 @@ class SettingsDialog(_Base):
             pl.setSpacing(8)
             tabs.addTab(w, title)
             return pl
-        lt, lg, lv = page("Terminal"), page("General"), page("Vault && backups")
+        lt, lg, ll, lv = page("Terminal"), page("General"), page("Logging"), page("Vault && backups")
 
         f = QFormLayout()
         f.setVerticalSpacing(10)
@@ -803,6 +813,9 @@ class SettingsDialog(_Base):
         self.tint.setToolTip("Servers or groups with a color (e.g. production in red) get a tinted background")
         self.tint.setChecked(settings.get("tint_terminals", True))
         f.addRow("", self.tint)
+        self.health = QCheckBox("Show CPU, memory and disk of the active server in the status bar")
+        self.health.setChecked(settings.get("health_strip", True))
+        f.addRow("", self.health)
         lt.addLayout(f)
         lt.addStretch(1)
 
@@ -823,18 +836,80 @@ class SettingsDialog(_Base):
         for cb in (self.cos, self.rcp, self.cmp):
             lg.addWidget(cb)
 
-        from . import __version__
+        from . import __version__, updater
         lg.addWidget(_section("Updates"))
         urow = QHBoxLayout()
         self.upd = QCheckBox("Check for updates automatically")
         self.upd.setChecked(settings.get("check_updates", True))
+        policy = updater.update_check_policy()
         urow.addWidget(self.upd, 1)
         now = QPushButton(icon("refresh"), " Check now")
         now.clicked.connect(lambda: self.parent() and self.parent().check_updates(manual=True))
+        from_file = QPushButton(icon("import"), " From a file…")
+        from_file.setToolTip("Install an update you copied here (offline computers)")
+        from_file.clicked.connect(lambda: self.parent() and self.parent().update_from_file())
         urow.addWidget(now)
+        urow.addWidget(from_file)
         lg.addLayout(urow)
+        if policy is not None:
+            self.upd.setChecked(policy)
+            self.upd.setEnabled(False)
+            now.setEnabled(policy)
+            self.upd.setToolTip("Managed by your administrator")
+            lg.addWidget(QLabel(f"🔒 Update checks are turned {'on' if policy else 'off'} by your administrator "
+                                 "(installer option or policy file).", objectName="Hint", wordWrap=True))
         lg.addWidget(QLabel(f"You're running BlamixShell {__version__}. Checks GitHub Releases at most once a day; "
                              "nothing else is sent.", objectName="Hint", wordWrap=True))
+
+        # -- logging
+        from .session_log import log_root
+        ll.addWidget(_section("Command log"))
+        self.cmdlog = QCheckBox("Log the commands I run on every server")
+        self.cmdlog.setChecked(bool(settings.get("command_log")))
+        ll.addWidget(self.cmdlog)
+        ll.addWidget(QLabel("One line per command: time, your user, the server and login, the prompt (folder) "
+                             "and the command, as shown on screen. Also the dashboard's actions. A file a day in "
+                             "logs/commands. To log only some servers, use the server's Advanced tab.",
+                             objectName="Hint", wordWrap=True))
+        ll.addWidget(_section("Session recordings"))
+        ll.addWidget(QLabel("Start one with the ● button on a terminal, or record every session of a server "
+                             "(its Advanced tab).", objectName="Hint", wordWrap=True))
+        rf = QFormLayout()
+        rf.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.rec_fmt = QComboBox()
+        self.rec_fmt.addItem("Clean text (colors and cursor codes removed)", "text")
+        self.rec_fmt.addItem("Raw (as received: replay with cat or less -R)", "raw")
+        self.rec_fmt.setCurrentIndex(max(self.rec_fmt.findData(settings.get("record_format", "text")), 0))
+        self.rec_ts = QCheckBox("Time stamp at the start of every line")
+        self.rec_ts.setChecked(bool(settings.get("record_timestamps")))
+        rf.addRow("Format", self.rec_fmt)
+        rf.addRow("", self.rec_ts)
+        ll.addLayout(rf)
+        ll.addWidget(_section("Where"))
+        drow = QHBoxLayout()
+        self.log_dir = QLineEdit(settings.get("log_dir", ""), placeholderText=str(log_root({})))
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(self._pick_log_dir)
+        opn = QPushButton(icon("folder-open"), " Open")
+        opn.clicked.connect(self._open_log_dir)
+        drow.addWidget(self.log_dir, 1)
+        drow.addWidget(browse)
+        drow.addWidget(opn)
+        ll.addLayout(drow)
+        krow = QHBoxLayout()
+        krow.addWidget(QLabel("Delete logs older than"))
+        self.retention = QSpinBox()
+        self.retention.setRange(0, 3650)
+        self.retention.setSuffix(" days")
+        self.retention.setSpecialValueText("never")
+        self.retention.setValue(int(settings.get("log_retention_days", 0)))
+        krow.addWidget(self.retention)
+        krow.addStretch(1)
+        ll.addLayout(krow)
+        ll.addWidget(QLabel("Logs are plain text, not encrypted: anything a command printed (for example "
+                             "cat .env) is in a recording. Passwords you type aren't shown by servers, so "
+                             "they aren't recorded.", objectName="Hint", wordWrap=True))
+        ll.addStretch(1)
 
         lg.addStretch(1)
         self.vault_lbl = QLabel(objectName="Hint")
@@ -889,12 +964,33 @@ class SettingsDialog(_Base):
         s["copy_on_select"] = self.cos.isChecked()
         s["right_click_paste"] = self.rcp.isChecked()
         s["confirm_multiline_paste"] = self.cmp.isChecked()
-        s["check_updates"] = self.upd.isChecked()
+        if self.upd.isEnabled():
+            s["check_updates"] = self.upd.isChecked()
+        s["health_strip"] = self.health.isChecked()
+        s["command_log"] = self.cmdlog.isChecked()
+        s["record_format"] = self.rec_fmt.currentData()
+        s["record_timestamps"] = self.rec_ts.isChecked()
+        s["log_dir"] = self.log_dir.text().strip()
+        s["log_retention_days"] = self.retention.value()
         s["restore_tabs"] = self.restore.isChecked()
         if not s["restore_tabs"]:
             s["last_session"] = {}
         s.save()
         self.accept()
+
+    # ---- logging --------------------------------------------------------------
+    def _pick_log_dir(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Folder for logs and recordings", self.log_dir.text())
+        if folder:
+            self.log_dir.setText(folder)
+
+    def _open_log_dir(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        from .session_log import log_root
+        root = log_root({"log_dir": self.log_dir.text().strip()})
+        root.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
 
     # ---- vault & backups ------------------------------------------------------
     def _refresh_vault_label(self) -> None:

@@ -62,7 +62,13 @@ DEFAULTS = {
     "sidebar_width": 280,
     "restore_tabs": True,           # reopen last session's tabs (they connect when opened)
     "last_session": {},             # layout only: server ids / splits, never passwords
-    "check_updates": True,          # daily check against GitHub Releases
+    "check_updates": True,          # daily check against GitHub Releases (an admin policy can lock it off)
+    "command_log": False,           # log commands typed on every server (see session_log.py)
+    "record_format": "text",        # session recordings: "text" (clean) or "raw" (with colors)
+    "record_timestamps": False,     # [hh:mm:ss] at the start of each recorded line
+    "log_dir": "",                  # "" = <data>/logs
+    "log_retention_days": 0,        # delete logs older than this (0 = keep)
+    "health_strip": True,           # CPU / memory / disk of the active server in the status bar
     "skip_version": "",
     "last_update_check": 0,
 }

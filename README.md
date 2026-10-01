@@ -67,6 +67,9 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
   - **Services:** systemd (any version, including CentOS 7), SysV init scripts (`service` / `chkconfig` / `update-rc.d`), OpenRC and supervisord. Filter, failed only, start / stop / restart / enable / disable (always confirmed, showing the exact command), status and logs per service. Without journald, logs come from `/var/log/messages` or `/var/log/syslog`.
   - **Processes** (filter, sort by CPU or memory, end or force-kill), **Logs** (journal by service and priority, follow mode), **Ports** (listening TCP/UDP), **Updates** (pending packages for apt, dnf, yum, zypper, pacman, apk; the upgrade command is typed into your terminal for you to review, never run silently) and **Users** (login accounts, who is logged in).
   - Actions run as root only when needed: directly as root, with passwordless sudo, or with a sudo password you type for that dashboard only; it's sent over the SSH connection and never saved.
+- **Command log:** who ran what, where, and when: one line per command (time, your user, the server and login, the prompt with its folder, the command as shown on screen, so history recall and tab completion are included), plus the dashboard's actions and `blamixshell exec`. A file a day in `logs/commands`, tab-separated so it greps and imports cleanly. Turn it on for every server (**Settings → Logging**) or only some (the server's **Advanced** tab). Password prompts and full-screen programs (vim, htop) are skipped.
+- **Session recordings:** the **●** button on a terminal records everything it shows to `logs/sessions/<server>/<date-time>.log`, as clean text (default) or raw (replay with `cat` / `less -R`), optionally time-stamped per line. Servers can record every session automatically. Old logs can be deleted after N days. Logs are plain files, so whatever a command printed is in a recording.
+- **Health strip:** CPU, memory, root disk and load of the active terminal's server in the status bar, refreshed every few seconds (amber/red when high). Click it for the dashboard.
 - **Colors for production:** give a server or a whole group a color (right-click a group → Color). Its tab, pane header and terminal background get tinted, so production looks different at a glance. The terminal tint can be turned off in Settings.
 - **Backups and sync:** one encrypted backup of the vault a day (the last 20 are kept), plus Back up now, Export, Import (adds servers, never overwrites), Restore a backup, all in Settings → Vault & backups. To use the same servers on several computers, move the vault into a synced folder (OneDrive, Dropbox, Syncthing); edits from both computers are merged, and changes show up as soon as you switch back to the window.
 - **AWS Systems Manager (SSM):** reach EC2 instances without an open SSH port or a bastion. It uses your AWS CLI v2 profiles and AWS's Session Manager plugin.
@@ -83,7 +86,7 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
 ```text
 blamixshell                          TUI (or the desktop app via `blamixshell gui`)
 blamixshell ls [query]               list servers  (e.g. `blamixshell ls tag:prod`)
-blamixshell connect <name|user@host:port> [-A] [-L ..] [-R ..] [-D ..]
+blamixshell connect <name|user@host:port> [-A] [--record] [-L ..] [-R ..] [-D ..]
                                    interactive shell; the server's saved tunnels start too
 blamixshell status <name> [-s]         CPU, memory, disks, failed services (-s: list services);
                                    exits with 1 when services have failed (handy for scripts)
@@ -127,10 +130,32 @@ TUI keys: `/` search · `⏎` connect · `a` add · `e` edit · `d` delete · `f
 
 BlamixShell checks GitHub Releases for a newer version at most once a day (a single anonymous request to `api.github.com`; nothing about you or your servers is sent). You can switch this off, or run **Check now**, in **Settings → Updates**. From the CLI, run `blamixshell update`.
 
+**Offline computers:** copy the new `BlamixShell-x.y.z-x64.msi` (or the portable zip) over, then **Help → Install update from file…**. It shows the file's SHA-256 so you can compare it with the release page (paste it to have it checked).
+
 When an update is found, an **Update x.y.z** button appears in the status bar. It opens the release notes with these options:
 - **MSI install:** *Install & restart* downloads the new MSI, checks its SHA-256, and upgrades in place.
 - **Portable Windows folder:** *Install & restart* downloads the new zip, swaps the program files after BlamixShell closes (your `data` folder is never touched), and restarts.
 - **macOS / Linux / pip / source:** *Release page* opens the download page (or use `pipx upgrade blamixshell` / `git pull`).
+
+## Offline and managed installs
+
+BlamixShell has no account, no telemetry and no license server. The only thing it ever contacts on its own is the update check (one request to `api.github.com`, at most daily), which an administrator can turn off for everyone:
+
+```text
+msiexec /i BlamixShell-x.y.z-x64.msi /qn ALLUSERS=1 UPDATECHECK=0       all users, update check off
+msiexec /i BlamixShell-x.y.z-x64.msi /qn ALLUSERS=2 MSIINSTALLPERUSER=1 UPDATECHECK=0   just for the user
+```
+
+`UPDATECHECK=0` locks the setting off (Settings shows "managed by your administrator"; `UPDATECHECK=1` forces it on). The choice is kept by later upgrades. Other ways to set the same policy:
+- **Group Policy / registry:** `UpdateCheck` = `0` under `HKLM\SOFTWARE\Policies\BlamixShell` (or `HKLM\SOFTWARE\BlamixShell`).
+- **Portable copy, macOS, Linux:** a `policy.ini` next to the app (`BlamixShell.exe` / `run.py`), or `/etc/blamixshell/policy.ini`, or `/Library/Application Support/BlamixShell/policy.ini`:
+  ```ini
+  [policy]
+  update_check = false
+  ```
+- **Environment:** `BLAMIXSHELL_UPDATE_CHECK=0`.
+
+Updates on offline machines: **Help → Install update from file…** (see *Updates*). The AWS features only talk to AWS through your AWS CLI when you use them.
 
 ## Where data lives
 
@@ -138,6 +163,7 @@ When an update is found, an **Update x.y.z** button appears in the status bar. I
 - `vault.sdv`: encrypted servers, passwords, keys and snippets. **Back it up.** If you forget the master password, the data can't be recovered.
 - `known_hosts`: trusted host keys (OpenSSH format).
 - `settings.json`: UI preferences only. No secrets.
+- `logs/`: the command log and session recordings, when you turn them on (the folder can be changed in Settings → Logging).
 
 If that folder isn't writable, or the app is installed (in `/Applications`, via pip/pipx, or under Program Files), BlamixShell uses the per-user folder instead: `%APPDATA%\BlamixShell`, `~/Library/Application Support/BlamixShell`, or `~/.config/blamixshell`. Run `blamixshell where` to see which one is in use. To share one vault between machines, copy `data/`. You can also set `BLAMIXSHELL_HOME` to point anywhere.
 

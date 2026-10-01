@@ -108,7 +108,10 @@ function init() {
     return true;
   });
 
-  term.onData(d => bridge && bridge.input(d));
+  term.onData(d => {
+    if (bridge && logCommands && d.indexOf("\r") !== -1) reportCommandLine(d);
+    bridge && bridge.input(d);
+  });
   term.onBinary(d => bridge && bridge.inputBinary(d));
   term.onSelectionChange(() => {
     if (!opts.copyOnSelect) return;
@@ -133,6 +136,7 @@ function init() {
     bridge.text.connect(s => term.write(s));
     bridge.pasteText.connect(s => { term.paste(s); term.focus(); });
     bridge.options.connect(j => applyOptions(JSON.parse(j)));
+    bridge.logCommands.connect(on => { logCommands = on; });
     bridge.command.connect(c => {
       if (c === "focus") term.focus();
       else if (c === "clear") term.clear();
@@ -150,6 +154,31 @@ function init() {
 // ---- find bar
 const findBox = document.getElementById("find"), q = document.getElementById("q");
 const decor = { matchBackground: "#3b4a7a", activeMatchBackground: "#7c8cff", matchOverviewRuler: "#7c8cff", activeMatchColorOverviewRuler: "#ffffff" };
+// Command log: when Enter is pressed, report the line the cursor is on (prompt + command,
+// as shown on screen, so history recall and tab completion are included). Full-screen apps
+// (vim, htop, less) use the alternate screen and are skipped.
+let logCommands = false;
+function currentLine() {
+  const buf = term.buffer.active;
+  let y = buf.baseY + buf.cursorY;
+  let line = buf.getLine(y);
+  if (!line) return "";
+  let text = line.translateToString(true);
+  while (line && line.isWrapped && y > 0) {         // a long command wraps onto several rows
+    y -= 1; line = buf.getLine(y);
+    if (line) text = line.translateToString(true) + text;
+  }
+  return text;
+}
+function reportCommandLine(d) {
+  if (term.buffer.active.type !== "normal") return;
+  if (d === "\r") { bridge.commandLine(currentLine(), ""); return; }
+  // pasted text with line breaks: the first line completes what's on screen, the rest are commands
+  const parts = d.split(/\r\n|\r|\n/);
+  bridge.commandLine(currentLine() + parts[0], "");
+  for (let i = 1; i < parts.length - 1; i++) bridge.commandLine("", parts[i]);
+}
+
 function openFind() { findBox.style.display = "flex"; q.focus(); q.select(); }
 function closeFind() { findBox.style.display = "none"; search.clearDecorations(); term.focus(); }
 q.addEventListener("keydown", e => {

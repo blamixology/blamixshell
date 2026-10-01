@@ -150,6 +150,115 @@ def download(asset: Asset, dest_dir: Path, progress=lambda done, total: None) ->
     return dest
 
 
+# ---------------------------------------------------------------- admin policy (managed / offline)
+POLICY_FILE = "policy.ini"
+
+
+def _policy_files() -> list[Path]:
+    files = []
+    if getattr(sys, "frozen", False):
+        files.append(Path(sys.executable).resolve().parent / POLICY_FILE)
+    else:
+        files.append(Path(__file__).resolve().parent.parent / POLICY_FILE)
+    if sys.platform == "darwin":
+        files.append(Path("/Library/Application Support/BlamixShell") / POLICY_FILE)
+    elif sys.platform != "win32":
+        files.append(Path("/etc/blamixshell") / POLICY_FILE)
+    return files
+
+
+def _registry_policy() -> str | None:
+    if sys.platform != "win32":
+        return None
+    import winreg
+    places = [(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\BlamixShell"),   # Group Policy
+              (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\BlamixShell"),             # MSI, all users
+              (winreg.HKEY_CURRENT_USER, r"Software\Policies\BlamixShell"),
+              (winreg.HKEY_CURRENT_USER, r"Software\BlamixShell")]              # MSI, just me
+    for root, key in places:
+        try:
+            with winreg.OpenKey(root, key) as k:
+                value, _type = winreg.QueryValueEx(k, "UpdateCheck")
+                return str(value)
+        except OSError:
+            continue
+    return None
+
+
+def _ini_policy() -> str | None:
+    import configparser
+    for f in _policy_files():
+        if f.is_file():
+            cp = configparser.ConfigParser()
+            try:
+                cp.read(f, encoding="utf-8")
+            except configparser.Error:
+                continue
+            if cp.has_option("policy", "update_check"):
+                return cp.get("policy", "update_check")
+    return None
+
+
+def update_check_policy() -> bool | None:
+    """An administrator's choice, which the user can't change: False = never contact GitHub
+    (managed or air-gapped networks), True = always on, None = no policy (user decides).
+    Sources: BLAMIXSHELL_UPDATE_CHECK, the Windows registry (set by the MSI's UPDATECHECK
+    property or Group Policy), or policy.ini next to the app / in /etc/blamixshell."""
+    for value in (os.environ.get("BLAMIXSHELL_UPDATE_CHECK"), _registry_policy(), _ini_policy()):
+        if value is None or str(value).strip() == "":
+            continue
+        v = str(value).strip().lower()
+        if v in ("0", "false", "no", "off"):
+            return False
+        if v in ("1", "true", "yes", "on"):
+            return True
+    return None
+
+
+def updates_allowed(settings: dict) -> bool:
+    policy = update_check_policy()
+    return policy if policy is not None else bool(settings.get("check_updates", True))
+
+
+# ---------------------------------------------------------------- update from a file (offline)
+def sha256_of(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def file_version(path: Path) -> str:
+    """Version from a release file name (BlamixShell-1.6.0-x64.msi), or ''."""
+    m = re.search(r"(\d+\.\d+\.\d+)", Path(path).name)
+    return m.group(1) if m else ""
+
+
+def check_update_file(path: Path, kind: str | None = None, expected_sha256: str = "") -> str:
+    """Problems with a local update package ('' = fine to install)."""
+    kind = kind or install_kind()
+    path = Path(path)
+    if kind not in ("msi", "portable"):
+        return ("On this system, install the new version by replacing the app (macOS / Linux) "
+                "or with pip; there's nothing to run from here.")
+    want = ".msi" if kind == "msi" else ".zip"
+    if path.suffix.lower() != want:
+        return ("This copy was installed with the installer: pick the .msi file (BlamixShell-x.y.z-x64.msi)."
+                if kind == "msi" else "This is the portable version: pick BlamixShell-windows-x64.zip.")
+    if kind == "portable":
+        try:
+            with zipfile.ZipFile(path) as z:
+                if not any(n.endswith("BlamixShell.exe") for n in z.namelist()):
+                    return "That zip doesn't contain BlamixShell.exe."
+        except zipfile.BadZipFile:
+            return "That file isn't a valid zip (incomplete copy?)."
+    if expected_sha256.strip():
+        if sha256_of(path).lower() != expected_sha256.strip().lower().removeprefix("sha256:"):
+            return "The file's SHA-256 doesn't match the one you entered: don't install it."
+    return ""
+
+
 # ---------------------------------------------------------------- applying (Windows)
 UPDATE_LOG = "blamixshell-update.log"   # in %TEMP%: what the update script did, for support
 

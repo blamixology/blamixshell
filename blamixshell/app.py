@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import os
 import time
+import threading
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QObject, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
-from PySide6.QtWidgets import (QApplication, QDialog, QGridLayout, QHBoxLayout, QInputDialog,
+from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QGridLayout, QHBoxLayout, QInputDialog,
                                QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton,
                                QSplitter, QStackedWidget, QTabBar, QTabWidget, QToolButton, QVBoxLayout,
                                QWidget)
@@ -27,6 +28,17 @@ from .vault import Vault, WrongPassword
 
 STATE_COLORS = {"connected": C["ok"], "connecting": C["warn"], "failed": C["danger"],
                 "disconnected": C["faint"], "idle": C["faint"]}
+
+
+class _HealthSignals(QObject):
+    done = Signal(object, object)     # (pane, Health | None)
+
+
+class _HealthLabel(QLabel):
+    clicked = Signal()
+
+    def mousePressEvent(self, e):  # noqa: N802
+        self.clicked.emit()
 
 
 class _UpdateSignals(QObject):
@@ -366,7 +378,21 @@ class MainWindow(QMainWindow):
         self.status_left = QLabel()
         self.status_right = QLabel()
         sb.addWidget(self.status_left, 1)
+        # health strip: CPU / memory / disk / load of the active terminal's server
+        self.health_lbl = _HealthLabel()
+        self.health_lbl.setCursor(Qt.PointingHandCursor)
+        self.health_lbl.setToolTip("Click for the server dashboard")
+        self.health_lbl.clicked.connect(lambda: self.open_dashboard())
+        self.health_lbl.hide()
+        sb.addPermanentWidget(self.health_lbl)
         sb.addPermanentWidget(self.status_right)
+        self._health = _HealthSignals()
+        self._health.done.connect(self._show_health)
+        self._health_prev: dict[int, tuple] = {}      # id(pane) -> last CPU sample
+        self._health_busy = False
+        self._health_timer = QTimer(self)
+        self._health_timer.timeout.connect(self._poll_health)
+        self._health_timer.start(5000)
 
         self._install_shortcuts()
         self.refresh_all()
@@ -390,6 +416,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.update_btn)
         self._pending_release = None
         QTimer.singleShot(4000, lambda: self.check_updates(manual=False))
+        QTimer.singleShot(8000, self._prune_logs)
 
         # shared vault (OneDrive / Syncthing / USB): pick up changes from other computers
         self.store.notify = lambda msg: self.statusBar().showMessage(msg, 10000)
@@ -545,7 +572,68 @@ class MainWindow(QMainWindow):
         live = sum(1 for p in self.all_panes() if p.state == "connected")
         self.status_right.setText(f"🔒 vault encrypted  ·  {live} live session{'s' if live != 1 else ''}")
 
+    # ================================================================ health strip
+    def _health_pane(self):
+        p = self.active_pane()
+        if (p and p.state == "connected" and p.server.uses_ssh and p.session
+                and getattr(p.session, "client", None)):
+            return p
+        return None
+
+    def _poll_health(self) -> None:
+        if not self.settings.get("health_strip", True) or self._health_busy:
+            if not self.settings.get("health_strip", True):
+                self.health_lbl.hide()
+            return
+        if not self.isVisible() or self.isMinimized():
+            return
+        pane = self._health_pane()
+        if pane is None:
+            self.health_lbl.hide()
+            return
+        self._health_busy = True
+        from . import dashboard as d
+        client, prev = pane.session.client, self._health_prev.get(id(pane))
+
+        def run():
+            try:
+                h = d.health(d.Runner(client), prev)
+            except Exception:
+                h = None
+            self._health.done.emit(pane, h)
+        threading.Thread(target=run, daemon=True, name="health").start()
+
+    def _health_kick(self) -> None:
+        """The active terminal changed: show its server's numbers soon, not the old ones."""
+        pane = self._health_pane()
+        if pane is not getattr(self, "_health_for", None):
+            self._health_for = pane
+            self.health_lbl.hide()
+            QTimer.singleShot(300, self._poll_health)
+
+    def _show_health(self, pane, h) -> None:
+        self._health_busy = False
+        if h is None or pane is not self._health_pane():
+            if self._health_pane() is None:
+                self.health_lbl.hide()
+            return
+        self._health_prev[id(pane)] = h.sample
+
+        def part(label, v, warn=75, bad=90, fmt="{:.0f}%"):
+            if v is None:
+                return f"<span style='color:{C['faint']}'>{label} …</span>"
+            col = C["danger"] if v >= bad else C["warn"] if v >= warn else C["muted"]
+            return f"<span style='color:{C['faint']}'>{label}</span> <span style='color:{col}'>{fmt.format(v)}</span>"
+        load_bad = (h.cpus or 1) * 1.5
+        parts = [part("CPU", h.cpu), part("RAM", h.mem), part("/", h.disk, 80, 90),
+                 part("load", h.load, (h.cpus or 1), load_bad, "{:.2f}")]
+        self.health_lbl.setText("  ·  ".join(parts) + "&nbsp;&nbsp;")
+        self.health_lbl.setToolTip(f"{pane.server.label}: CPU, memory, root disk, 1-minute load "
+                                   f"({h.cpus} CPU{'s' if h.cpus != 1 else ''}). Click for the dashboard.")
+        self.health_lbl.show()
+
     def _on_tab_changed(self, _i: int) -> None:
+        QTimer.singleShot(0, self._health_kick)
         t = self.current_tab()
         self.stack.setCurrentIndex(1 if self.tabs.count() else 0)
         if t:
@@ -559,6 +647,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, t.active.focus_terminal)
 
     def _on_pane_state(self, _pane=None) -> None:
+        self._health_kick()
         live = {p.server.id for p in self.all_panes() if p.state == "connected"}
         if live != self.tree.live:
             self.tree.live = live
@@ -604,7 +693,7 @@ class MainWindow(QMainWindow):
     def _new_tab(self) -> SessionTab:
         tab = SessionTab()
         tab.emptied.connect(self._tab_emptied)
-        tab.active_pane_changed.connect(lambda _p: (self._sync_sftp(), self._update_status()))
+        tab.active_pane_changed.connect(lambda _p: (self._sync_sftp(), self._update_status(), self._health_kick()))
         tab.changed.connect(self._on_pane_state)
         return tab
 
@@ -842,6 +931,9 @@ class MainWindow(QMainWindow):
             ("Settings…", "", self.open_settings, "settings"),
             ("Lock vault", "", self.lock, "lock"),
             ("Check for updates", "", lambda: self.check_updates(manual=True), "refresh"),
+            ("Install update from file…", "", self.update_from_file, "import"),
+            ("Start / stop recording this session", "", self.toggle_recording, "record"),
+            ("Open logs folder", "", self.open_logs_folder, "folder"),
             ("About BlamixShell", "", self.show_about, "help"),
         ]
         for sn in self.store.snippets:
@@ -1100,8 +1192,13 @@ class MainWindow(QMainWindow):
     def check_updates(self, manual: bool = False) -> None:
         import threading
         from . import updater
+        if updater.update_check_policy() is False:
+            if manual:
+                QMessageBox.information(self, "Updates", "Update checks are turned off by your administrator. "
+                                        "To update, use Help → Install update from file.")
+            return
         if not manual:
-            if not self.settings.get("check_updates", True):
+            if not updater.updates_allowed(self.settings):
                 return
             if time.time() - float(self.settings.get("last_update_check", 0)) < 20 * 3600:
                 return
@@ -1206,6 +1303,52 @@ class MainWindow(QMainWindow):
         # shutdown (an open dialog or a hung web engine can keep the process alive).
         os._exit(0)
 
+    def update_from_file(self) -> None:
+        """Offline update: install an MSI / portable zip that was copied to this computer."""
+        from . import __version__, updater
+        kind = updater.install_kind()
+        if kind not in ("msi", "portable"):
+            QMessageBox.information(self, "Install update from file",
+                                    updater.check_update_file(Path("x"), kind))
+            return
+        filt = "BlamixShell installer (*.msi)" if kind == "msi" else "BlamixShell portable (*.zip)"
+        path, _ = QFileDialog.getOpenFileName(self, "Install update from file", str(Path.home() / "Downloads"), filt)
+        if not path:
+            return
+        problem = updater.check_update_file(Path(path), kind)
+        if problem:
+            QMessageBox.warning(self, "Install update from file", problem)
+            return
+        digest = updater.sha256_of(Path(path))
+        ver = updater.file_version(Path(path))
+        if ver and not updater.is_newer(ver, __version__) and QMessageBox.question(
+                self, "Install update from file",
+                f"{Path(path).name} is version {ver}; you have {__version__}. Install it anyway?") != QMessageBox.Yes:
+            return
+        expected, ok = QInputDialog.getText(
+            self, "Check the file",
+            f"<b>{Path(path).name}</b>{f' (version {ver})' if ver else ''}<br><br>"
+            f"SHA-256: <code>{digest}</code><br><br>"
+            "Compare it with the checksum on the release page (each download lists its sha256). "
+            "Paste the expected value to check automatically, or leave empty:")
+        if not ok:
+            return
+        problem = updater.check_update_file(Path(path), kind, expected)
+        if problem:
+            QMessageBox.warning(self, "Install update from file", problem)
+            return
+        if QMessageBox.question(self, "Install update from file",
+                                "BlamixShell closes, installs the update and starts again. Continue?") != QMessageBox.Yes:
+            return
+        try:
+            updater.apply_update(Path(path), kind)
+        except updater.UpdateError as e:
+            QMessageBox.warning(self, "Install update from file", str(e))
+            return
+        self._force_quit = True
+        self.close()
+        os._exit(0)
+
     def _help_menu(self, parent) -> QMenu:
         from . import links
         from .dialogs import open_url
@@ -1214,6 +1357,7 @@ class MainWindow(QMainWindow):
         m.addAction(icon("code"), "Keyboard shortcuts", lambda: open_url(links.SHORTCUTS_URL))
         m.addAction(icon("link"), "Documentation", lambda: open_url(links.DOCS_URL))
         m.addAction(icon("refresh"), "Check for updates", lambda: self.check_updates(manual=True))
+        m.addAction(icon("import"), "Install update from file…", self.update_from_file)
         m.addAction(icon("edit"), "Report a problem", lambda: open_url(links.ISSUES_URL))
         m.addSeparator()
         m.addAction(icon("coffee", C["warn"]), "Buy me a coffee", lambda: open_url(links.KOFI_URL))
@@ -1302,6 +1446,32 @@ class MainWindow(QMainWindow):
         if SettingsDialog(self.settings, self.store, self).exec() == QDialog.Accepted:
             for p in self.all_panes():
                 p.apply_settings()
+                if p.state == "connected":
+                    p.apply_logging()
+            self._prune_logs()
+            if not self.settings.get("health_strip", True):
+                self.health_lbl.hide()
+
+    def _prune_logs(self) -> None:
+        days = int(self.settings.get("log_retention_days", 0) or 0)
+        if days > 0:
+            from .session_log import log_root, prune
+            root = log_root(self.settings)
+            threading.Thread(target=lambda: prune(root, days), daemon=True).start()
+
+    def open_logs_folder(self) -> None:
+        from .dialogs import open_url
+        from .session_log import log_root
+        root = log_root(self.settings)
+        root.mkdir(parents=True, exist_ok=True)
+        open_url(QUrl.fromLocalFile(str(root)).toString())
+
+    def toggle_recording(self) -> None:
+        pane = self.active_pane()
+        if pane is None or (pane.state != "connected" and pane.recorder is None):
+            self.statusBar().showMessage("Connect to a server first, then record.", 4000)
+            return
+        pane.toggle_recording()
 
     def lock(self) -> None:
         self.hide()

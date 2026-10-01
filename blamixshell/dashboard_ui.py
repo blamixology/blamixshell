@@ -727,6 +727,8 @@ class DashboardWindow(QWidget):
             self._sudo_pw = pw
             self._job("action", lambda r: d.run_privileged(r, command, self._root, self._sudo_pw))
             return
+        if hasattr(self.pane, "log_command"):        # command log: the dashboard's actions too
+            self.pane.log_command(command + ("" if res.ok else f"   # failed (exit {res.code})"), "dashboard")
         if res.ok:
             self.status.setText(f"✔ {what}: done")
         else:

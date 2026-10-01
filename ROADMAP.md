@@ -9,7 +9,18 @@ Legend: ✅ done · 🚧 in progress · 🗓 planned · 💡 later / maybe
 
 | | Feature | What it means |
 |---|---|---|
+| ✅ | **Command log** | Who ran what, where and when: one line per command (as shown on screen), plus dashboard actions and `exec`. Per server or for all. |
+| ✅ | **Session recordings** | ● on a terminal, or always per server: everything it shows, as clean text or raw, optionally time-stamped. Retention in days. |
+| ✅ | **Health strip** | CPU, memory, disk and load of the active server in the status bar; click for the dashboard. |
+| ✅ | **Offline / managed installs** | `UPDATECHECK=0` (MSI), Group Policy, or `policy.ini` turns the update check off and locks it; **Install update from file** for offline machines; documented silent installs. |
+
+## Released in 1.5
+
+| | Feature | What it means |
+|---|---|---|
 | ✅ | **AWS Systems Manager** | SSH over SSM (files, tunnels, dashboard work), plain SSM shells, EC2 Instance Connect one-time keys, AWS SSO sign-in with automatic reconnect, and import of SSM-managed instances. CLI: `blamixshell aws login / instances / import`. |
+| ✅ | **Better splits** | Mix servers in one tab (the arrow on the split buttons), rotate a split, and nested splits no longer close terminals. |
+| ✅ | **Made by Blamixology** | In About and the Help menu. |
 
 ## Released in 1.4
 
@@ -39,7 +50,6 @@ Legend: ✅ done · 🚧 in progress · 🗓 planned · 💡 later / maybe
 | | Feature | What it means |
 |---|---|---|
 | 🗓 | **Local terminal tabs** | PowerShell, cmd, WSL or Git Bash in the same window (ConPTY on Windows), bash/zsh on macOS and Linux. The terminal layer is already in place (it runs SSM shells). |
-| 🗓 | **Session logging** | Record a terminal to a file, on demand or always for a server, with optional timestamps. |
 
 ## Gaps vs. other tools
 
@@ -49,7 +59,7 @@ comparison tables stay honest.
 | | Gap | Plan |
 |---|---|---|
 | 🚧 | **OS management GUI** (Cockpit/Webmin style) | The server dashboard covers monitoring, services, processes, logs, ports, updates and users. Still missing compared to Cockpit: installing updates from the GUI, editing users and groups, firewall and storage management. |
-| 🗓 | **Air-gapped / managed networks** (already works offline: no account, no telemetry) | Turn the update check off for everyone: an MSI property (`UPDATECHECK=0`) and a setting admins can lock. "Update from file" for offline machines. A documented offline install. |
+| ✅ | **Air-gapped / managed networks** (no account, no telemetry) | Done in the next release: update check off by policy, install update from file, documented offline install. |
 | 🗓 | **Single binary** | A one-file CLI/TUI binary for servers (no Qt, starts fast). The desktop app stays a portable folder: a one-file Qt WebEngine build unpacks ~300 MB on every start. |
 | 💡 | **Teams / RBAC** (Teleport, Guacamole) | BlamixShell is single-user with a local vault. Possible path: a shared encrypted team vault (per-member keys, synced through git or a shared folder), roles (connect-only / read-only / admin) and an audit log. Real multi-tenant RBAC with enforced access needs a server component, which is a different product. |
 
@@ -60,7 +70,6 @@ comparison tables stay honest.
 | 💡 | X11 forwarding |
 | 💡 | Serial and Telnet connections (network gear) |
 | 💡 | Mosh |
-| 💡 | Server health strip (CPU, RAM, disk) in the status bar |
 | 💡 | Terminal autocomplete from shell history |
 
 ## Done

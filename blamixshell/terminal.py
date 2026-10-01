@@ -52,6 +52,7 @@ class TerminalBridge(QObject):
     pasteText = Signal(str)
     options = Signal(str)
     command = Signal(str)
+    logCommands = Signal(bool)
     # Python-side notifications
     sig_input = Signal(bytes)
     sig_resize = Signal(int, int)
@@ -60,6 +61,7 @@ class TerminalBridge(QObject):
     sig_paste = Signal()
     sig_focus = Signal()
     sig_title = Signal(str)
+    sig_command = Signal(str, str)      # screen line where Enter was pressed, or a pasted command
 
     @Slot(str)
     def input(self, data: str) -> None:
@@ -68,6 +70,10 @@ class TerminalBridge(QObject):
     @Slot(str)
     def inputBinary(self, data: str) -> None:
         self.sig_input.emit(data.encode("latin-1", "replace"))
+
+    @Slot(str, str)
+    def commandLine(self, line: str, explicit: str) -> None:
+        self.sig_command.emit(line, explicit)
 
     @Slot(int, int)
     def resize(self, cols: int, rows: int) -> None:
@@ -160,6 +166,8 @@ class TerminalPane(QWidget):
         self._session_password = ""
         self.remote_title = ""
         self.deferred = False            # restored from the last session, not connected yet
+        self.recorder = None             # session_log.Recorder while recording
+        self._command_log = None         # session_log.CommandLog when commands are logged
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -189,6 +197,12 @@ class TerminalPane(QWidget):
         self._tunnel_states: list = []
         h.addWidget(self.tun_btn)
         h.addWidget(self.status_lbl)
+        self.rec_lbl = QLabel()
+        self.rec_lbl.setStyleSheet(f"color:{C['danger']}; font-size:8.5pt; font-weight:600;")
+        self.rec_lbl.hide()
+        h.addWidget(self.rec_lbl)
+        self.btn_rec = self._tbtn("record", "Record this session to a file", self.toggle_recording)
+        h.addWidget(self.btn_rec)
         self.btn_dash = self._tbtn("gauge", kb("Server dashboard (Ctrl+Shift+I)"),
                                    lambda: self.dashboard_requested.emit(self))
         h.addWidget(self.btn_dash)
@@ -208,6 +222,7 @@ class TerminalPane(QWidget):
         b.sig_paste.connect(self.paste)
         b.sig_focus.connect(lambda: self.activated.emit(self))
         b.sig_title.connect(self._on_title)
+        b.sig_command.connect(self._on_command_line)
 
         self._clock = QTimer(self)
         self._clock.timeout.connect(self._tick)
@@ -243,9 +258,13 @@ class TerminalPane(QWidget):
         self.addr_lbl.setText(self.server.address if self.server.name else "")
         self.btn_reconnect.setVisible(self.state in ("disconnected", "failed"))
         self.btn_dash.setVisible(self.state == "connected" and self.server.uses_ssh)
+        self.btn_rec.setVisible(self.state == "connected" or self.recorder is not None)
         self._tick()
 
     def _tick(self) -> None:
+        if self.recorder is not None:
+            secs = int(time.time() - self.recorder.started)
+            self.rec_lbl.setText(f"● REC {secs // 60:02d}:{secs % 60:02d}")
         if self.state == "connected" and self.session:
             secs = int(time.time() - self.session.connected_at)
             self.status_lbl.setText(f"{secs // 3600:02d}:{secs % 3600 // 60:02d}:{secs % 60:02d}")
@@ -264,6 +283,7 @@ class TerminalPane(QWidget):
     # ---------------------------------------------------------- terminal io
     def _on_ready(self, cols: int, rows: int) -> None:
         self._ready = True
+        self.view.bridge.logCommands.emit(self._command_log is not None)
         self._size = (cols, rows)
         for chunk in self._buffer:
             self.view.bridge.output.emit(chunk)
@@ -375,6 +395,7 @@ class TerminalPane(QWidget):
             srv.password = self._session_password
         s = make_session(srv, self._resolve, self)
         s.output.connect(self.write_output)
+        s.output.connect(self._record)
         s.status.connect(lambda m: (self.write_status(m), self.status_lbl.setText(m)))
         s.connected.connect(self._on_connected)
         s.disconnected.connect(self._on_disconnected)
@@ -395,15 +416,20 @@ class TerminalPane(QWidget):
 
     def _on_connected(self) -> None:
         self._set_state("connected")
+        self.apply_logging()
+        if self.server.record_sessions and self.recorder is None:
+            self.start_recording()
         if self._size[0]:
             self.session.resize(*self._size)
 
     def _on_disconnected(self, reason: str) -> None:
+        self.stop_recording()
         self._set_state("disconnected")
         msg = f"Session ended: {reason}." if reason else "Session ended."
         self.write_status(f"\r\n{msg}  Press R to reconnect.", "33")
 
     def _on_failed(self, reason: str) -> None:
+        self.stop_recording()
         self._set_state("failed")
         self.write_status(f"\r\n✖ {reason}", "31")
         self.write_status("Press R to retry.", "90")
@@ -491,7 +517,74 @@ class TerminalPane(QWidget):
         else:
             self._on_failed("Host key not trusted: connection cancelled")
 
+    # ---------------------------------------------------------- command log / recording
+    def apply_logging(self) -> None:
+        """Command logging on or off for this pane (global setting or per server)."""
+        from .session_log import CommandLog, log_root
+        on = bool(self.settings.get("command_log")) or self.server.log_commands
+        self._command_log = CommandLog(log_root(self.settings)) if on else None
+        if self._ready:
+            self.view.bridge.logCommands.emit(on)
+
+    def log_command(self, command: str, source: str = "terminal", prompt: str = "") -> None:
+        if self._command_log is not None and command.strip():
+            self._command_log.add(self.server, command.strip(), source, prompt)
+
+    def _on_command_line(self, line: str, explicit: str) -> None:
+        if self._command_log is None or self.state != "connected":
+            return
+        if explicit:
+            self.log_command(explicit, "paste")
+            return
+        from .session_log import command_from_line
+        got = command_from_line(line)
+        if got:
+            self.log_command(got[1], "terminal", got[0])
+
+    def _record(self, data: bytes) -> None:
+        if self.recorder is not None:
+            try:
+                self.recorder.write(data)
+            except Exception as e:
+                self.write_status(f"Recording stopped: {e}", "31")
+                self.stop_recording()
+
+    def toggle_recording(self) -> None:
+        if self.recorder is None:
+            self.start_recording()
+        else:
+            self.stop_recording()
+
+    def start_recording(self) -> None:
+        from .session_log import Recorder, log_root
+        try:
+            self.recorder = Recorder(log_root(self.settings), self.server,
+                                     self.settings.get("record_format", "text"),
+                                     bool(self.settings.get("record_timestamps")))
+        except OSError as e:
+            self.write_status(f"Could not start recording: {e}", "31")
+            return
+        self.write_status(f"● Recording to {self.recorder.path}", "31")
+        self.btn_rec.setIcon(icon("record", C["danger"], 14))
+        self.btn_rec.setToolTip("Stop recording")
+        self.rec_lbl.show()
+        self._tick()
+        self.state_changed.emit(self)
+
+    def stop_recording(self) -> None:
+        if self.recorder is None:
+            return
+        rec, self.recorder = self.recorder, None
+        path = rec.close()
+        self.btn_rec.setIcon(icon("record", C["muted"], 14))
+        self.btn_rec.setToolTip("Record this session to a file")
+        self.rec_lbl.hide()
+        if self.state == "connected":
+            self.write_status(f"■ Recording saved: {path}", "90")
+        self.state_changed.emit(self)
+
     def shutdown(self) -> None:
+        self.stop_recording()
         if self.session:
             self.session.close()
         self._clock.stop()
