@@ -68,6 +68,10 @@ QPushButton#Ghost, QToolButton {{ background: transparent; border: 1px solid tra
 QPushButton#Ghost:hover, QToolButton:hover {{ background: {C['hover']}; }}
 QToolButton:checked {{ background: {C['surface2']}; border: 1px solid {C['border']}; }}
 QToolButton::menu-indicator {{ image: none; width: 0; }}
+QToolButton#SplitBtn {{ padding: 6px 16px 6px 6px; }}
+QToolButton#SplitBtn::menu-button {{ border: none; border-radius: 6px; width: 14px;
+    subcontrol-origin: padding; subcontrol-position: center right; }}
+QToolButton#SplitBtn::menu-arrow {{ subcontrol-origin: content; subcontrol-position: center; top: 0; left: 0; }}
 
 QTreeWidget, QListWidget, QTableWidget {{ background: transparent; border: none; outline: none; }}
 QTreeWidget::item, QListWidget::item {{ border-radius: 8px; padding: 2px; }}

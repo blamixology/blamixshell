@@ -318,6 +318,7 @@ class MainWindow(QMainWindow):
         self.btn_split_d = self._tool("split-v", "Split down (Ctrl+Shift+E): same server; "
                                       "the arrow picks another server", lambda: self.split(Qt.Vertical))
         for b, where in ((self.btn_split_r, "right"), (self.btn_split_d, "down")):
+            b.setObjectName("SplitBtn")
             b.setPopupMode(QToolButton.MenuButtonPopup)
             menu = QMenu(b)
             menu.aboutToShow.connect(lambda m=menu, w=where: self._fill_split_menu(m, w))
