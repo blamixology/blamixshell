@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.6.0](https://github.com/blamixology/blamixshell/releases/tag/v1.6.0) - 2026-10-01
+
+### Improvements
+- Command log, session recordings, status-bar health strip; offline/managed installs (UPDATECHECK, install update from file) (379291c)
+
 ## [1.5.3](https://github.com/blamixology/blamixshell/releases/tag/v1.5.3) - 2026-10-01
 
 ### Fixes
