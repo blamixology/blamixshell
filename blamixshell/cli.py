@@ -508,7 +508,7 @@ def cmd_status(store: Store, a) -> int:
     try:
         r = dash.Runner(client)
         ov = dash.overview(r)
-        svcs, _problem = dash.services(r) if a.services else ([], "")
+        svcs, problem = dash.services(r) if a.services else ([], "")
     finally:
         client.close()
         for cl in chain:
@@ -530,8 +530,15 @@ def cmd_status(store: Store, a) -> int:
     for dk in ov.disks:
         print(f"  {dk.mount[:22]:<22} {bar(dk.percent)} {pct(dk.percent, 80, 90)}  "
               + c(f"{dash.human_kb(dk.used_kb)} of {dash.human_kb(dk.size_kb)}", "90"))
-    if ov.systemd in ("", "offline", "unknown"):
-        print(c("  no systemd", "90"))
+    failed = ov.failed_units or [sv.unit for sv in svcs if sv.failed]
+    if ov.init and ov.init != "systemd":
+        if failed:
+            print(c(f"  ● {len(failed)} failed service(s): " + ", ".join(failed), "31"))
+        else:
+            print(c(f"  services managed by {dash.INIT_NAMES.get(ov.init, ov.init)}"
+                    + ("" if a.services else " (add -s to list them)"), "90"))
+    elif ov.systemd in ("", "offline", "unknown"):
+        print(c("  no systemd" + (f" (first process: {ov.pid1})" if ov.pid1 and ov.pid1 != "systemd" else ""), "90"))
     elif ov.failed_units:
         print(c(f"  ● {len(ov.failed_units)} failed service(s): " + ", ".join(ov.failed_units), "31"))
     else:
@@ -539,7 +546,9 @@ def cmd_status(store: Store, a) -> int:
     for sv in svcs:
         if sv.active == "active" or sv.failed:
             print(f"    {c('●', '31' if sv.failed else '32')} {sv.unit:<40} {sv.sub:<10} " + c(sv.description, "90"))
-    return 1 if ov.failed_units else 0
+    if a.services and problem:
+        print(c("  " + problem.replace("\n", "\n  "), "90"))
+    return 1 if failed else 0
 
 
 def cmd_tunnel(store: Store, a) -> int:

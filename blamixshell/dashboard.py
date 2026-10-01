@@ -35,8 +35,11 @@ class Runner:
         self.client = client
 
     def run(self, command: str, timeout: float = 30, stdin: str | None = None) -> Result:
-        # a plain POSIX shell with C locale: predictable, parseable output
-        wrapped = "LC_ALL=C LANG=C sh -c " + shlex.quote(command)
+        # a plain POSIX shell with C locale: predictable, parseable output. The sbin
+        # directories are added because non-root logins often lack them (CentOS, Debian),
+        # which hides service/chkconfig/ss and friends.
+        wrapped = ('LC_ALL=C LANG=C PATH="$PATH:/usr/local/sbin:/usr/sbin:/sbin" sh -c '
+                   + shlex.quote(command))
         i, o, e = exec_command(self.client, wrapped, timeout=timeout)
         if stdin is not None:
             i.write(stdin)
@@ -61,6 +64,12 @@ def split_sections(text: str) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------- overview
+# Which service manager runs this box. /run/systemd/system is systemd's own "booted with
+# systemd" test: containers often have systemctl installed without systemd running.
+INIT_DETECT = ("if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then echo systemd; "
+               "elif command -v rc-service >/dev/null 2>&1 && [ -d /etc/runlevels ]; then echo openrc; "
+               "elif ls /etc/init.d/* >/dev/null 2>&1 || [ -d /etc/rc.d/init.d ]; then echo sysv; fi")
+
 OVERVIEW_SCRIPT = r"""
 echo @@host; hostname 2>/dev/null
 echo @@os; if [ -r /etc/os-release ]; then . /etc/os-release; echo "$PRETTY_NAME"; else uname -sr; fi
@@ -75,11 +84,13 @@ sleep 0.5
 echo @@stat2; head -n1 /proc/stat 2>/dev/null
 echo @@df; df -PTk -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs 2>/dev/null || df -Pk 2>/dev/null
 echo @@who; who 2>/dev/null | wc -l
-echo @@systemd; command -v systemctl >/dev/null 2>&1 && systemctl is-system-running 2>/dev/null
-echo @@failed; command -v systemctl >/dev/null 2>&1 && systemctl list-units --state=failed --no-legend --plain --no-pager 2>/dev/null | awk '{print $1}'
+echo @@init; INIT_DETECT
+echo @@systemd; [ -d /run/systemd/system ] && systemctl is-system-running 2>/dev/null
+echo @@failed; [ -d /run/systemd/system ] && systemctl list-units --state=failed --no-legend --no-pager 2>/dev/null | awk '{print ($1 ~ /[.]service$/) ? $1 : $2}'
+echo @@pid1; cat /proc/1/comm 2>/dev/null
 echo @@uid; id -u
 echo @@end
-"""
+""".replace("INIT_DETECT", INIT_DETECT)
 
 
 @dataclass
@@ -113,6 +124,8 @@ class Overview:
     disks: list[Disk] = field(default_factory=list)
     sessions: int = 0
     systemd: str = ""               # "running", "degraded", … or "" without systemd
+    init: str = ""                  # systemd / openrc / sysv / "" (none found)
+    pid1: str = ""                  # e.g. "systemd", "init", or "bash" in a container
     failed_units: list[str] = field(default_factory=list)
     root: bool = False
 
@@ -193,7 +206,9 @@ def parse_overview(text: str) -> Overview:
     w = s.get("who", "").strip()
     ov.sessions = int(w) if w.isdigit() else 0
     ov.systemd = s.get("systemd", "").strip().splitlines()[-1] if s.get("systemd", "").strip() else ""
-    ov.failed_units = [u for u in s.get("failed", "").split() if u and u != "●"]
+    ov.failed_units = [u for u in s.get("failed", "").split() if u.endswith(".service")]
+    ov.init = s.get("init", "").strip()
+    ov.pid1 = s.get("pid1", "").strip()
     ov.root = s.get("uid", "").strip() == "0"
     return ov
 
@@ -202,38 +217,80 @@ def overview(runner: Runner) -> Overview:
     return parse_overview(runner.run(OVERVIEW_SCRIPT, timeout=20).out)
 
 
-# ---------------------------------------------------------------- services (systemd)
+# ---------------------------------------------------------------- services
+# systemd (any version), OpenRC (Alpine, Gentoo), SysV init scripts (CentOS 6, older
+# Debian, containers) and supervisord, which can run next to any of them.
 @dataclass
 class Service:
     unit: str
     load: str
-    active: str
-    sub: str
+    active: str                     # active / inactive / failed / unknown
+    sub: str                        # running / dead / exited / … (or the tool's own word)
     description: str
     enabled: str = ""               # enabled / disabled / static / masked / …
+    init: str = "systemd"           # systemd / openrc / sysv / supervisor
 
     @property
     def failed(self) -> bool:
         return self.active == "failed"
 
 
+INIT_NAMES = {"systemd": "systemd", "openrc": "OpenRC", "sysv": "SysV init scripts",
+              "supervisor": "supervisord"}
+
+# init scripts that aren't services
+_SYSV_SKIP = ("README skeleton functions rc rcS rc.local halt killall reboot single sendsigs umountfs "
+              "umountnfs.sh umountroot bootlogd hwclock.sh mountall.sh mountkernfs.sh mountdevsubfs.sh "
+              "checkroot.sh checkfs.sh urandom netconsole")
+
 SERVICES_SCRIPT = r"""
-echo @@units; systemctl list-units --type=service --all --no-legend --plain --no-pager 2>&1
-echo @@files; systemctl list-unit-files --type=service --no-legend --no-pager 2>/dev/null
-"""
+INIT=$(INIT_DETECT)
+echo @@init; echo "$INIT"
+echo @@pid1; cat /proc/1/comm 2>/dev/null
+case "$INIT" in
+systemd)
+  echo @@units; systemctl list-units --type=service --all --no-legend --no-pager 2>&1
+  echo @@files; systemctl list-unit-files --type=service --no-legend --no-pager 2>/dev/null ;;
+openrc)
+  echo @@openrc; rc-status --all 2>&1 ;;
+sysv)
+  T=""; command -v timeout >/dev/null 2>&1 && T="timeout 5"
+  echo @@sysv
+  for f in /etc/init.d/* /etc/rc.d/init.d/*; do
+    [ -f "$f" ] && [ -x "$f" ] || continue
+    n=${f##*/}
+    case " SKIP " in *" $n "*) continue ;; esac
+    case "$n" in *.dpkg*|*.rpm*|*~) continue ;; esac
+    case " $seen " in *" $n "*) continue ;; esac
+    seen="$seen $n"
+    out=$($T "$f" status 2>&1 </dev/null); rc=$?
+    msg=$(printf '%s\n' "$out" | grep -v '^ *$' | head -n1 | tr '|' '/' | cut -c1-120)
+    e=disabled
+    for r in /etc/rc3.d /etc/rc.d/rc3.d /etc/rc2.d /etc/rc.d/rc2.d /etc/rc5.d /etc/rc.d/rc5.d; do
+      ls "$r"/S[0-9][0-9]"$n" >/dev/null 2>&1 && e=enabled
+    done
+    desc=$(sed -n -e 's/^# *Short-Description: *//p' -e 's/^# *description: *//p' "$f" 2>/dev/null | head -n1 | tr '|' '/')
+    echo "$n|$rc|$e|$desc|$msg"
+  done ;;
+esac
+if command -v supervisorctl >/dev/null 2>&1; then echo @@supervisor; supervisorctl status 2>&1; fi
+echo @@end
+""".replace("INIT_DETECT", INIT_DETECT).replace("SKIP", _SYSV_SKIP)
+
+_GLYPHS = ("●", "*", "○", "×", "↻")
 
 
-def parse_services(text: str) -> list[Service]:
-    s = split_sections(text)
+def parse_systemd_units(units: str, files: str = "") -> list[Service]:
     enabled = {}
-    for line in s.get("files", "").splitlines():
+    for line in files.splitlines():
         p = line.split()
         if len(p) >= 2:
             enabled[p[0]] = p[1]
     out = []
-    for line in s.get("units", "").splitlines():
+    for line in units.splitlines():
         p = line.split(None, 4)
-        if p and p[0] == "●":                     # some versions mark failed units with a bullet
+        # failed/inactive units get a marker: "●" in UTF-8, "*" in the C locale
+        if p and p[0] in _GLYPHS:
             p = line.split(None, 5)[1:]
         if len(p) < 4 or not p[0].endswith(".service"):
             continue
@@ -241,16 +298,121 @@ def parse_services(text: str) -> list[Service]:
     return out
 
 
+# LSB "status" exit codes
+_LSB = {0: ("active", "running"), 1: ("failed", "dead (pid file left)"), 2: ("failed", "dead (lock file left)"),
+        3: ("inactive", "stopped")}
+
+
+def parse_sysv(text: str) -> list[Service]:
+    """Lines of "name|status exit code|enabled|description|first line of `status` output"."""
+    out = []
+    for line in text.splitlines():
+        p = line.split("|", 4)
+        if len(p) < 3 or not p[1].strip().lstrip("-").isdigit():
+            continue
+        name, rc, en = p[0].strip(), int(p[1]), p[2].strip()
+        desc = p[3].strip() if len(p) > 3 else ""
+        msg = p[4].strip() if len(p) > 4 else ""
+        active, sub = _LSB.get(rc, ("unknown", f"status code {rc}"))
+        if rc == 0 and not msg:                              # one-shot scripts (procps, …)
+            sub = "ok"
+        if re.search(r"permission denied|not permitted|must be (run as )?root|needs? (to be )?root|root privileges|are you root|only root", msg, re.I):
+            active, sub = "unknown", "status needs root"
+        elif rc == 4:
+            active, sub = "unknown", "status unknown"
+        elif rc == 124:
+            active, sub = "unknown", "status timed out"
+        elif re.search(r"\busage\b", msg, re.I):            # script has no "status" command
+            active, sub = "unknown", "no status command"
+        out.append(Service(name, "loaded", active, sub, desc or msg, en, "sysv"))
+    return out
+
+
+_RC_STATE = {"started": ("active", "running"), "stopped": ("inactive", "stopped"),
+             "crashed": ("failed", "crashed"), "starting": ("active", "starting"),
+             "stopping": ("active", "stopping"), "inactive": ("inactive", "inactive"),
+             "scheduled": ("inactive", "scheduled"), "failed": ("failed", "failed")}
+
+
+def parse_openrc(text: str) -> list[Service]:
+    """`rc-status --all`: services grouped by runlevel; "Dynamic Runlevel" ones aren't enabled."""
+    found: dict[str, Service] = {}
+    level, dynamic = "", False
+    for line in text.splitlines():
+        if line.startswith(("Runlevel:", "Dynamic Runlevel:")):
+            dynamic = line.startswith("Dynamic")
+            level = line.split(":", 1)[1].strip()
+            continue
+        m = re.match(r"\s+(\S+)\s+\[\s*(\w+)", line)
+        if not m:
+            continue
+        name, state = m.groups()
+        active, sub = _RC_STATE.get(state.lower(), ("unknown", state))
+        svc = found.get(name)
+        if svc is None:
+            svc = found[name] = Service(name, "loaded", active, sub, "", "", "openrc")
+        if not dynamic and level not in ("", "manual"):
+            svc.enabled = f"enabled ({level})" if level != "default" else "enabled"
+    for svc in found.values():
+        svc.enabled = svc.enabled or "disabled"
+    return list(found.values())
+
+
+_SUP_STATE = {"RUNNING": ("active", "running"), "STARTING": ("active", "starting"),
+              "STOPPING": ("active", "stopping"), "STOPPED": ("inactive", "stopped"),
+              "EXITED": ("inactive", "exited"), "BACKOFF": ("failed", "backoff"),
+              "FATAL": ("failed", "fatal"), "UNKNOWN": ("unknown", "unknown")}
+
+
+def parse_supervisor(text: str) -> list[Service]:
+    out = []
+    for line in text.splitlines():
+        p = line.split(None, 2)
+        if len(p) >= 2 and p[1] in _SUP_STATE:
+            active, sub = _SUP_STATE[p[1]]
+            out.append(Service(p[0], "loaded", active, sub, p[2] if len(p) > 2 else "", "", "supervisor"))
+    return out
+
+
+def parse_services(text: str) -> list[Service]:
+    s = split_sections(text)
+    return (parse_systemd_units(s.get("units", ""), s.get("files", ""))
+            + parse_openrc(s.get("openrc", "")) + parse_sysv(s.get("sysv", ""))
+            + parse_supervisor(s.get("supervisor", "")))
+
+
+_CONTAINER_PID1 = ("bash", "sh", "dash", "ash", "tini", "dumb-init", "docker-init", "catatonit", "sleep",
+                   "s6-svscan", "runsvdir", "java", "node", "python", "python3")
+
+
 def services(runner: Runner) -> tuple[list[Service], str]:
-    """(services, problem) - problem is set when systemd isn't available."""
-    r = runner.run(SERVICES_SCRIPT, timeout=20)
-    svcs = parse_services(r.out)
-    if not svcs:
-        units = split_sections(r.out).get("units", "")
-        if "not been booted with systemd" in units or "command not found" in units or not units:
-            return [], "This server doesn't use systemd, so there are no services to show."
-        return [], units.strip()[:300]
-    return svcs, ""
+    """(services, problem) - problem explains an empty list (or a partial one)."""
+    r = runner.run(SERVICES_SCRIPT, timeout=60)
+    return services_from_output(r.out + ("\n" + r.err if r.err.strip() and "@@" not in r.out else ""))
+
+
+def services_from_output(out: str) -> tuple[list[Service], str]:
+    s = split_sections(out)
+    init, pid1 = s.get("init", "").strip(), s.get("pid1", "").strip()
+    svcs = parse_services(out)
+    sup = s.get("supervisor", "").strip()
+    sup_problem = ""
+    if sup and not any(x.init == "supervisor" for x in svcs):
+        sup_problem = "supervisorctl: " + sup.splitlines()[-1][:200]
+    if svcs:
+        return svcs, sup_problem
+    if init == "systemd":
+        return [], ("systemctl didn't return any services: "
+                    + (s.get("units", "").strip()[:300] or "no output"))
+    if pid1 in _CONTAINER_PID1 or (pid1 and init == "" and pid1 not in ("init", "systemd")):
+        why = (f"This looks like a container: its first process is “{pid1}”, not a service manager, "
+               "so there are no services to manage here (manage them on the host).")
+    elif init:
+        why = f"{INIT_NAMES.get(init, init)} found, but no services were listed."
+    else:
+        why = ("No service manager found (no systemd, OpenRC, SysV init scripts or supervisord)"
+               + (f"; the first process is “{pid1}”." if pid1 else "."))
+    return [], why + (f"\n{sup_problem}" if sup_problem else "")
 
 
 # ---------------------------------------------------------------- processes
@@ -289,19 +451,32 @@ def processes(runner: Runner, sort: str = "cpu", limit: int = 60) -> list[Proces
 PRIORITIES = {"all": "", "warnings and worse": "warning", "errors and worse": "err"}
 
 
-def logs_command(unit: str = "", priority: str = "", lines: int = 200) -> str:
-    cmd = f"journalctl --no-pager -o short-iso -n {int(lines)}"
+def logs_command(unit: str = "", priority: str = "", lines: int = 200, init: str = "") -> str:
+    n = int(lines)
+    if init == "supervisor" and unit:
+        return f"supervisorctl tail -{n * 200} {shlex.quote(unit)} 2>&1 | tail -n {n}"
+    cmd = f"journalctl --no-pager -o short-iso -n {n}"
     if unit:
         cmd += " -u " + shlex.quote(unit)
     if priority:
         cmd += " -p " + shlex.quote(priority)
-    # without journald: the classic syslog files
-    fallback = f"tail -n {int(lines)} /var/log/syslog 2>/dev/null || tail -n {int(lines)} /var/log/messages 2>/dev/null"
-    return f"if command -v journalctl >/dev/null 2>&1; then {cmd} 2>&1; else {fallback}; fi"
+    # without journald (CentOS 6, containers, OpenRC): the classic syslog files
+    files = "/var/log/syslog /var/log/messages"
+    if unit:
+        name = shlex.quote(unit[:-8] if unit.endswith(".service") else unit)
+        fallback = f"grep -h -i -F -- {name} {files} 2>/dev/null | tail -n {n}"
+    else:
+        fallback = f"cat {files} 2>/dev/null | tail -n {n}"
+    hint = ("echo '(No readable system log: journald is not running, and /var/log/messages or "
+            "/var/log/syslog is missing or readable by root only.)'")
+    return (f"if [ -d /run/systemd/system ] && command -v journalctl >/dev/null 2>&1; then {cmd} 2>&1; "
+            f"else out=$({fallback}); if [ -n \"$out\" ]; then printf '%s\\n' \"$out\"; "
+            f"elif [ -r /var/log/messages ] || [ -r /var/log/syslog ]; then echo '(No matching log lines.)'; "
+            f"else {hint}; fi; fi")
 
 
-def logs(runner: Runner, unit: str = "", priority: str = "", lines: int = 200) -> str:
-    return runner.run(logs_command(unit, priority, lines), timeout=30).out
+def logs(runner: Runner, unit: str = "", priority: str = "", lines: int = 200, init: str = "") -> str:
+    return runner.run(logs_command(unit, priority, lines, init), timeout=30).out
 
 
 # ---------------------------------------------------------------- ports
@@ -498,12 +673,49 @@ def users(runner: Runner) -> tuple[list[Account], list[str]]:
 SERVICE_ACTIONS = ("start", "stop", "restart", "reload", "enable", "disable")
 
 
-def service_action_command(action: str, unit: str) -> str:
-    if action not in SERVICE_ACTIONS:
-        raise ValueError(action)
+def supported_actions(init: str) -> tuple[str, ...]:
+    if init == "supervisor":
+        return ("start", "stop", "restart")              # supervisord's autostart lives in its config
+    return SERVICE_ACTIONS
+
+
+def _check_unit(unit: str) -> str:
     if not re.fullmatch(r"[\w@.:\-\\]+", unit):
         raise ValueError(f"unexpected unit name: {unit!r}")
-    return f"systemctl {action} {shlex.quote(unit)}"
+    return shlex.quote(unit)
+
+
+def service_action_command(action: str, unit: str, init: str = "systemd") -> str:
+    """The command for a service action, for whichever service manager runs the server.
+    Always a single command, so run_privileged can put sudo in front of it."""
+    if action not in supported_actions(init):
+        raise ValueError(action)
+    u = _check_unit(unit)
+    if init == "systemd":
+        return f"systemctl {action} {u}"
+    if init == "openrc":
+        if action in ("enable", "disable"):
+            return f"rc-update {'add' if action == 'enable' else 'del'} {u} default"
+        return f"rc-service {u} {action}"
+    if init == "supervisor":
+        return f"supervisorctl {action} {u}"
+    if init == "sysv":
+        if action in ("enable", "disable"):
+            # chkconfig on RHEL/CentOS/SUSE, update-rc.d on Debian/Ubuntu
+            on = "on" if action == "enable" else "off"
+            script = (f"if command -v chkconfig >/dev/null 2>&1; then chkconfig {u} {on}; "
+                      f"else update-rc.d {u} {action}; fi")
+            return "sh -c " + shlex.quote(script)
+        return f"service {u} {action}"
+    raise ValueError(f"unknown service manager: {init!r}")
+
+
+def status_command(unit: str, init: str = "systemd") -> str:
+    u = _check_unit(unit)
+    return {"systemd": f"systemctl status --no-pager -l {u}",
+            "openrc": f"rc-service {u} status",
+            "supervisor": f"supervisorctl status {u}",
+            "sysv": f"service {u} status"}.get(init, f"service {u} status") + " 2>&1"
 
 
 def kill_command(pid: int, force: bool = False) -> str:

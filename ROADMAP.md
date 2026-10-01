@@ -9,7 +9,7 @@ Legend: ✅ done · 🚧 in progress · 🗓 planned · 💡 later / maybe
 
 | | Feature | What it means |
 |---|---|---|
-| ✅ | **Server dashboard** | Agentless, over the existing SSH connection: overview (CPU, memory, load, disks), systemd services with confirmed actions, processes, logs, ports, pending updates, users. Also `blamixshell status <server>`. |
+| ✅ | **Server dashboard** | Agentless, over the existing SSH connection: overview (CPU, memory, load, disks), services with confirmed actions (systemd, SysV init, OpenRC, supervisord), processes, logs, ports, pending updates, users. Also `blamixshell status <server>`. |
 
 ## Released in 1.3
 

@@ -271,14 +271,19 @@ class DashboardWindow(QWidget):
         self.svc_failed = QCheckBox("Failed only")
         self.svc_failed.toggled.connect(self._fill_services)
         acts = [_btn("refresh", "", lambda: self.refresh(force=True), "Reload the list")]
+        self.svc_buttons: dict[str, QPushButton] = {}
         for a in ("start", "stop", "restart", "enable", "disable"):
-            acts.append(_btn({"start": "bolt", "stop": "x", "restart": "refresh", "enable": "plus",
-                              "disable": "x"}[a], a.capitalize(), lambda _=False, a=a: self._service_action(a)))
+            b = _btn({"start": "bolt", "stop": "x", "restart": "refresh", "enable": "plus",
+                      "disable": "x"}[a], a.capitalize(), lambda _=False, a=a: self._service_action(a),
+                     {"enable": "Start at boot", "disable": "Don't start at boot"}.get(a, ""))
+            self.svc_buttons[a] = b
+            acts.append(b)
         lay.addLayout(_toolbar(self.svc_filter, self.svc_failed, "stretch", *acts,
                                _btn("file", "Status", self._service_status),
                                _btn("terminal", "Logs", self._service_logs)))
         self.svc_table = _table(["Service", "State", "Startup", "Description"])
         self.svc_table.doubleClicked.connect(lambda _i: self._service_status())
+        self.svc_table.itemSelectionChanged.connect(self._update_service_buttons)
         lay.addWidget(self.svc_table, 1)
         self.svc_msg = QLabel("", objectName="Hint", wordWrap=True)
         lay.addWidget(self.svc_msg)
@@ -418,7 +423,8 @@ class DashboardWindow(QWidget):
             unit = self.log_unit.currentText().strip()
             prio = d.PRIORITIES[self.log_prio.currentText()]
             lines = int(self.log_lines.currentText().split()[0])
-            self._job("logs", lambda r: d.logs(r, unit, prio, lines))
+            init = next((s.init for s in self._services if s.unit == unit), "")
+            self._job("logs", lambda r: d.logs(r, unit, prio, lines, init))
         elif tab == "ports":
             self._job("ports", d.ports)
         elif tab == "updates":
@@ -499,8 +505,13 @@ class DashboardWindow(QWidget):
         if not ov.disks:
             self.disks_box.addWidget(QLabel("No disk information (df not available).", objectName="Hint"))
         # services summary
-        if ov.systemd in ("", "offline", "unknown"):
-            self.failed_lbl.setText(f"<span style='color:{C['muted']}'>No systemd on this server.</span>")
+        if ov.init and ov.init != "systemd":
+            self.failed_lbl.setText(f"<span style='color:{C['muted']}'>Services are managed by "
+                                    f"{d.INIT_NAMES.get(ov.init, ov.init)} (see the Services tab).</span>")
+        elif ov.systemd in ("", "offline", "unknown"):
+            what = (f"no service manager (first process: {ov.pid1})" if ov.pid1 and ov.pid1 != "systemd"
+                    else "no systemd")
+            self.failed_lbl.setText(f"<span style='color:{C['muted']}'>This server has {what}.</span>")
         elif ov.failed_units:
             names = ", ".join(ov.failed_units[:8]) + (" …" if len(ov.failed_units) > 8 else "")
             self.failed_lbl.setText(f"<span style='color:{C['danger']}'>● {len(ov.failed_units)} failed: {names}</span>"
@@ -525,16 +536,33 @@ class DashboardWindow(QWidget):
         rows = [s for s in self._services if (not q or q in s.unit.lower() or q in s.description.lower())
                 and (not self.svc_failed.isChecked() or s.failed)]
         rows.sort(key=lambda s: (not s.failed, s.unit))
+        mixed = len({s.init for s in self._services}) > 1
         t = self.svc_table
         t.setRowCount(len(rows))
         for i, s in enumerate(rows):
             col = C["danger"] if s.failed else C["ok"] if s.active == "active" else C["muted"]
-            t.setItem(i, 0, _item(s.unit, data=s.unit))
+            label = f"{s.unit}  [supervisor]" if mixed and s.init == "supervisor" else s.unit
+            t.setItem(i, 0, _item(label, data=(s.init, s.unit)))
             t.setItem(i, 1, _item(f"● {s.active} ({s.sub})", col))
             t.setItem(i, 2, _item(s.enabled or "–", C["muted"]))
             t.setItem(i, 3, _item(s.description, C["muted"]))
         n_failed = sum(s.failed for s in self._services)
         self.tabs.setTabText(1, f"Services ({n_failed} failed)" if n_failed else "Services")
+        self._update_service_buttons()
+
+    def _selected_service(self):
+        """(init, unit) of the selected row, or None."""
+        sel = self._selected(self.svc_table)
+        return tuple(sel) if sel else None
+
+    def _update_service_buttons(self) -> None:
+        sel = self._selected_service()
+        allowed = d.supported_actions(sel[0]) if sel else d.SERVICE_ACTIONS
+        for a, b in self.svc_buttons.items():
+            b.setEnabled(a in allowed)
+            if a in ("enable", "disable"):
+                b.setToolTip({"enable": "Start at boot", "disable": "Don't start at boot"}[a] if a in allowed
+                             else "supervisord programs start at boot through autostart= in their config")
 
     def _show_processes(self, procs: list) -> None:
         self._procs = procs
@@ -616,10 +644,11 @@ class DashboardWindow(QWidget):
         self.svc_failed.setChecked(True)
 
     def _service_status(self) -> None:
-        unit = self._selected(self.svc_table)
-        if not unit:
+        sel = self._selected_service()
+        if not sel:
             return
-        self._job("status", lambda r: (unit, r.run(f"systemctl status --no-pager -l {d.shlex.quote(unit)} 2>&1").out))
+        init, unit = sel
+        self._job("status", lambda r: (unit, r.run(d.status_command(unit, init)).out))
 
     def _show_status(self, res) -> None:
         unit, text = res
@@ -631,19 +660,24 @@ class DashboardWindow(QWidget):
         box.exec()
 
     def _service_logs(self) -> None:
-        unit = self._selected(self.svc_table)
-        if not unit:
+        sel = self._selected_service()
+        if not sel:
             return
+        unit = sel[1]
         self.log_unit.setCurrentText(unit)
         self.tabs.setCurrentIndex(3)
         self.refresh(force=True)
 
     def _service_action(self, action: str) -> None:
-        unit = self._selected(self.svc_table)
-        if not unit:
+        sel = self._selected_service()
+        if not sel:
             self.status.setText("Select a service first.")
             return
-        cmd = d.service_action_command(action, unit)
+        init, unit = sel
+        if action not in d.supported_actions(init):
+            self.status.setText(f"{action.capitalize()} isn't available for {d.INIT_NAMES.get(init, init)}.")
+            return
+        cmd = d.service_action_command(action, unit, init)
         self._privileged(f"{action.capitalize()} {unit}", cmd, then="services")
 
     def _kill(self, force: bool) -> None:

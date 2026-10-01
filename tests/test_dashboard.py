@@ -99,6 +99,114 @@ def test_services_parser():
     assert by["apt-daily.service"].enabled == "static"
 
 
+# systemd 219 (CentOS 7) in the C locale: "*" instead of "●", no --plain
+SERVICES_C7 = """@@init
+systemd
+@@pid1
+systemd
+@@units
+  crond.service                     loaded active   running Command Scheduler
+* httpd.service                     loaded failed   failed  The Apache HTTP Server
+  sshd.service                      loaded active   running OpenSSH server daemon
+@@files
+crond.service                                 enabled
+httpd.service                                 disabled
+sshd.service                                  enabled
+@@end
+"""
+
+
+def test_services_on_centos7_systemd():
+    svcs, problem = d.services_from_output(SERVICES_C7)
+    by = {s.unit: s for s in svcs}
+    assert not problem and set(by) == {"crond.service", "httpd.service", "sshd.service"}
+    assert by["httpd.service"].failed and by["httpd.service"].enabled == "disabled"
+    assert by["httpd.service"].description == "The Apache HTTP Server" and by["crond.service"].init == "systemd"
+
+
+def test_overview_failed_list_ignores_markers():
+    ov = d.parse_overview("@@init\nsystemd\n@@systemd\ndegraded\n@@failed\nhttpd.service\n@@pid1\nsystemd\n@@end\n")
+    assert ov.failed_units == ["httpd.service"] and ov.init == "systemd" and ov.pid1 == "systemd"
+
+
+SYSV = """@@init
+sysv
+@@pid1
+init
+@@sysv
+crond|0|enabled|run cron daemon|crond (pid  1234) is running...
+httpd|3|disabled|Apache is a World Wide Web server.|httpd is stopped
+mysqld|1|enabled|MySQL database server.|mysqld dead but pid file exists
+network|4|enabled|Activates/Deactivates all network interfaces|
+netfs|4|enabled||/var/lock/subsys/netfs: Permission denied
+redis-server|1|enabled|| * Must be run as root.
+iptables|0|enabled||Table: filter
+odd|2|disabled||Usage: /etc/init.d/odd {start|stop}
+@@supervisor
+worker:worker_00                 RUNNING   pid 812, uptime 3 days, 1:02:03
+mailer                           FATAL     Exited too quickly (process log may have details)
+@@end
+"""
+
+
+def test_services_sysv_and_supervisor():
+    svcs, problem = d.services_from_output(SYSV)
+    by = {(s.init, s.unit): s for s in svcs}
+    assert not problem
+    assert by["sysv", "crond"].active == "active" and by["sysv", "crond"].enabled == "enabled"
+    assert by["sysv", "httpd"].active == "inactive" and by["sysv", "httpd"].description.startswith("Apache")
+    assert by["sysv", "mysqld"].failed
+    assert by["sysv", "network"].sub == "status unknown" and not by["sysv", "network"].failed
+    assert by["sysv", "netfs"].sub == "status needs root"
+    assert by["sysv", "redis-server"].sub == "status needs root" and not by["sysv", "redis-server"].failed
+    assert by["sysv", "iptables"].description == "Table: filter"     # no description: the status line
+    assert by["sysv", "odd"].sub == "no status command" and not by["sysv", "odd"].failed
+    assert by["supervisor", "worker:worker_00"].active == "active"
+    assert by["supervisor", "mailer"].failed
+
+
+OPENRC = """@@init
+openrc
+@@pid1
+init
+@@openrc
+Runlevel: default
+ sshd                                                              [  started  ]
+ crond                                                             [  started 2 day(s) 03:04:05 (0) ]
+ nginx                                                             [  crashed  ]
+Runlevel: boot
+ hostname                                                          [  started  ]
+Dynamic Runlevel: hotplugged
+Dynamic Runlevel: needed/wanted
+ localmount                                                        [  started  ]
+Dynamic Runlevel: manual
+ redis                                                             [  stopped  ]
+@@end
+"""
+
+
+def test_services_openrc():
+    by = {s.unit: s for s in d.services_from_output(OPENRC)[0]}
+    assert by["sshd"].active == "active" and by["sshd"].enabled == "enabled" and by["sshd"].init == "openrc"
+    assert by["crond"].sub == "running" and by["nginx"].failed
+    assert by["hostname"].enabled == "enabled (boot)"
+    assert by["localmount"].enabled == "disabled" and by["redis"].enabled == "disabled"
+
+
+@pytest.mark.parametrize("out,expect", [
+    ("@@init\n\n@@pid1\nbash\n@@end\n", "container"),
+    ("@@init\n\n@@pid1\ntini\n@@end\n", "container"),
+    ("@@init\n\n@@pid1\n\n@@end\n", "No service manager"),
+    ("@@init\nsystemd\n@@pid1\nsystemd\n@@units\nFailed to get D-Bus connection: Operation not permitted\n@@end\n",
+     "D-Bus"),
+    ("@@init\n\n@@pid1\nbash\n@@supervisor\nunix:///var/run/supervisor.sock no such file\n@@end\n",
+     "supervisorctl: unix"),
+])
+def test_services_explains_an_empty_list(out, expect):
+    svcs, problem = d.services_from_output(out)
+    assert svcs == [] and expect in problem
+
+
 def test_ps_parser():
     out = d.parse_ps("    PID USER     %CPU %MEM   RSS     ELAPSED COMMAND\n"
                      "   1234 www-data 12.5  3.1 254000  2-03:04:05 nginx: worker process\n"
@@ -164,6 +272,37 @@ def test_users_parser():
     assert len(sessions) == 2
 
 
+def test_action_commands_per_service_manager():
+    a = d.service_action_command
+    assert a("restart", "httpd", "sysv") == "service httpd restart"
+    assert "chkconfig httpd on" in a("enable", "httpd", "sysv") and "update-rc.d httpd enable" in a("enable", "httpd", "sysv")
+    assert a("disable", "httpd", "sysv").startswith("sh -c ")       # one command, so sudo can prefix it
+    assert a("start", "nginx", "openrc") == "rc-service nginx start"
+    assert a("enable", "nginx", "openrc") == "rc-update add nginx default"
+    assert a("restart", "web:web_00", "supervisor") == "supervisorctl restart web:web_00"
+    with pytest.raises(ValueError):
+        a("enable", "mailer", "supervisor")
+    with pytest.raises(ValueError):
+        a("restart", "x; reboot", "sysv")
+    assert d.status_command("httpd", "sysv") == "service httpd status 2>&1"
+    assert d.status_command("nginx.service") == "systemctl status --no-pager -l nginx.service 2>&1"
+    assert d.supported_actions("supervisor") == ("start", "stop", "restart")
+    assert "supervisorctl tail" in d.logs_command("mailer", "", 100, "supervisor")
+    assert "grep -h -i -F -- httpd" in d.logs_command("httpd.service", "", 100)
+
+
+def test_services_script_is_valid_sh():
+    import shutil
+    import subprocess
+    if sys.platform == "win32":
+        pytest.skip("POSIX shells only")
+    for script in (d.SERVICES_SCRIPT, d.OVERVIEW_SCRIPT, d.logs_command("x", "err", 10)):
+        for sh in ("sh", "bash", "dash", "busybox"):
+            if shutil.which(sh):
+                args = [sh, "sh", "-n", "-c", script] if sh == "busybox" else [sh, "-n", "-c", script]
+                assert subprocess.run(args).returncode == 0, sh
+
+
 def test_action_commands_are_safe():
     assert d.service_action_command("restart", "nginx.service") == "systemctl restart nginx.service"
     assert d.service_action_command("start", "getty@tty1.service") == "systemctl start getty@tty1.service"
@@ -210,8 +349,8 @@ def test_live_dashboard(runner):
     svcs, problem = d.services(runner)
     if ov.systemd in ("running", "degraded"):          # CI runner: real systemd
         assert svcs and not problem and any(s.unit.startswith(("ssh", "cron")) for s in svcs)
-    else:                                              # containers: no systemd, a clear message
-        assert not svcs and problem
+    else:                                              # containers: init scripts, or a clear message
+        assert svcs or problem
     manager, _ups = d.updates(runner)
     assert manager in ("apt", "dnf", "yum", "zypper", "pacman", "apk", "")
     r = d.run_privileged(runner, "true", root=ov.root)   # sudo -n without a password: must not hang
