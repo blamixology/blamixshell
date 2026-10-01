@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.6.2](https://github.com/blamixology/blamixshell/releases/tag/v1.6.2) - 2026-10-01
+
+### Improvements
+- Health strip: CPU shows immediately, swap, detailed tooltip, stale marker, refresh interval setting (d49b6f5)
+
 ## [1.6.1](https://github.com/blamixology/blamixshell/releases/tag/v1.6.1) - 2026-10-01
 
 ### Fixes
