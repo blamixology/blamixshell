@@ -1259,6 +1259,8 @@ class DashboardWindow(QWidget):
         self._cron_entries: list[cron.Entry] = []
         self._cron_rows: list[int] = []
         self._cron_text = ""
+        self._cron_sys = (0, 0)
+        self._cron_diag = ("", "", "")
         self._cron_now = None
         self._cron_tz = ""
         self.cron_user = QComboBox()
@@ -1340,6 +1342,8 @@ class DashboardWindow(QWidget):
             return
         text, now, tz = cron.parse_read(out)
         self._cron_text, self._cron_now, self._cron_tz = text, now, tz
+        self._cron_sys = cron.parse_sys(out)
+        self._cron_diag = cron.parse_diag(out)
         self._cron_fill(cron.parse_crontab(text, system=who == "@system"))
 
     def _cron_fill(self, entries: list[cron.Entry], error: str = "") -> None:
@@ -1352,8 +1356,13 @@ class DashboardWindow(QWidget):
         for row, (_i, e) in enumerate(jobs):
             dim = None if e.enabled else C["faint"]
             t.setItem(row, 0, _item("●" if e.enabled else "○", C["ok"] if e.enabled else C["faint"]))
-            t.setItem(row, 1, _item(cron.describe(e.schedule), dim))
-            t.setItem(row, 2, _item(e.schedule, dim or C["muted"]))
+            period = e.source.rsplit("/", 1)[-1] if system else ""
+            if period in ("cron.hourly", "cron.daily", "cron.weekly", "cron.monthly"):
+                t.setItem(row, 1, _item(f"{period[5:].capitalize()}, time set by the system", dim))
+                t.setItem(row, 2, _item(period, dim or C["muted"]))
+            else:
+                t.setItem(row, 1, _item(cron.describe(e.schedule), dim))
+                t.setItem(row, 2, _item(e.schedule, dim or C["muted"]))
             who = f"{e.user}  ({e.source.rsplit('/', 1)[-1]})" if system and e.user else "–"
             t.setItem(row, 3, _item(who, C["muted"]))
             t.setItem(row, 4, _item(e.command, dim))
@@ -1363,6 +1372,15 @@ class DashboardWindow(QWidget):
             bits.append(error)
         elif not jobs:
             bits.append("No scheduled jobs." + ("" if system else " Use “Add job” to create one."))
+            said, me, home = self._cron_diag
+            if not system and (said or me):
+                bits.append(f"Read as {me or '?'} ({home or 'no home'}); crontab said: "
+                            f"“{said[:160] or 'nothing'}”")
+            jobs_sys, periodic = self._cron_sys
+            if not system and (jobs_sys or periodic):
+                bits.append(f"The server also has {jobs_sys} system job{'s' if jobs_sys != 1 else ''} and "
+                            f"{periodic} periodic script{'s' if periodic != 1 else ''}: pick “System jobs” "
+                            "above to see them, or “Jobs of root” for root's own")
         if env:
             bits.append("Settings in this crontab: " + ", ".join(env[:4]) + (" …" if len(env) > 4 else ""))
         if self._cron_now:

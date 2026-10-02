@@ -272,12 +272,18 @@ def read_script(user: str = "") -> str:
     """Shell script printing a crontab and the server's clock. user "" = the connected
     user, "@system" = /etc/crontab and /etc/cron.d (read-only), else that user's crontab."""
     if user == "@system":
+        # /etc/crontab and /etc/cron.d, plus the scripts run-parts starts hourly / daily / weekly / monthly
         body = ('for f in /etc/crontab /etc/cron.d/*; do [ -f "$f" ] && { echo "# ---- $f"; cat "$f"; }; done '
-                '2>/dev/null')
+                '2>/dev/null; for p in hourly daily weekly monthly; do for f in /etc/cron.$p/*; do '
+                '[ -f "$f" ] && { echo "# ---- /etc/cron.$p"; echo "@$p root $f"; }; done; done 2>/dev/null')
     else:
         who = f"-u {shlex.quote(user)} " if user else ""
         body = f"crontab {who}-l 2>&1"
-    return f"echo @@cron; {body}\necho @@date; date '+%Y-%m-%d %H:%M'\necho @@tz; date +%Z\n"
+    sysinfo = ("echo @@sys; (cat /etc/crontab /etc/cron.d/* 2>/dev/null | grep -Ev '^[[:space:]]*(#|$)|^[A-Za-z_]+=' "
+               "| wc -l; for p in hourly daily weekly monthly; do ls -1 /etc/cron.$p 2>/dev/null; done | wc -l) "
+               "| tr '\\n' ' '; echo\n") if user != "@system" else ""
+    return (f"echo @@cron; {body}\necho @@date; date '+%Y-%m-%d %H:%M'\necho @@tz; date +%Z\n"
+            f"echo @@me; id -un 2>/dev/null; echo @@home; echo \"$HOME\"\n{sysinfo}")
 
 
 def parse_read(text: str) -> tuple[str, datetime | None, str]:
@@ -293,6 +299,21 @@ def parse_read(text: str) -> tuple[str, datetime | None, str]:
     except ValueError:
         pass
     return body, now, s.get("tz", "").strip()
+
+
+def parse_diag(text: str) -> tuple[str, str, str]:
+    """(what `crontab` printed, the account the command ran as, its home folder): shown when no
+    jobs come back, so a wrong account or a refusal is visible instead of an empty list."""
+    from .dashboard import split_sections
+    s = split_sections(text)
+    return s.get("cron", "").strip(), s.get("me", "").strip(), s.get("home", "").strip()
+
+
+def parse_sys(text: str) -> tuple[int, int]:
+    """(jobs in /etc/crontab + /etc/cron.d, periodic scripts) found on the server, from read_script's output."""
+    from .dashboard import split_sections
+    nums = [int(x) for x in split_sections(text).get("sys", "").split() if x.isdigit()]
+    return (nums[0], nums[1]) if len(nums) >= 2 else (0, 0)
 
 
 def save_command(user: str, text: str) -> str:

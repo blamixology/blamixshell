@@ -125,3 +125,15 @@ def test_listing_parser():
     except ValueError as e:
         assert "No such file" in str(e)
     assert cron.list_dir_command("").startswith("cd && pwd") and "~/'my dir'" in cron.list_dir_command("~/my dir")
+
+
+def test_system_view_lists_periodic_scripts_and_counts():
+    text = ("# ---- /etc/cron.d/0hourly\n01 * * * * root run-parts /etc/cron.hourly\n"
+            "# ---- /etc/cron.daily\n@daily root /etc/cron.daily/logrotate\n")
+    jobs = cron.parse_crontab(text, system=True)
+    assert [(j.schedule, j.user, j.source) for j in jobs] == [
+        ("01 * * * *", "root", "/etc/cron.d/0hourly"), ("@daily", "root", "/etc/cron.daily")]
+    assert jobs[1].command == "/etc/cron.daily/logrotate"
+    assert "/etc/cron.$p" in cron.read_script("@system") and "@@sys" not in cron.read_script("@system")
+    assert "@@sys" in cron.read_script("")
+    assert cron.parse_sys("@@sys\n3 12 \n") == (3, 12) and cron.parse_sys("") == (0, 0)
