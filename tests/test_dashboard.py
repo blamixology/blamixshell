@@ -344,7 +344,7 @@ def test_live_dashboard(runner):
     ps = d.processes(runner)
     assert ps and all(p.pid > 0 for p in ps)
     assert any(p.port == LIVE.split(":")[1] for p in d.ports(runner))   # sshd's own port
-    accounts, _ = d.users(runner)
+    accounts, _, _ = d.users(runner)
     assert any(a.name == LIVE.split(":")[2] for a in accounts)
     svcs, problem = d.services(runner)
     if ov.systemd in ("running", "degraded"):          # CI runner: real systemd
@@ -395,3 +395,47 @@ def test_health_has_swap_and_details():
     assert h.loads == (0.1, 0.2, 0.3)
     assert h.mem_kb == (600, 1000)
     assert h.swap == 50.0 and h.swap_kb == (50, 100)
+
+
+ACCOUNTS = """@@passwd
+root:x:0:0:root:/root:/bin/bash
+deploy:x:1001:1001::/home/deploy:/bin/bash
+www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin
+@@group
+root:x:0:
+sudo:x:27:deploy
+docker:x:998:deploy,root
+deploy:x:1001:
+devs:x:1002:
+@@shadow
+root:$6$abc:19000:0:99999:7:::
+deploy:!$6$abc:19000:0:99999:7:::
+@@who
+root pts/0 2024-01-01 10:00
+"""
+
+
+def test_users_have_groups_and_lock_state():
+    accounts, sessions = d.parse_users(ACCOUNTS)
+    by = {a.name: a for a in accounts}
+    assert by["deploy"].groups == ["deploy", "sudo", "docker"]
+    assert by["deploy"].locked is True and by["root"].locked is False
+    assert d.parse_groups(ACCOUNTS.split("@@group")[1].split("@@shadow")[0]) == ["deploy", "devs", "docker", "sudo"]
+
+
+def test_users_without_shadow_access_have_unknown_lock_state():
+    accounts, _ = d.parse_users(ACCOUNTS.split("@@shadow")[0])
+    assert all(a.locked is None for a in accounts)
+
+
+def test_account_commands_are_quoted_and_validated():
+    assert d.valid_username("deploy") and d.valid_username("_svc-1")
+    for bad in ("", "Root", "1abc", "a b", "x;rm -rf /", "a" * 40):
+        assert not d.valid_username(bad)
+    assert d.useradd_command("bob", "/bin/bash", ["sudo", "docker"]) == "useradd -m -s /bin/bash -G sudo,docker bob"
+    assert d.userdel_command("bob") == "userdel bob" and d.userdel_command("bob", True) == "userdel -r bob"
+    assert d.lock_command("bob", True) == "usermod -L bob" and d.lock_command("bob", False) == "usermod -U bob"
+    cmd = d.groups_command("bob", ["docker"], ["sudo"])
+    assert cmd.startswith("sh -c ") and "usermod -aG docker bob" in cmd and "gpasswd -d bob sudo" in cmd
+    assert d.groups_command("bob", [], []) is None
+    assert d.admin_group(["docker", "wheel"]) == "wheel" and d.admin_group(["docker"]) == ""

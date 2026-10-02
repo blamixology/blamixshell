@@ -10,8 +10,9 @@ import time
 
 from PySide6.QtCore import QObject, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout,
-                               QHeaderView, QInputDialog, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+                               QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+                               QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
                                QProgressBar, QPushButton, QScrollArea, QTableWidget, QTableWidgetItem,
                                QTabWidget, QVBoxLayout, QWidget)
 
@@ -147,6 +148,75 @@ def _btn(ic: str, text: str, fn, tip: str = "") -> QPushButton:
     return b
 
 
+class _AddUserDialog(QDialog):
+    def __init__(self, groups: list[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add user")
+        lay = QFormLayout(self)
+        self.name = QLineEdit(placeholderText="e.g. deploy")
+        self.shell = QComboBox()
+        self.shell.addItems(["/bin/bash", "/bin/sh", "/usr/sbin/nologin"])
+        self.shell.setEditable(True)
+        self.admin_grp = d.admin_group(groups)
+        self.admin = QCheckBox(f"Administrator (adds to “{self.admin_grp}”)" if self.admin_grp
+                               else "Administrator (no sudo / wheel group found)")
+        self.admin.setEnabled(bool(self.admin_grp))
+        self.extra = QLineEdit(placeholderText="optional, comma separated, e.g. docker,www-data")
+        lay.addRow("Username", self.name)
+        lay.addRow("Shell", self.shell)
+        lay.addRow("", self.admin)
+        lay.addRow("Other groups", self.extra)
+        lay.addRow(QLabel("The account starts without a password (key login only). Use “Set password” "
+                          "afterwards if it needs one.", objectName="Hint", wordWrap=True))
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addRow(bb)
+
+    def values(self) -> tuple[str, str, list[str]]:
+        groups = [g.strip() for g in self.extra.text().split(",") if g.strip()]
+        if self.admin.isChecked() and self.admin_grp and self.admin_grp not in groups:
+            groups.append(self.admin_grp)
+        return self.name.text().strip(), self.shell.currentText().strip() or "/bin/bash", groups
+
+
+class _GroupsDialog(QDialog):
+    def __init__(self, account: d.Account, groups: list[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Groups of {account.name}")
+        self.account = account
+        self.primary = account.groups[0] if account.groups else ""
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(f"Tick the groups {account.name} should belong to."
+                             + (f" The primary group ({self.primary}) can't be changed here." if self.primary else ""),
+                             wordWrap=True))
+        self.list = QListWidget()
+        names = sorted(set(groups) | set(account.groups))
+        for g in names:
+            if g == self.primary:
+                continue
+            it = QListWidgetItem(g)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if g in account.groups else Qt.Unchecked)
+            self.list.addItem(it)
+        lay.addWidget(self.list)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def changes(self) -> tuple[list[str], list[str]]:
+        add, remove = [], []
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            had, now = it.text() in self.account.groups, it.checkState() == Qt.Checked
+            if now and not had:
+                add.append(it.text())
+            elif had and not now:
+                remove.append(it.text())
+        return add, remove
+
+
 class DashboardWindow(QWidget):
     def __init__(self, pane, color: str = "", send_to_terminal=None, settings=None, parent=None):
         super().__init__(parent, Qt.Window)
@@ -172,7 +242,7 @@ class DashboardWindow(QWidget):
         pane.destroyed.connect(self.close)          # terminal closed: nothing left to show
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(REFRESH_MS)
+        self._timer.start(self._interval_ms())
         self._connection_changed()
 
     # ================================================================ layout
@@ -198,10 +268,17 @@ class DashboardWindow(QWidget):
         self.updated_lbl = QLabel("", objectName="Hint")
         self.auto = QCheckBox("Auto-refresh")
         self.auto.setChecked(True)
-        self.auto.setToolTip("Refresh the open tab every 5 seconds (Overview, Processes, Logs in follow mode)")
+        self.auto.setToolTip("Refresh the open tab regularly (Overview, Processes, Logs in follow mode)")
+        self.interval = QComboBox()
+        for sec in (2, 5, 10, 30, 60):
+            self.interval.addItem(f"{sec} s", sec)
+        self.interval.setCurrentIndex(max(0, self.interval.findData(self._interval_ms() // 1000)))
+        self.interval.setToolTip("How often the open tab refreshes (remembered)")
+        self.interval.currentIndexChanged.connect(self._interval_changed)
         head.addWidget(self.updated_lbl)
         head.addSpacing(8)
         head.addWidget(self.auto)
+        head.addWidget(self.interval)
         head.addWidget(_btn("refresh", "Refresh", lambda: self.refresh(force=True)))
         root.addLayout(head)
 
@@ -349,7 +426,19 @@ class DashboardWindow(QWidget):
 
     def _build_users(self) -> None:
         lay = self._page("Users")
-        self.usr_table = _table(["Account", "UID", "Logged in", "Shell", "Home"])
+        self._accounts: list[d.Account] = []
+        self._all_groups: list[str] = []
+        self.usr_buttons = {
+            "add": _btn("plus", "Add user", self._add_user, "Create an account with a home folder"),
+            "groups": _btn("edit", "Groups…", self._edit_groups, "Change the groups of the selected account"),
+            "lock": _btn("lock", "Lock", self._toggle_lock, "Block / allow password login for the selected account"),
+            "passwd": _btn("terminal", "Set password", self._set_password,
+                           "Types the passwd command in the terminal: the password is never sent from here"),
+            "delete": _btn("trash", "Delete", self._delete_user, "Remove the selected account"),
+        }
+        lay.addLayout(_toolbar("stretch", *self.usr_buttons.values()))
+        self.usr_table = _table(["Account", "UID", "Logged in", "Groups", "Locked", "Shell", "Home"])
+        self.usr_table.itemSelectionChanged.connect(self._update_user_buttons)
         lay.addWidget(self.usr_table, 1)
         lay.addWidget(QLabel("LOGGED IN NOW", objectName="SectionLabel"))
         self.who_view = QPlainTextEdit(readOnly=True)
@@ -404,6 +493,19 @@ class DashboardWindow(QWidget):
 
     def _tab_key(self) -> str:
         return TAB_KEYS[self.tabs.currentIndex()]
+
+    def _interval_ms(self) -> int:
+        try:
+            return max(1, int(self.settings.get("dashboard_interval", REFRESH_MS // 1000))) * 1000
+        except (TypeError, ValueError):
+            return REFRESH_MS
+
+    def _interval_changed(self) -> None:
+        sec = self.interval.currentData()
+        self._timer.setInterval(sec * 1000)
+        self.settings["dashboard_interval"] = sec
+        if hasattr(self.settings, "save"):
+            self.settings.save()
 
     def _tick(self) -> None:
         if not self.auto.isChecked() or not self.isVisible():
@@ -632,15 +734,20 @@ class DashboardWindow(QWidget):
         self.tabs.setTabText(5, f"Updates ({len(ups)})" if ups else "Updates")
 
     def _show_users(self, res) -> None:
-        accounts, sessions = res
+        accounts, sessions, groups = res
+        self._accounts, self._all_groups = accounts, groups
         t = self.usr_table
         t.setRowCount(len(accounts))
         for i, a in enumerate(accounts):
             t.setItem(i, 0, _item(a.name, C["warn"] if a.uid == 0 else None))
             t.setItem(i, 1, _item(a.uid, C["muted"], True))
             t.setItem(i, 2, _item(a.logged_in or "–", C["ok"] if a.logged_in else C["muted"], True))
-            t.setItem(i, 3, _item(a.shell, C["muted"]))
-            t.setItem(i, 4, _item(a.home, C["muted"]))
+            t.setItem(i, 3, _item(", ".join(a.groups) or "–", C["muted"]))
+            t.setItem(i, 4, _item("locked" if a.locked else ("–" if a.locked is False else "?"),
+                                  C["warn"] if a.locked else C["muted"]))
+            t.setItem(i, 5, _item(a.shell, C["muted"]))
+            t.setItem(i, 6, _item(a.home, C["muted"]))
+        self._update_user_buttons()
         self.who_view.setPlainText("\n".join(sessions) or "Nobody is logged in (besides non-interactive sessions).")
 
     # ================================================================ actions
@@ -758,6 +865,91 @@ class DashboardWindow(QWidget):
         self._loaded.discard(then)
         if self._tab_key() == then:
             self.refresh(force=True)
+
+    # ---- users and groups ----
+    def _selected_account(self) -> d.Account | None:
+        rows = self.usr_table.selectionModel().selectedRows()
+        if not rows or rows[0].row() >= len(self._accounts):
+            return None
+        return self._accounts[rows[0].row()]
+
+    def _update_user_buttons(self) -> None:
+        a = self._selected_account()
+        for k in ("groups", "lock", "passwd", "delete"):
+            self.usr_buttons[k].setEnabled(a is not None)
+        if a is not None:
+            self.usr_buttons["lock"].setText(" Unlock" if a.locked else " Lock")
+        self.usr_buttons["passwd"].setVisible(bool(self.send_to_terminal))
+
+    def _is_me(self, a: d.Account) -> bool:
+        return a.name == (self.server.username or "")
+
+    def _add_user(self) -> None:
+        dlg = _AddUserDialog(self._all_groups, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        name, shell, groups = dlg.values()
+        if not d.valid_username(name):
+            QMessageBox.warning(self, "Add user", "Use lowercase letters, digits, - and _ (max 32, not starting "
+                                "with a digit).")
+            return
+        if any(a.name == name for a in self._accounts):
+            QMessageBox.warning(self, "Add user", f"{name} already exists.")
+            return
+        self._privileged(f"Add user {name}", d.useradd_command(name, shell, groups), then="users")
+
+    def _edit_groups(self) -> None:
+        a = self._selected_account()
+        if a is None:
+            return
+        dlg = _GroupsDialog(a, self._all_groups, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        add, remove = dlg.changes()
+        cmd = d.groups_command(a.name, add, remove)
+        if not cmd:
+            return
+        self._privileged(f"Change groups of {a.name}", cmd, then="users")
+
+    def _toggle_lock(self) -> None:
+        a = self._selected_account()
+        if a is None:
+            return
+        lock = not a.locked
+        if lock and (self._is_me(a) or a.uid == 0):
+            QMessageBox.warning(self, "Lock", "Locking this account could lock you out of the server, so it "
+                                "isn't offered here.")
+            return
+        self._privileged(f"{'Lock' if lock else 'Unlock'} {a.name}", d.lock_command(a.name, lock), then="users")
+
+    def _set_password(self) -> None:
+        a = self._selected_account()
+        if a is not None and self.send_to_terminal:
+            self.send_to_terminal(f"sudo passwd {a.name}")
+            self.status.setText("Typed into the terminal: press Enter, then enter the new password there.")
+
+    def _delete_user(self) -> None:
+        a = self._selected_account()
+        if a is None:
+            return
+        if a.uid == 0 or self._is_me(a):
+            QMessageBox.warning(self, "Delete", "This is root or the account you are connected as: it can't be "
+                                "deleted from here.")
+            return
+        if a.logged_in:
+            QMessageBox.warning(self, "Delete", f"{a.name} is logged in right now ({a.logged_in} session"
+                                f"{'s' if a.logged_in != 1 else ''}). End their sessions first.")
+            return
+        box = QMessageBox(QMessageBox.Warning, "Delete user", f"Delete <b>{a.name}</b> on <b>{self.server.label}</b>?",
+                          parent=self)
+        keep = box.addButton("Delete, keep home folder", QMessageBox.AcceptRole)
+        wipe = box.addButton(f"Delete and remove {a.home or 'home'}", QMessageBox.DestructiveRole)
+        box.addButton("Cancel", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() not in (keep, wipe):
+            return
+        self._privileged(f"Delete user {a.name}", d.userdel_command(a.name, box.clickedButton() is wipe),
+                         then="users")
 
     def _type_upgrade(self) -> None:
         cmd = d.UPGRADE_COMMANDS.get(self._update_mgr)

@@ -728,17 +728,50 @@ class Account:
     home: str
     shell: str
     logged_in: int = 0
+    groups: list[str] = field(default_factory=list)     # primary group first
+    locked: bool | None = None                           # None: unknown (needs root to read shadow)
 
 
 USERS_SCRIPT = r"""
 echo @@passwd; getent passwd 2>/dev/null || cat /etc/passwd
+echo @@group; getent group 2>/dev/null || cat /etc/group
+echo @@shadow; getent shadow 2>/dev/null
 echo @@who; who 2>/dev/null
 """
+
+# groups worth offering even when their gid is below 1000
+COMMON_GROUPS = ("sudo", "wheel", "admin", "docker", "adm", "www-data", "ssh", "systemd-journal", "users")
+
+
+def parse_groups(text: str) -> list[str]:
+    """Group names a person would pick from: regular groups (gid >= 1000) and the usual
+    administrative ones (sudo, wheel, docker, ...)."""
+    names = []
+    for line in text.splitlines():
+        p = line.split(":")
+        if len(p) >= 3 and p[2].isdigit() and (int(p[2]) >= 1000 and int(p[2]) < 60000 or p[0] in COMMON_GROUPS):
+            names.append(p[0])
+    return sorted(names)
 
 
 def parse_users(text: str) -> tuple[list[Account], list[str]]:
     """(login accounts: root + uid >= 1000 with a real shell, current sessions)."""
     s = split_sections(text)
+    by_gid: dict[int, str] = {}
+    members: dict[str, list[str]] = {}
+    for line in s.get("group", "").splitlines():
+        p = line.split(":")
+        if len(p) < 4 or not p[2].isdigit():
+            continue
+        by_gid[int(p[2])] = p[0]
+        for m in p[3].split(","):
+            if m:
+                members.setdefault(m, []).append(p[0])
+    shadow = {}
+    for line in s.get("shadow", "").splitlines():
+        p = line.split(":")
+        if len(p) >= 2:
+            shadow[p[0]] = p[1].startswith("!")
     sessions = [l for l in s.get("who", "").splitlines() if l.strip()]
     counts: dict[str, int] = {}
     for l in sessions:
@@ -750,12 +783,50 @@ def parse_users(text: str) -> tuple[list[Account], list[str]]:
             continue
         uid, shell = int(p[2]), p[6]
         if (uid == 0 or 1000 <= uid < 60000) and not shell.endswith(("nologin", "false")):
-            accounts.append(Account(p[0], uid, p[5], shell, counts.get(p[0], 0)))
+            primary = by_gid.get(int(p[3])) if p[3].isdigit() else None
+            groups = ([primary] if primary else []) + [g for g in members.get(p[0], []) if g != primary]
+            accounts.append(Account(p[0], uid, p[5], shell, counts.get(p[0], 0), groups, shadow.get(p[0])))
     return accounts, sessions
 
 
-def users(runner: Runner) -> tuple[list[Account], list[str]]:
-    return parse_users(runner.run(USERS_SCRIPT).out)
+def users(runner: Runner) -> tuple[list[Account], list[str], list[str]]:
+    out = runner.run(USERS_SCRIPT).out
+    accounts, sessions = parse_users(out)
+    return accounts, sessions, parse_groups(split_sections(out).get("group", ""))
+
+
+# account changes (each is run as root through run_privileged)
+_USERNAME = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+
+
+def valid_username(name: str) -> bool:
+    return bool(_USERNAME.fullmatch(name))
+
+
+def admin_group(groups: list[str]) -> str:
+    return next((g for g in ("sudo", "wheel", "admin") if g in groups), "")
+
+
+def useradd_command(name: str, shell: str = "/bin/bash", groups: list[str] | None = None) -> str:
+    extra = f" -G {shlex.quote(','.join(groups))}" if groups else ""
+    return f"useradd -m -s {shlex.quote(shell)}{extra} {shlex.quote(name)}"
+
+
+def userdel_command(name: str, remove_home: bool = False) -> str:
+    return f"userdel{' -r' if remove_home else ''} {shlex.quote(name)}"
+
+
+def lock_command(name: str, lock: bool) -> str:
+    return f"usermod {'-L' if lock else '-U'} {shlex.quote(name)}"
+
+
+def groups_command(name: str, add: list[str], remove: list[str]) -> str | None:
+    """Add `name` to some groups and remove it from others, in one go."""
+    steps = []
+    if add:
+        steps.append(f"usermod -aG {shlex.quote(','.join(add))} {shlex.quote(name)}")
+    steps += [f"gpasswd -d {shlex.quote(name)} {shlex.quote(g)}" for g in remove]
+    return f"sh -c {shlex.quote(' && '.join(steps))}" if steps else None
 
 
 # ---------------------------------------------------------------- actions
