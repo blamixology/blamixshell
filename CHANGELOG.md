@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.9.2](https://github.com/blamixology/blamixshell/releases/tag/v1.9.2) - 2026-10-02
+
+### Improvements
+- Dashboard users: find directory (LDAP/SSSD) accounts by name, show system accounts toggle, note when the account list is empty (bc3190e)
+
 ## [1.9.1](https://github.com/blamixology/blamixshell/releases/tag/v1.9.1) - 2026-10-02
 
 ### Improvements
