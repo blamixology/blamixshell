@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.9.3](https://github.com/blamixology/blamixshell/releases/tag/v1.9.3) - 2026-10-02
+
+### Improvements
+- Cron tab: hint about system/root jobs when a user's crontab is empty, list periodic scripts (cron.daily etc.) in the system view (2dd4245)
+
 ## [1.9.2](https://github.com/blamixology/blamixshell/releases/tag/v1.9.2) - 2026-10-02
 
 ### Improvements
