@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.8.1](https://github.com/blamixology/blamixshell/releases/tag/v1.8.1) - 2026-10-02
+
+### Improvements
+- Dashboard users: list accounts below UID 1000 and logged-in users, custom home folder when adding a user (8cc5611)
+
 ## [1.8.0](https://github.com/blamixology/blamixshell/releases/tag/v1.8.0) - 2026-10-02
 
 ### Improvements
