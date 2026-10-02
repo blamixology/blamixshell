@@ -2,6 +2,12 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.9.4](https://github.com/blamixology/blamixshell/releases/tag/v1.9.4) - 2026-10-02
+
+### Improvements
+- Cron tab: read the spool file when crontab -l prints nothing, show exit code and source in the diagnostic (b811c3f)
+- Roadmap: note CI duplicate builds and run names (53f530b)
+
 ## [1.9.3](https://github.com/blamixology/blamixshell/releases/tag/v1.9.3) - 2026-10-02
 
 ### Improvements
