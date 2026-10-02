@@ -1412,7 +1412,7 @@ class MainWindow(QMainWindow):
         if win is None:
             color = self.store.color_for(self.store.servers.get(pane.server.id, pane.server))
             win = DashboardWindow(pane, color=color, send_to_terminal=lambda text, p=pane: self._type_into(p, text),
-                                  parent=self)
+                                  settings=self.settings, parent=self)
             win.destroyed.connect(lambda _o=None, k=id(pane): wins.pop(k, None))
             wins[id(pane)] = win
         win.show()
@@ -1473,6 +1473,7 @@ class MainWindow(QMainWindow):
         if SettingsDialog(self.settings, self.store, self).exec() == QDialog.Accepted:
             for p in self.all_panes():
                 p.apply_settings()
+                p.apply_suggest()
                 if p.state == "connected":
                     p.apply_logging()
             self._prune_logs()

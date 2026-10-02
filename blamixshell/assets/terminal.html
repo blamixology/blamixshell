@@ -104,12 +104,16 @@ function init() {
       if (bridge) bridge.shortcut(ev.code === "Equal" ? "zoom+" : ev.code === "Minus" ? "zoom-" : "zoom0");
       return false;
     }
+    if (ev.code === "ArrowRight" && !ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey && acceptGhost()) {
+      ev.preventDefault(); return false;
+    }
     if (ev.ctrlKey && ev.code === "Tab") { ev.preventDefault(); if (bridge) bridge.shortcut(ev.shiftKey ? "prevtab" : "nexttab"); return false; }
     return true;
   });
 
   term.onData(d => {
     if (bridge && logCommands && d.indexOf("\r") !== -1) reportCommandLine(d);
+    if (suggestOn) trackTyped(d);
     bridge && bridge.input(d);
   });
   term.onBinary(d => bridge && bridge.inputBinary(d));
@@ -132,11 +136,17 @@ function init() {
 
   new QWebChannel(qt.webChannelTransport, ch => {
     bridge = ch.objects.bridge;
-    bridge.output.connect(b => term.write(b64ToBytes(b)));
+    bridge.output.connect(b => { clearGhost(); term.write(b64ToBytes(b)); });
     bridge.text.connect(s => term.write(s));
     bridge.pasteText.connect(s => { term.paste(s); term.focus(); });
     bridge.options.connect(j => applyOptions(JSON.parse(j)));
     bridge.logCommands.connect(on => { logCommands = on; });
+    bridge.suggest.connect(j => {
+      const o = JSON.parse(j);
+      suggestOn = !!o.on; history = o.history || [];
+      if (!suggestOn) { clearGhost(); typed = null; }
+    });
+    bridge.histAdd.connect(c => { history = history.filter(h => h !== c); history.push(c); });
     bridge.command.connect(c => {
       if (c === "focus") term.focus();
       else if (c === "clear") term.clear();
@@ -177,6 +187,53 @@ function reportCommandLine(d) {
   const parts = d.split(/\r\n|\r|\n/);
   bridge.commandLine(currentLine() + parts[0], "");
   for (let i = 1; i < parts.length - 1; i++) bridge.commandLine("", parts[i]);
+}
+
+// Autocomplete from history (opt-in): a grey suggestion after what you typed, like fish.
+// Right arrow accepts it. `typed` follows the keystrokes of the current line; anything we
+// can't follow (arrows, Tab, history recall, ...) sets it to null until the next Enter.
+let suggestOn = false, history = [], typed = "", ghost = "", ghostTimer = null;
+const PROMPT_END = /[$#%>\u276f\u279c\u00bb\u03bb]\s*$/;
+const SECRET_PROMPT = /(password|passphrase|passcode|verification code|pin)[^:]*:\s*$/i;
+function clearGhost() {
+  if (ghostTimer) { clearTimeout(ghostTimer); ghostTimer = null; }
+  if (ghost) { ghost = ""; term.write("\x1b[K"); }
+}
+function trackTyped(d) {
+  clearGhost();
+  if (d === "\r" || d === "\x03" || d === "\x15") typed = "";
+  else if (typed === null) return;
+  else if (d === "\x7f") typed = typed.slice(0, -1);
+  else if (/^[^\x00-\x1f\x7f]+$/.test(d)) typed += d;
+  else typed = null;
+  if (typed) ghostTimer = setTimeout(showGhost, 80);
+}
+function showGhost() {
+  ghostTimer = null;
+  if (!suggestOn || !typed || typed.length < 2 || term.buffer.active.type !== "normal") return;
+  const buf = term.buffer.active;
+  const line = buf.getLine(buf.baseY + buf.cursorY);
+  if (!line || line.isWrapped) return;
+  const text = line.translateToString(true);
+  if (buf.cursorX < text.length || !text.endsWith(typed)) return;   // cursor not at the end of what we typed
+  if (SECRET_PROMPT.test(text) || !PROMPT_END.test(text.slice(0, text.length - typed.length))) return;
+  let hit = "";
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].length > typed.length && history[i].startsWith(typed)) { hit = history[i]; break; }
+  }
+  if (!hit) return;
+  const rest = hit.slice(typed.length);
+  if (rest.length > term.cols - 1 - buf.cursorX) return;           // would wrap onto the next row
+  ghost = rest;
+  term.write("\x1b7\x1b[90m" + rest + "\x1b[0m\x1b8");
+}
+function acceptGhost() {
+  if (!ghost || !bridge) return false;
+  const rest = ghost;
+  clearGhost();
+  typed += rest;
+  bridge.input(rest);
+  return true;
 }
 
 function openFind() { findBox.style.display = "flex"; q.focus(); q.select(); }

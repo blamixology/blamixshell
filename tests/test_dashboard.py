@@ -378,3 +378,20 @@ def test_cli_status_command_is_wired():
     from blamixshell.cli import HANDLERS, build_parser
     a = build_parser().parse_args(["status", "web-1", "-s"])
     assert a.cmd == "status" and a.services and HANDLERS["status"].__name__ == "cmd_status"
+
+
+def test_install_command_is_one_noninteractive_shell():
+    for mgr in d.UPGRADE_COMMANDS:
+        cmd = d.install_command(mgr)
+        assert cmd.startswith("sh -c ")         # sudo covers every step of a && chain
+    assert "noninteractive" in d.install_command("apt")
+    assert " -y" in d.install_command("apt")
+    assert d.install_command("") is None
+
+
+def test_health_has_swap_and_details():
+    h = d.parse_health("@@stat\ncpu 1 0 1 8 0 0 0 0\n@@load\n0.1 0.2 0.3 1/2 3\n@@mem\nMemTotal: 1000\n"
+                       "MemAvailable: 400\nSwapTotal: 100\nSwapFree: 50\n@@end\n")
+    assert h.loads == (0.1, 0.2, 0.3)
+    assert h.mem_kb == (600, 1000)
+    assert h.swap == 50.0 and h.swap_kb == (50, 100)

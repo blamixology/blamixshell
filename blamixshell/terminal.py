@@ -53,6 +53,8 @@ class TerminalBridge(QObject):
     options = Signal(str)
     command = Signal(str)
     logCommands = Signal(bool)
+    suggest = Signal(str)      # JSON {"on": bool, "history": [...]}: autocomplete from history
+    histAdd = Signal(str)      # a command to remember for autocomplete
     # Python-side notifications
     sig_input = Signal(bytes)
     sig_resize = Signal(int, int)
@@ -283,7 +285,7 @@ class TerminalPane(QWidget):
     # ---------------------------------------------------------- terminal io
     def _on_ready(self, cols: int, rows: int) -> None:
         self._ready = True
-        self.view.bridge.logCommands.emit(self._command_log is not None)
+        self.apply_suggest()
         self._size = (cols, rows)
         for chunk in self._buffer:
             self.view.bridge.output.emit(chunk)
@@ -523,15 +525,29 @@ class TerminalPane(QWidget):
         from .session_log import CommandLog, log_root
         on = bool(self.settings.get("command_log")) or self.server.log_commands
         self._command_log = CommandLog(log_root(self.settings)) if on else None
-        if self._ready:
-            self.view.bridge.logCommands.emit(on)
+        self.apply_suggest()
+
+    def _suggest_on(self) -> bool:
+        return bool(self.settings.get("history_autocomplete"))
+
+    def apply_suggest(self) -> None:
+        """Tell the terminal page whether to report command lines and show suggestions."""
+        if not self._ready:
+            return
+        import json
+        from . import cmd_history
+        bridge = self.view.bridge
+        on = self._suggest_on()
+        bridge.logCommands.emit(self._command_log is not None or on)
+        hist = cmd_history.shared().get(self.server.id) if on else []
+        bridge.suggest.emit(json.dumps({"on": on, "history": hist[-500:]}))
 
     def log_command(self, command: str, source: str = "terminal", prompt: str = "") -> None:
         if self._command_log is not None and command.strip():
             self._command_log.add(self.server, command.strip(), source, prompt)
 
     def _on_command_line(self, line: str, explicit: str) -> None:
-        if self._command_log is None or self.state != "connected":
+        if self.state != "connected":
             return
         if explicit:
             self.log_command(explicit, "paste")
@@ -540,6 +556,10 @@ class TerminalPane(QWidget):
         got = command_from_line(line)
         if got:
             self.log_command(got[1], "terminal", got[0])
+            if self._suggest_on():
+                from . import cmd_history
+                if cmd_history.shared().add(self.server.id, got[1]):
+                    self.view.bridge.histAdd.emit(got[1])
 
     def _record(self, data: bytes) -> None:
         if self.recorder is not None:

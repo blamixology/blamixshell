@@ -12,6 +12,8 @@ Legend: ✅ done · 🚧 in progress · 🗓 planned · 💡 later / maybe
 | ✅ | **Command log** | Who ran what, where and when: one line per command (as shown on screen), plus dashboard actions and `exec`. Per server or for all. |
 | ✅ | **Session recordings** | ● on a terminal, or always per server: everything it shows, as clean text or raw, optionally time-stamped. Retention in days. |
 | ✅ | **Health strip** | CPU, memory, disk and load of the active server in the status bar; click for the dashboard. |
+| ✅ | **Install updates from the dashboard** | Optional (Settings, off by default): an *Install updates* button on the Updates tab runs the non-interactive upgrade (apt, dnf, yum, zypper, pacman, apk) after a confirmation. |
+| ✅ | **Autocomplete from history** | Optional (Settings, off by default): a grey suggestion from the commands you typed on this server; Right arrow accepts it. |
 | ✅ | **Offline / managed installs** | `UPDATECHECK=0` (MSI), Group Policy, or `policy.ini` turns the update check off and locks it; **Install update from file** for offline machines; documented silent installs. |
 
 ## Released in 1.5
@@ -58,7 +60,7 @@ comparison tables stay honest.
 
 | | Gap | Plan |
 |---|---|---|
-| 🚧 | **OS management GUI** (Cockpit/Webmin style) | The server dashboard covers monitoring, services, processes, logs, ports, updates and users. Still missing compared to Cockpit: installing updates from the GUI, editing users and groups, firewall and storage management. |
+| 🚧 | **OS management GUI** (Cockpit/Webmin style) | The server dashboard covers monitoring, services, processes, logs, ports, updates and users. Updates can now be installed from the GUI (opt-in). Still missing compared to Cockpit: editing users and groups, firewall and storage management. |
 | ✅ | **Air-gapped / managed networks** (no account, no telemetry) | Done in the next release: update check off by policy, install update from file, documented offline install. |
 | 🗓 | **Single binary** | A one-file CLI/TUI binary for servers (no Qt, starts fast). The desktop app stays a portable folder: a one-file Qt WebEngine build unpacks ~300 MB on every start. |
 | 💡 | **Teams / RBAC** (Teleport, Guacamole) | BlamixShell is single-user with a local vault. Possible path: a shared encrypted team vault (per-member keys, synced through git or a shared folder), roles (connect-only / read-only / admin) and an audit log. Real multi-tenant RBAC with enforced access needs a server component, which is a different product. |
@@ -70,7 +72,6 @@ comparison tables stay honest.
 | 💡 | X11 forwarding |
 | 💡 | Serial and Telnet connections (network gear) |
 | 💡 | Mosh |
-| 💡 | Terminal autocomplete from shell history |
 
 ## Done
 

@@ -656,6 +656,23 @@ UPGRADE_COMMANDS = {
     "apk": "sudo apk upgrade",
 }
 
+# Non-interactive versions, run as root through `sh -c` (so sudo covers every step). Config
+# files the admin edited are kept (apt); prompts never block (the channel has no terminal).
+_INSTALL_SCRIPTS = {
+    "apt": "export DEBIAN_FRONTEND=noninteractive; apt-get update && "
+           "apt-get -y -o Dpkg::Options::=--force-confold upgrade",
+    "dnf": "dnf -y upgrade",
+    "yum": "yum -y update",
+    "zypper": "zypper -n update",
+    "pacman": "pacman -Syu --noconfirm",
+    "apk": "apk update && apk upgrade",
+}
+
+
+def install_command(manager: str) -> str | None:
+    script = _INSTALL_SCRIPTS.get(manager)
+    return f"sh -c {shlex.quote(script)}" if script else None
+
 
 @dataclass
 class Update:
@@ -801,14 +818,15 @@ def needs_password(runner: Runner, root: bool) -> bool:
     return not runner.run("sudo -n true 2>/dev/null").ok
 
 
-def run_privileged(runner: Runner, command: str, root: bool, password: str | None = None) -> Result:
+def run_privileged(runner: Runner, command: str, root: bool, password: str | None = None,
+                   timeout: float = 30) -> Result:
     """Run `command` as root: directly when logged in as root, else through sudo.
     The password (if any) goes over the SSH channel's stdin; it's never stored."""
     if root:
-        return runner.run(command)
+        return runner.run(command, timeout=timeout)
     if password is None:
-        return runner.run(f"sudo -n {command}")
-    return runner.run(f"sudo -S -p '' {command}", stdin=password + "\n")
+        return runner.run(f"sudo -n {command}", timeout=timeout)
+    return runner.run(f"sudo -S -p '' {command}", stdin=password + "\n", timeout=timeout)
 
 
 def human_kb(kb: float) -> str:

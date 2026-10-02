@@ -821,6 +821,21 @@ class SettingsDialog(_Base):
             self.health_iv.addItem(f"{sec} seconds", sec)
         self.health_iv.setCurrentIndex(max(0, self.health_iv.findData(int(settings.get("health_interval", 5)))))
         f.addRow("Status bar refresh", self.health_iv)
+        self.hist = QCheckBox("Suggest commands from this server's history while typing (Right arrow accepts)")
+        self.hist.setToolTip("Remembers the commands you type at a shell prompt, per server, in history.json "
+                             "in the data folder. Off by default.")
+        self.hist.setChecked(settings.get("history_autocomplete", False))
+        hist_clear = QPushButton("Clear saved history")
+        hist_clear.clicked.connect(self._clear_history)
+        hrow = QHBoxLayout()
+        hrow.addWidget(self.hist, 1)
+        hrow.addWidget(hist_clear)
+        f.addRow("", hrow)
+        self.dash_install = QCheckBox("Allow installing updates from the server dashboard")
+        self.dash_install.setToolTip("Adds an “Install updates” button (with a confirmation) to the dashboard's "
+                                     "Updates tab. Off by default.")
+        self.dash_install.setChecked(settings.get("dashboard_install_updates", False))
+        f.addRow("", self.dash_install)
         lt.addLayout(f)
         lt.addStretch(1)
 
@@ -973,6 +988,8 @@ class SettingsDialog(_Base):
             s["check_updates"] = self.upd.isChecked()
         s["health_strip"] = self.health.isChecked()
         s["health_interval"] = self.health_iv.currentData()
+        s["history_autocomplete"] = self.hist.isChecked()
+        s["dashboard_install_updates"] = self.dash_install.isChecked()
         s["command_log"] = self.cmdlog.isChecked()
         s["record_format"] = self.rec_fmt.currentData()
         s["record_timestamps"] = self.rec_ts.isChecked()
@@ -983,6 +1000,12 @@ class SettingsDialog(_Base):
             s["last_session"] = {}
         s.save()
         self.accept()
+
+    def _clear_history(self) -> None:
+        from . import cmd_history
+        if QMessageBox.question(self, "Clear history", "Forget the saved command history of all servers?") \
+                == QMessageBox.Yes:
+            cmd_history.shared().clear()
 
     # ---- logging --------------------------------------------------------------
     def _pick_log_dir(self) -> None:

@@ -148,8 +148,9 @@ def _btn(ic: str, text: str, fn, tip: str = "") -> QPushButton:
 
 
 class DashboardWindow(QWidget):
-    def __init__(self, pane, color: str = "", send_to_terminal=None, parent=None):
+    def __init__(self, pane, color: str = "", send_to_terminal=None, settings=None, parent=None):
         super().__init__(parent, Qt.Window)
+        self.settings = settings if settings is not None else {}
         self.pane = pane
         self.server = pane.server
         self.color = color
@@ -337,11 +338,14 @@ class DashboardWindow(QWidget):
         self.upd_btn = _btn("terminal", "Type the upgrade command in the terminal", self._type_upgrade,
                             "Types it into this server's terminal without pressing Enter, so you can review it")
         self.upd_btn.setEnabled(False)
-        lay.addLayout(_toolbar(self.upd_lbl, "stretch", self.upd_btn))
+        self.upd_install = _btn("download", "Install updates", self._install_updates,
+                                "Installs all pending updates on the server (asks to confirm first)")
+        self.upd_install.setEnabled(False)
+        lay.addLayout(_toolbar(self.upd_lbl, "stretch", self.upd_btn, self.upd_install))
         self.upd_table = _table(["Package", "New version"])
         lay.addWidget(self.upd_table, 1)
-        lay.addWidget(QLabel("Read-only: this uses the server's cached package lists and never installs anything.",
-                             objectName="Hint"))
+        self.upd_hint = QLabel("", objectName="Hint", wordWrap=True)
+        lay.addWidget(self.upd_hint)
 
     def _build_users(self) -> None:
         lay = self._page("Users")
@@ -607,6 +611,13 @@ class DashboardWindow(QWidget):
         mgr, ups = res
         self._update_mgr = mgr
         self.upd_btn.setEnabled(bool(mgr and ups and self.send_to_terminal))
+        can_install = bool(self.settings.get("dashboard_install_updates")) and bool(d.install_command(mgr))
+        self.upd_install.setVisible(bool(self.settings.get("dashboard_install_updates")))
+        self.upd_install.setEnabled(bool(can_install and ups))
+        self.upd_hint.setText("Uses the server's cached package lists. “Install updates” runs the upgrade for you "
+                              "after a confirmation." if self.settings.get("dashboard_install_updates") else
+                              "Read-only: this uses the server's cached package lists and never installs anything. "
+                              "Turn on “Allow installing updates” in Settings to install from here.")
         if not mgr:
             self.upd_lbl.setText("No supported package manager found (apt, dnf, yum, zypper, pacman, apk).")
         elif not ups:
@@ -690,7 +701,14 @@ class DashboardWindow(QWidget):
         self._privileged(f"{'Force-kill' if force else 'End'} process {pid} ({name})",
                          d.kill_command(pid, force), then="processes", allow_plain=True)
 
-    def _privileged(self, what: str, command: str, then: str, allow_plain: bool = False) -> None:
+    def _install_updates(self) -> None:
+        cmd = d.install_command(self._update_mgr)
+        if not cmd or not self.settings.get("dashboard_install_updates"):
+            return
+        self._privileged("Install all updates", cmd, then="updates", timeout=1800)
+
+    def _privileged(self, what: str, command: str, then: str, allow_plain: bool = False,
+                    timeout: float = 30) -> None:
         """Confirm, then run as root (directly, or via sudo when needed)."""
         runner = self._runner()
         if runner is None:
@@ -712,12 +730,12 @@ class DashboardWindow(QWidget):
                     return plain
             if not self._root and self._sudo_pw is None and d.needs_password(r, self._root):
                 return "need-password"
-            return d.run_privileged(r, command, self._root, self._sudo_pw)
-        self._pending_action = (what, command, then, allow_plain)
+            return d.run_privileged(r, command, self._root, self._sudo_pw, timeout)
+        self._pending_action = (what, command, then, allow_plain, timeout)
         self._job("action", work)
 
     def _show_action(self, res) -> None:
-        what, command, then, allow_plain = self._pending_action
+        what, command, then, allow_plain, timeout = self._pending_action
         if res == "need-password":
             pw, ok = QInputDialog.getText(self, "sudo password",
                                           f"Password for sudo on {self.server.label} "
@@ -725,7 +743,7 @@ class DashboardWindow(QWidget):
             if not ok:
                 return
             self._sudo_pw = pw
-            self._job("action", lambda r: d.run_privileged(r, command, self._root, self._sudo_pw))
+            self._job("action", lambda r: d.run_privileged(r, command, self._root, self._sudo_pw, timeout))
             return
         if hasattr(self.pane, "log_command"):        # command log: the dashboard's actions too
             self.pane.log_command(command + ("" if res.ok else f"   # failed (exit {res.code})"), "dashboard")
