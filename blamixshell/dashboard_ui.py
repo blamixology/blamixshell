@@ -1260,7 +1260,7 @@ class DashboardWindow(QWidget):
         self._cron_rows: list[int] = []
         self._cron_text = ""
         self._cron_sys = (0, 0)
-        self._cron_diag = ("", "", "")
+        self._cron_diag = ("", "", "", "")
         self._cron_now = None
         self._cron_tz = ""
         self.cron_user = QComboBox()
@@ -1372,10 +1372,10 @@ class DashboardWindow(QWidget):
             bits.append(error)
         elif not jobs:
             bits.append("No scheduled jobs." + ("" if system else " Use “Add job” to create one."))
-            said, me, home = self._cron_diag
+            said, me, home, how = self._cron_diag
             if not system and (said or me):
                 bits.append(f"Read as {me or '?'} ({home or 'no home'}); crontab said: "
-                            f"“{said[:160] or 'nothing'}”")
+                            f"“{said[:160] or 'nothing'}”" + (f" [{how}]" if how else ""))
             jobs_sys, periodic = self._cron_sys
             if not system and (jobs_sys or periodic):
                 bits.append(f"The server also has {jobs_sys} system job{'s' if jobs_sys != 1 else ''} and "

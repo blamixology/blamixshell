@@ -278,7 +278,16 @@ def read_script(user: str = "") -> str:
                 '[ -f "$f" ] && { echo "# ---- /etc/cron.$p"; echo "@$p root $f"; }; done; done 2>/dev/null')
     else:
         who = f"-u {shlex.quote(user)} " if user else ""
-        body = f"crontab {who}-l 2>&1"
+        name = shlex.quote(user) if user else '"$(id -un)"'
+        # `crontab -l` is the right way, but on some servers it prints nothing over a non-interactive
+        # login even though the spool file has the jobs: fall back to reading that file directly
+        body = (f'U={name}; out=$(crontab {who}-l 2>&1); rc=$?; src=crontab\n'
+                'if [ -z "$out" ] || [ "${out#no crontab}" != "$out" ]; then\n'
+                '  alt=$(cat "/var/spool/cron/$U" 2>/dev/null || cat "/var/spool/cron/crontabs/$U" 2>/dev/null)\n'
+                '  if [ -n "$alt" ]; then out="$alt"; src=spool; fi\n'
+                'fi\n'
+                'printf \'%s\\n\' "$out"\n'
+                'echo @@rc; echo "$rc $src $(command -v crontab)"')
     sysinfo = ("echo @@sys; (cat /etc/crontab /etc/cron.d/* 2>/dev/null | grep -Ev '^[[:space:]]*(#|$)|^[A-Za-z_]+=' "
                "| wc -l; for p in hourly daily weekly monthly; do ls -1 /etc/cron.$p 2>/dev/null; done | wc -l) "
                "| tr '\\n' ' '; echo\n") if user != "@system" else ""
@@ -301,12 +310,14 @@ def parse_read(text: str) -> tuple[str, datetime | None, str]:
     return body, now, s.get("tz", "").strip()
 
 
-def parse_diag(text: str) -> tuple[str, str, str]:
-    """(what `crontab` printed, the account the command ran as, its home folder): shown when no
-    jobs come back, so a wrong account or a refusal is visible instead of an empty list."""
+def parse_diag(text: str) -> tuple[str, str, str, str]:
+    """(what `crontab` printed, the account the command ran as, its home folder, how it was read):
+    shown when no jobs come back, so a wrong account or a refusal is visible instead of an empty list."""
     from .dashboard import split_sections
     s = split_sections(text)
-    return s.get("cron", "").strip(), s.get("me", "").strip(), s.get("home", "").strip()
+    rc = s.get("rc", "").split()
+    how = f"exit {rc[0]}, via {rc[1]}" + (f", {rc[2]}" if len(rc) > 2 else "") if len(rc) >= 2 else ""
+    return s.get("cron", "").strip(), s.get("me", "").strip(), s.get("home", "").strip(), how
 
 
 def parse_sys(text: str) -> tuple[int, int]:

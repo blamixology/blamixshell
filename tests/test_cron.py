@@ -137,3 +137,13 @@ def test_system_view_lists_periodic_scripts_and_counts():
     assert "/etc/cron.$p" in cron.read_script("@system") and "@@sys" not in cron.read_script("@system")
     assert "@@sys" in cron.read_script("")
     assert cron.parse_sys("@@sys\n3 12 \n") == (3, 12) and cron.parse_sys("") == (0, 0)
+
+
+def test_read_falls_back_to_the_spool_file_and_reports_how():
+    script = cron.read_script("")
+    assert "crontab -l" in script and "/var/spool/cron/" in script and "src=spool" in script
+    assert "crontab -u alice -l" in cron.read_script("alice") and "U=alice" in cron.read_script("alice")
+    out = "@@cron\n@reboot /x.sh\n@@rc\n0 spool /usr/bin/crontab\n@@me\nbob\n@@home\n/home/bob\n"
+    said, me, home, how = cron.parse_diag(out)
+    assert (me, home, how) == ("bob", "/home/bob", "exit 0, via spool, /usr/bin/crontab")
+    assert cron.parse_read(out)[0] == "@reboot /x.sh"
