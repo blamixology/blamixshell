@@ -11,7 +11,7 @@ import time
 
 from PySide6.QtCore import QObject, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                                QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QSpinBox, QTimeEdit,
                                QProgressBar, QPushButton, QScrollArea, QTableWidget, QTableWidgetItem,
@@ -170,6 +170,88 @@ class _CronTextDialog(QDialog):
         return self.edit.toPlainText()
 
 
+class _Signals2(QObject):
+    done = Signal(int, str)
+
+
+class _ServerPicker(QDialog):
+    """Browse the server's folders (over the existing connection) to pick a script or a folder."""
+
+    def __init__(self, run, start: str, want_dir: bool, parent=None):
+        super().__init__(parent)
+        self.run, self.want_dir, self.chosen, self.cwd = run, want_dir, "", ""
+        self.setWindowTitle("Choose a folder on the server" if want_dir else "Choose a script on the server")
+        self.resize(520, 440)
+        lay = QVBoxLayout(self)
+        top = QHBoxLayout()
+        self.path = QLineEdit()
+        self.path.returnPressed.connect(lambda: self._go(self.path.text().strip()))
+        top.addWidget(self.path, 1)
+        top.addWidget(_btn("up", "", lambda: self._go(self.cwd.rstrip("/").rsplit("/", 1)[0] or "/"), "Parent folder"))
+        top.addWidget(_btn("home", "", lambda: self._go(""), "Home folder"))
+        lay.addLayout(top)
+        self.list = QListWidget()
+        self.list.itemDoubleClicked.connect(self._open)
+        self.list.itemSelectionChanged.connect(self._sync)
+        lay.addWidget(self.list, 1)
+        self.msg = QLabel("", objectName="Hint", wordWrap=True)
+        lay.addWidget(self.msg)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.accepted.connect(self._accept)
+        self.buttons.rejected.connect(self.reject)
+        self.buttons.button(QDialogButtonBox.Ok).setText("Use this folder" if want_dir else "Choose")
+        lay.addWidget(self.buttons)
+        self._go(start)
+
+    def _go(self, path: str) -> None:
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            out = self.run(cron.list_dir_command(path))
+        finally:
+            QApplication.restoreOverrideCursor()
+        try:
+            if out is None:
+                raise ValueError("Not connected.")
+            cwd, dirs, files = cron.parse_listing(out)
+        except ValueError as e:
+            self.msg.setText(str(e))
+            return
+        self.cwd = cwd
+        self.path.setText(cwd)
+        self.msg.setText("")
+        self.list.clear()
+        for name in dirs:
+            self.list.addItem(QListWidgetItem(icon("folder"), name + "/"))
+        if not self.want_dir:
+            for name in files:
+                self.list.addItem(QListWidgetItem(icon("file"), name))
+        self._sync()
+
+    def _full(self, text: str) -> str:
+        return self.cwd.rstrip("/") + "/" + text.rstrip("/")
+
+    def _open(self, item) -> None:
+        if item.text().endswith("/"):
+            self._go(self._full(item.text()))
+        elif not self.want_dir:
+            self._accept()
+
+    def _sync(self) -> None:
+        sel = self.list.selectedItems()
+        ok = self.want_dir or (bool(sel) and not sel[0].text().endswith("/"))
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(ok and bool(self.cwd))
+
+    def _accept(self) -> None:
+        sel = self.list.selectedItems()
+        if self.want_dir:
+            self.chosen = self._full(sel[0].text()) if sel and sel[0].text().endswith("/") else self.cwd
+        elif sel and not sel[0].text().endswith("/"):
+            self.chosen = self._full(sel[0].text())
+        else:
+            return
+        self.accept()
+
+
 class _CronJobDialog(QDialog):
     """Pick when a command runs from a simple form; the cron expression is built for you."""
 
@@ -177,15 +259,15 @@ class _CronJobDialog(QDialog):
              ("Every week", "weekly"), ("Every month", "monthly"), ("When the server starts", "reboot"),
              ("Custom (cron expression)", "custom")]
 
-    def __init__(self, entry: cron.Entry | None, now, tz: str, parent=None):
+    def __init__(self, entry: cron.Entry | None, now, tz: str, parent=None, run=None, note: str = ""):
         super().__init__(parent)
         self.setWindowTitle("Edit scheduled job" if entry else "Add scheduled job")
-        self.setMinimumWidth(480)
-        self.now, self.tz = now, tz
+        self.setMinimumWidth(520)
+        self.now, self.tz, self.run, self.note = now, tz, run, note
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
 
-        def row(label: str, widget) -> QWidget:
+        def row(label: str, widget, *extra, into=None) -> QWidget:
             w = QWidget()
             h = QHBoxLayout(w)
             h.setContentsMargins(0, 0, 0, 0)
@@ -193,11 +275,27 @@ class _CronJobDialog(QDialog):
             lab.setMinimumWidth(90)
             h.addWidget(lab)
             h.addWidget(widget, 1)
-            lay.addWidget(w)
+            for x in extra:
+                h.addWidget(x)
+            (into or lay).addWidget(w)
             return w
 
-        self.command = QLineEdit(placeholderText="e.g. /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1")
-        row("Command", self.command)
+        self.command = QLineEdit(placeholderText="a script path or any command, e.g. /usr/local/bin/backup.sh --full")
+        self.browse_cmd = QPushButton("Browse…")
+        self.browse_cmd.setToolTip("Pick the script from the server's files")
+        self.browse_cmd.setVisible(run is not None)
+        self.browse_cmd.clicked.connect(self._browse_script)
+        row("Command", self.command, self.browse_cmd)
+        self.check_lbl = QLabel("", objectName="Hint", wordWrap=True)
+        self.check_lbl.setContentsMargins(94, 0, 0, 0)
+        lay.addWidget(self.check_lbl)
+        self._check_sig = _Signals2()
+        self._check_sig.done.connect(self._checked)
+        self._check_id = 0
+        self._check_timer = QTimer(self)
+        self._check_timer.setSingleShot(True)
+        self._check_timer.setInterval(600)
+        self._check_timer.timeout.connect(self._run_check)
         self.kind = QComboBox()
         for label, key in self.KINDS:
             self.kind.addItem(label, key)
@@ -224,6 +322,34 @@ class _CronJobDialog(QDialog):
         self.enabled.setChecked(True)
         lay.addWidget(self.enabled)
 
+        # more options: output, folder, login shell
+        self.more = QPushButton("More options")
+        self.more.setCheckable(True)
+        self.more.setFlat(True)
+        self.more.setStyleSheet("text-align:left; padding:4px 0;")
+        lay.addWidget(self.more)
+        self.opts = QWidget()
+        ol = QVBoxLayout(self.opts)
+        ol.setContentsMargins(0, 0, 0, 0)
+        self.out_mode = QComboBox()
+        self.out_mode.addItem("Default (cron emails it, if mail is set up)", cron.OUT_DEFAULT)
+        self.out_mode.addItem("Discard it", cron.OUT_DISCARD)
+        self.out_mode.addItem("Save it to a log file", cron.OUT_LOG)
+        row("Output", self.out_mode, into=ol)
+        self.log = QLineEdit(placeholderText="$HOME/cron-job.log")
+        self.r_log = row("Log file", self.log, into=ol)
+        self.folder = QLineEdit(placeholderText="optional: the job starts here (default: the home folder)")
+        self.browse_dir = QPushButton("Browse…")
+        self.browse_dir.setVisible(run is not None)
+        self.browse_dir.clicked.connect(self._browse_folder)
+        row("Run in", self.folder, self.browse_dir, into=ol)
+        self.login = QCheckBox("Login shell (loads the user's PATH and environment)")
+        ol.addWidget(self.login)
+        lay.addWidget(self.opts)
+        self.opts.setVisible(False)
+        self.more.toggled.connect(self.opts.setVisible)
+        self.more.toggled.connect(lambda on: self.more.setText("Fewer options" if on else "More options"))
+
         self.expr_lbl = QLabel("")
         self.expr_lbl.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
         self.desc_lbl = QLabel("")
@@ -244,7 +370,14 @@ class _CronJobDialog(QDialog):
         lay.addWidget(self.buttons)
 
         if entry:
-            self.command.setText(entry.command)
+            parts = cron.decompose(entry.command)
+            self.command.setText(parts.command)
+            self.out_mode.setCurrentIndex(max(0, self.out_mode.findData(parts.out)))
+            self.log.setText(parts.log)
+            self.folder.setText(parts.folder)
+            self.login.setChecked(parts.login)
+            if parts.out != cron.OUT_DEFAULT or parts.folder or parts.login:
+                self.more.setChecked(True)
             self.enabled.setChecked(entry.enabled)
             kind, p = cron.classify(entry.schedule)
             self.kind.setCurrentIndex(self.kind.findData(kind))
@@ -259,14 +392,81 @@ class _CronJobDialog(QDialog):
             from PySide6.QtCore import QTime
             self.kind.setCurrentIndex(self.kind.findData("daily"))
             self.time.setTime(QTime(2, 0))
-        for w in (self.command, self.custom):
+        for w in (self.command, self.custom, self.log, self.folder):
             w.textChanged.connect(self._update)
+        self.out_mode.currentIndexChanged.connect(self._out_changed)
+        self.command.textChanged.connect(lambda _t: self._check_timer.start())
+        self.folder.textChanged.connect(lambda _t: self._check_timer.start())
         for w in (self.kind, self.weekday):
             w.currentIndexChanged.connect(self._update)
         for w in (self.every, self.minute, self.day):
             w.valueChanged.connect(self._update)
         self.time.timeChanged.connect(self._update)
         self._update()
+        self._check_timer.start()
+
+    # ---- the command part ----
+    def _out_changed(self) -> None:
+        if self.out_mode.currentData() == cron.OUT_LOG and not self.log.text().strip():
+            hit = cron.script_path(self.command.text())
+            stem = hit[0].rsplit("/", 1)[-1].rsplit(".", 1)[0] if hit else "job"
+            self.log.setText(f"$HOME/cron-{stem or 'job'}.log")
+        self._update()
+
+    def _parts(self) -> cron.Parts:
+        return cron.Parts(self.command.text().strip(), self.folder.text().strip(), self.login.isChecked(),
+                          self.out_mode.currentData(), self.log.text().strip())
+
+    def _browse_script(self) -> None:
+        hit = cron.script_path(self.command.text())
+        start = hit[0].rsplit("/", 1)[0] if hit and "/" in hit[0] else ""
+        dlg = _ServerPicker(self.run, start, False, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        text = self.command.text().strip()
+        if not text:
+            self.command.setText(dlg.chosen)
+        elif hit and hit[0] in text:
+            self.command.setText(text.replace(hit[0], dlg.chosen, 1))
+        else:
+            self.command.setText(f"{text} {dlg.chosen}")
+
+    def _browse_folder(self) -> None:
+        dlg = _ServerPicker(self.run, self.folder.text().strip(), True, self)
+        if dlg.exec() == QDialog.Accepted:
+            self.folder.setText(dlg.chosen)
+
+    def _run_check(self) -> None:
+        """Does the script named in the command exist and can it run? (asked in the background)"""
+        hit = cron.script_path(self.command.text())
+        self._check_id += 1
+        if not hit or self.run is None:
+            self.check_lbl.setText("")
+            return
+        path, need_exec = hit
+        rid = self._check_id
+
+        def work():
+            try:
+                out = (self.run(cron.check_script(path, need_exec)) or "").strip()
+            except Exception:
+                out = ""
+            self._check_sig.done.emit(rid, f"{out}|{path}")
+        threading.Thread(target=work, daemon=True, name="cron-check").start()
+
+    def _checked(self, rid: int, res: str) -> None:
+        if rid != self._check_id:
+            return
+        state, _, path = res.partition("|")
+        who = f" ({self.note})" if self.note else ""
+        msgs = {"ok": (f"✔ {path} exists on the server{who}", C["ok"]),
+                "missing": (f"⚠ {path} wasn't found on the server{who}", C["warn"]),
+                "dir": (f"⚠ {path} is a folder, not a script{who}", C["warn"]),
+                "noexec": (f"⚠ {path} isn't executable{who}. Run  chmod +x {path}  on the server, or start it "
+                           f"with its interpreter, e.g.  bash {path}", C["warn"])}
+        text, color = msgs.get(state, ("", C["muted"]))
+        self.check_lbl.setText(text)
+        self.check_lbl.setStyleSheet(f"color:{color};")
 
     def schedule(self) -> str:
         k = self.kind.currentData()
@@ -278,7 +478,7 @@ class _CronJobDialog(QDialog):
                                    every=self.every.value())
 
     def values(self) -> tuple[str, str, bool]:
-        return self.schedule(), self.command.text().strip(), self.enabled.isChecked()
+        return self.schedule(), cron.compose(self._parts()), self.enabled.isChecked()
 
     def _update(self) -> None:
         k = self.kind.currentData()
@@ -287,9 +487,11 @@ class _CronJobDialog(QDialog):
                 "reboot": [], "custom": [self.r_custom]}[k]
         for w in (self.r_every, self.r_minute, self.r_weekday, self.r_day, self.r_time, self.r_custom):
             w.setVisible(any(w is x for x in show))
+        self.r_log.setVisible(self.out_mode.currentData() == cron.OUT_LOG)
         expr = self.schedule()
         err = cron.validate_schedule(expr) if expr else "Enter a schedule."
-        err_cmd = not self.command.text().strip()
+        err_cmd = not self.command.text().strip() or (self.out_mode.currentData() == cron.OUT_LOG
+                                                      and not self.log.text().strip())
         self.err_lbl.setText(err)
         self.err_lbl.setVisible(bool(err))
         self.expr_lbl.setText(expr)
@@ -1165,6 +1367,16 @@ class DashboardWindow(QWidget):
         if sel:
             self.cron_buttons["toggle"].setText(" Disable" if sel[1].enabled else " Enable")
 
+    def _cron_run(self, command: str) -> str | None:
+        """Run a short read-only command on the server for the job form (browse, script check)."""
+        runner = self._runner()
+        return runner.run(command, timeout=10).out if runner else None
+
+    def _cron_note(self) -> str:
+        who = self._cron_who
+        return f"checked as {self.server.username or 'the connected user'}, the job runs as {who}" \
+            if who and who != self.server.username else ""
+
     def _cron_save(self, text: str, what: str) -> None:
         who = self._cron_who
         if who == "@system":
@@ -1185,7 +1397,7 @@ class DashboardWindow(QWidget):
         self._cron_save("\n".join(lines) + "\n", what)
 
     def _cron_add(self) -> None:
-        dlg = _CronJobDialog(None, self._cron_now, self._cron_tz, self)
+        dlg = _CronJobDialog(None, self._cron_now, self._cron_tz, self, self._cron_run, self._cron_note())
         if dlg.exec() == QDialog.Accepted:
             sched, command, enabled = dlg.values()
             self._cron_replace(None, cron.format_job(sched, command, enabled), "Add scheduled job")
@@ -1194,7 +1406,7 @@ class DashboardWindow(QWidget):
         sel = self._selected_job()
         if not sel or self._cron_who == "@system":
             return
-        dlg = _CronJobDialog(sel[1], self._cron_now, self._cron_tz, self)
+        dlg = _CronJobDialog(sel[1], self._cron_now, self._cron_tz, self, self._cron_run, self._cron_note())
         if dlg.exec() == QDialog.Accepted:
             sched, command, enabled = dlg.values()
             self._cron_replace(sel[0], cron.format_job(sched, command, enabled), "Save scheduled job")

@@ -300,3 +300,139 @@ def save_command(user: str, text: str) -> str:
     b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
     who = f"-u {shlex.quote(user)} " if user else ""
     return f"sh -c {shlex.quote(f'echo {b64} | base64 -d | crontab {who}-')}"
+
+
+# ---------------------------------------------------------------- the command part of a job
+# The form builds the command line from: the command, an optional folder to run in, an
+# optional login shell (so PATH and the environment match a real login) and where the
+# output goes. decompose() reads a line back into those parts when it matches exactly.
+OUT_DEFAULT, OUT_DISCARD, OUT_LOG = "default", "discard", "log"
+_INTERPRETERS = {"bash", "sh", "dash", "zsh", "python", "python3", "node", "php", "perl", "ruby", "java"}
+_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_SAFE_PATH = re.compile(r"[\w./$~{}+@:-]+")
+
+
+def shell_path(path: str) -> str:
+    """`path` quoted for sh, but with a leading ~ left to expand (it doesn't inside quotes)."""
+    if path == "~":
+        return "~"
+    if path.startswith("~/"):
+        rest = path[2:]
+        return "~/" + shlex.quote(rest) if rest else "~/"
+    return shlex.quote(path)
+
+
+def _unshell_path(tok: str) -> str:
+    if tok.startswith("~/"):
+        rest = tok[2:]
+        return "~/" + (shlex.split(rest)[0] if rest else "")
+    return shlex.split(tok)[0]
+
+
+def escape_percent(s: str) -> str:
+    """cron turns an unescaped % into a newline: write \\% instead."""
+    return re.sub(r"(?<!\\)%", r"\\%", s)
+
+
+def unescape_percent(s: str) -> str:
+    return s.replace("\\%", "%")
+
+
+def split_output(cmd: str) -> tuple[str, str, str]:
+    """(command, output mode, log path) for a command ending in a redirect we generate."""
+    m = re.search(r"\s*>>\s*(\S+)\s+2>&1\s*$", cmd)
+    if m:
+        return cmd[:m.start()], OUT_LOG, m.group(1)
+    m = re.search(r"\s*>\s*/dev/null\s+2>&1\s*$", cmd)
+    if m:
+        return cmd[:m.start()], OUT_DISCARD, ""
+    return cmd, OUT_DEFAULT, ""
+
+
+def join_output(cmd: str, mode: str, log: str = "") -> str:
+    if mode == OUT_DISCARD:
+        return f"{cmd} >/dev/null 2>&1"
+    if mode == OUT_LOG and log.strip():
+        path = log.strip()
+        return f"{cmd} >> {path if _SAFE_PATH.fullmatch(path) else shlex.quote(path)} 2>&1"
+    return cmd
+
+
+@dataclass
+class Parts:
+    command: str = ""
+    folder: str = ""
+    login: bool = False
+    out: str = OUT_DEFAULT
+    log: str = ""
+
+
+def compose(p: Parts) -> str:
+    cmd = p.command.strip()
+    if p.folder.strip():
+        cmd = f"cd {shell_path(p.folder.strip())} && {cmd}"
+    if p.login:
+        cmd = f"bash -lc {shlex.quote(cmd)}"
+    return escape_percent(join_output(cmd, p.out, p.log))
+
+
+def decompose(line: str) -> Parts:
+    """Split a crontab command back into form fields; anything unusual stays in `command`."""
+    line = line.strip()
+    plain = Parts(command=unescape_percent(line))
+    try:
+        s, out, log = split_output(unescape_percent(line))
+        parts = Parts(out=out, log=log)
+        tok = shlex.split(s)
+        if len(tok) == 3 and tok[0] == "bash" and tok[1] == "-lc":
+            s, parts.login = tok[2], True
+        m = re.match(r"cd\s+(~/'[^']*'|~/\S*|'[^']*'|\"[^\"]*\"|[^\s&]+)\s+&&\s+(.*)$", s, re.S)
+        if m:
+            parts.folder, s = _unshell_path(m.group(1)), m.group(2)
+        parts.command = s.strip()
+    except ValueError:
+        return plain
+    return parts if compose(parts) == line else plain
+
+
+def script_path(command: str) -> tuple[str, bool] | None:
+    """The script a command starts (path, needs the executable bit), when it has a full path.
+    `bash /x/y.sh` and `python3 /x/y.py` name the script without needing +x."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    i = 0
+    while i < len(tokens) and (_ASSIGN.match(tokens[i]) or tokens[i] in ("sudo", "nohup", "nice", "env", "time")):
+        i += 1
+    if i >= len(tokens):
+        return None
+    first = tokens[i]
+    if first.rsplit("/", 1)[-1] in _INTERPRETERS:
+        for a in tokens[i + 1:]:
+            if not a.startswith("-"):
+                return (a, False) if a.startswith(("/", "~")) else None
+        return None
+    return (first, True) if first.startswith(("/", "~")) else None
+
+
+def check_script(path: str, need_exec: bool) -> str:
+    """Shell script printing ok | missing | dir | noexec for `path`."""
+    return (f'p={shell_path(path)}; if [ ! -e "$p" ]; then echo missing; elif [ -d "$p" ]; then echo dir; '
+            f'elif [ -f "$p" ] && [ ! -x "$p" ] && {"true" if need_exec else "false"}; then echo noexec; '
+            f'else echo ok; fi')
+
+
+def list_dir_command(path: str = "") -> str:
+    """Command printing the folder's full path, then its entries (folders end in /)."""
+    return f"cd {shell_path(path)} 2>&1 && pwd && ls -1Ap 2>&1" if path else "cd && pwd && ls -1Ap 2>&1"
+
+
+def parse_listing(out: str) -> tuple[str, list[str], list[str]]:
+    """(folder, sub-folders, files) from list_dir_command's output; ValueError with the reason."""
+    lines = out.splitlines()
+    if not lines or not lines[0].startswith("/"):
+        raise ValueError((lines[0] if lines else "Could not open that folder.").split(": ", 1)[-1])
+    dirs = sorted(l[:-1] for l in lines[1:] if l.endswith("/"))
+    files = sorted(l for l in lines[1:] if l and not l.endswith("/"))
+    return lines[0], dirs, files

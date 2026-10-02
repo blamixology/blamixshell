@@ -87,3 +87,41 @@ def test_read_and_save_helpers():
     cmd = cron.save_command("", "* * * * * echo 'hi'\n")
     assert cmd.startswith("sh -c ") and "base64 -d | crontab -" in cmd and "hi" not in cmd   # sent encoded
     assert "crontab -u alice -" in cron.save_command("alice", "x\n")
+
+
+def test_command_parts_round_trip():
+    P = cron.Parts
+    cases = [P("/usr/local/bin/backup.sh"),
+             P("/usr/local/bin/backup.sh --full", out=cron.OUT_DISCARD),
+             P("/srv/job.sh", out=cron.OUT_LOG, log="$HOME/cron-job.log"),
+             P("./run.sh", folder="/srv/my app"),
+             P("./run.sh", folder="~/app", login=True, out=cron.OUT_LOG, log="/var/log/x.log"),
+             P("echo 'done' && date +%F")]
+    for p in cases:
+        line = cron.compose(p)
+        assert cron.decompose(line) == p, line
+    assert cron.compose(P("date +%F")) == "date +\\%F"                 # % would be a newline in cron
+    assert cron.decompose("date +\\%F").command == "date +%F"
+    odd = "cd /x; echo hi  |  tee /tmp/o"                                # unusual lines stay as they are
+    assert cron.decompose(odd).command == odd and cron.decompose(odd).folder == ""
+
+
+def test_script_path_and_check():
+    assert cron.script_path("/usr/local/bin/backup.sh --full") == ("/usr/local/bin/backup.sh", True)
+    assert cron.script_path("bash /srv/job.sh") == ("/srv/job.sh", False)
+    assert cron.script_path("FOO=1 python3 -u ~/jobs/run.py") == ("~/jobs/run.py", False)
+    assert cron.script_path("./relative.sh") is None and cron.script_path("echo hi") is None
+    assert cron.script_path("'unbalanced") is None
+    assert "p=~/jobs/run.py;" in cron.check_script("~/jobs/run.py", False)
+    assert "true" in cron.check_script("/x.sh", True) and "false" in cron.check_script("/x.sh", False)
+
+
+def test_listing_parser():
+    cwd, dirs, files = cron.parse_listing("/srv/app\nbin/\n.config/\nrun.sh\nREADME\n")
+    assert (cwd, dirs, files) == ("/srv/app", [".config", "bin"], ["README", "run.sh"])
+    try:
+        cron.parse_listing("sh: line 0: cd: /nope: No such file or directory\n")
+        raise AssertionError("should fail")
+    except ValueError as e:
+        assert "No such file" in str(e)
+    assert cron.list_dir_command("").startswith("cd && pwd") and "~/'my dir'" in cron.list_dir_command("~/my dir")
