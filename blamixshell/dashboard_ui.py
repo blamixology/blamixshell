@@ -162,7 +162,13 @@ class _AddUserDialog(QDialog):
                                else "Administrator (no sudo / wheel group found)")
         self.admin.setEnabled(bool(self.admin_grp))
         self.extra = QLineEdit(placeholderText="optional, comma separated, e.g. docker,www-data")
+        self.home = QLineEdit(placeholderText="default: /home/<username>")
+        self.home.setToolTip("Leave empty for the system default, or give an absolute path such as /srv/deploy")
+        self.make_home = QCheckBox("Create the home folder")
+        self.make_home.setChecked(True)
         lay.addRow("Username", self.name)
+        lay.addRow("Home folder", self.home)
+        lay.addRow("", self.make_home)
         lay.addRow("Shell", self.shell)
         lay.addRow("", self.admin)
         lay.addRow("Other groups", self.extra)
@@ -173,11 +179,12 @@ class _AddUserDialog(QDialog):
         bb.rejected.connect(self.reject)
         lay.addRow(bb)
 
-    def values(self) -> tuple[str, str, list[str]]:
+    def values(self) -> tuple[str, str, list[str], str, bool]:
         groups = [g.strip() for g in self.extra.text().split(",") if g.strip()]
         if self.admin.isChecked() and self.admin_grp and self.admin_grp not in groups:
             groups.append(self.admin_grp)
-        return self.name.text().strip(), self.shell.currentText().strip() or "/bin/bash", groups
+        return (self.name.text().strip(), self.shell.currentText().strip() or "/bin/bash", groups,
+                self.home.text().strip(), self.make_home.isChecked())
 
 
 class _GroupsDialog(QDialog):
@@ -888,7 +895,10 @@ class DashboardWindow(QWidget):
         dlg = _AddUserDialog(self._all_groups, self)
         if dlg.exec() != QDialog.Accepted:
             return
-        name, shell, groups = dlg.values()
+        name, shell, groups, home, make_home = dlg.values()
+        if home and not home.startswith("/"):
+            QMessageBox.warning(self, "Add user", "The home folder must be an absolute path, like /srv/deploy.")
+            return
         if not d.valid_username(name):
             QMessageBox.warning(self, "Add user", "Use lowercase letters, digits, - and _ (max 32, not starting "
                                 "with a digit).")
@@ -896,7 +906,8 @@ class DashboardWindow(QWidget):
         if any(a.name == name for a in self._accounts):
             QMessageBox.warning(self, "Add user", f"{name} already exists.")
             return
-        self._privileged(f"Add user {name}", d.useradd_command(name, shell, groups), then="users")
+        self._privileged(f"Add user {name}", d.useradd_command(name, shell, groups, home, make_home),
+                         then="users")
 
     def _edit_groups(self) -> None:
         a = self._selected_account()

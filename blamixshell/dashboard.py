@@ -736,6 +736,7 @@ USERS_SCRIPT = r"""
 echo @@passwd; getent passwd 2>/dev/null || cat /etc/passwd
 echo @@group; getent group 2>/dev/null || cat /etc/group
 echo @@shadow; getent shadow 2>/dev/null
+echo @@defs; grep -E '^UID_(MIN|MAX)' /etc/login.defs 2>/dev/null
 echo @@who; who 2>/dev/null
 """
 
@@ -767,6 +768,14 @@ def parse_users(text: str) -> tuple[list[Account], list[str]]:
         for m in p[3].split(","):
             if m:
                 members.setdefault(m, []).append(p[0])
+    uid_min, uid_max = 1000, 60000
+    for line in s.get("defs", "").splitlines():
+        p = line.split()
+        if len(p) >= 2 and p[1].isdigit():
+            if p[0] == "UID_MIN":
+                uid_min = int(p[1])
+            elif p[0] == "UID_MAX":
+                uid_max = int(p[1]) + 1
     shadow = {}
     for line in s.get("shadow", "").splitlines():
         p = line.split(":")
@@ -782,7 +791,10 @@ def parse_users(text: str) -> tuple[list[Account], list[str]]:
         if len(p) < 7 or not p[2].isdigit():
             continue
         uid, shell = int(p[2]), p[6]
-        if (uid == 0 or 1000 <= uid < 60000) and not shell.endswith(("nologin", "false")):
+        real = not shell.endswith(("nologin", "false"))
+        # regular accounts (the server's UID_MIN: 1000, or 500 on old CentOS), root, and
+        # anyone logged in right now whatever their uid (LDAP / service-style logins)
+        if (uid == 0 or uid_min <= uid < uid_max) and real or counts.get(p[0]):
             primary = by_gid.get(int(p[3])) if p[3].isdigit() else None
             groups = ([primary] if primary else []) + [g for g in members.get(p[0], []) if g != primary]
             accounts.append(Account(p[0], uid, p[5], shell, counts.get(p[0], 0), groups, shadow.get(p[0])))
@@ -807,9 +819,12 @@ def admin_group(groups: list[str]) -> str:
     return next((g for g in ("sudo", "wheel", "admin") if g in groups), "")
 
 
-def useradd_command(name: str, shell: str = "/bin/bash", groups: list[str] | None = None) -> str:
+def useradd_command(name: str, shell: str = "/bin/bash", groups: list[str] | None = None,
+                    home: str = "", create_home: bool = True) -> str:
+    """`home` "" = the system default (/home/<name>); `create_home` False = don't create the folder."""
     extra = f" -G {shlex.quote(','.join(groups))}" if groups else ""
-    return f"useradd -m -s {shlex.quote(shell)}{extra} {shlex.quote(name)}"
+    where = f" -d {shlex.quote(home)}" if home else ""
+    return f"useradd {'-m' if create_home else '-M'}{where} -s {shlex.quote(shell)}{extra} {shlex.quote(name)}"
 
 
 def userdel_command(name: str, remove_home: bool = False) -> str:

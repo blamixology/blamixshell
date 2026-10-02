@@ -439,3 +439,16 @@ def test_account_commands_are_quoted_and_validated():
     assert cmd.startswith("sh -c ") and "usermod -aG docker bob" in cmd and "gpasswd -d bob sudo" in cmd
     assert d.groups_command("bob", [], []) is None
     assert d.admin_group(["docker", "wheel"]) == "wheel" and d.admin_group(["docker"]) == ""
+
+
+def test_old_centos_uid_min_and_logged_in_accounts_are_listed():
+    text = ("@@passwd\nroot:x:0:0:root:/root:/bin/bash\nbob:x:500:500::/home/bob:/bin/bash\n"
+            "ldapuser:x:300:300::/home/ldapuser:/bin/bash\ndaemon:x:2:2::/sbin:/sbin/nologin\n"
+            "@@defs\nUID_MIN 500\nUID_MAX 60000\n@@who\nldapuser pts/0 2024-01-01 10:00\n")
+    names = [a.name for a in d.parse_users(text)[0]]
+    assert names == ["root", "bob", "ldapuser"]
+
+
+def test_useradd_home_options():
+    assert d.useradd_command("bob", "/bin/sh", None, "/srv/bob") == "useradd -m -d /srv/bob -s /bin/sh bob"
+    assert d.useradd_command("bob", "/bin/sh", None, "", False) == "useradd -M -s /bin/sh bob"
