@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.7.0](https://github.com/blamixology/blamixshell/releases/tag/v1.7.0) - 2026-10-02
+
+### Improvements
+- Install updates from the dashboard and autocomplete from command history (both opt-in, off by default) (2e388f9)
+
 ## [1.6.2](https://github.com/blamixology/blamixshell/releases/tag/v1.6.2) - 2026-10-01
 
 ### Improvements
