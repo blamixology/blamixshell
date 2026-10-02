@@ -75,6 +75,7 @@ comparison tables stay honest.
 | 💡 | X11 forwarding |
 | 💡 | Serial and Telnet connections (network gear) |
 | 💡 | Mosh |
+| 💡 | **CI: one build per release, readable run names.** `release.sh` pushes `main` and the tag together, so every release runs the workflow twice (the `main` run duplicates the tag run, because `paths-ignore: CHANGELOG.md` only skips pushes that touch nothing else) and both runs are titled "Update CHANGELOG for vX" instead of the real commit. Options: build only on tags, with a light `main` / pull-request check workflow, and set `run-name:` to show the tag or the last real commit message. |
 
 ## Done
 
