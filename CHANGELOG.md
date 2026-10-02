@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.9.0](https://github.com/blamixology/blamixshell/releases/tag/v1.9.0) - 2026-10-02
+
+### Improvements
+- Dashboard: Cron tab with a simple job form, next-run preview, enable/disable, edit as text (44d0ccb)
+
 ## [1.8.1](https://github.com/blamixology/blamixshell/releases/tag/v1.8.1) - 2026-10-02
 
 ### Improvements
