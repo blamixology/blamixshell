@@ -5,6 +5,7 @@ Bound to a terminal pane and reuses its SSH connection (extra exec channels, lik
 """
 from __future__ import annotations
 
+import shlex
 import threading
 import time
 
@@ -12,15 +13,16 @@ from PySide6.QtCore import QObject, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                                QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
-                               QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
+                               QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QSpinBox, QTimeEdit,
                                QProgressBar, QPushButton, QScrollArea, QTableWidget, QTableWidgetItem,
                                QTabWidget, QVBoxLayout, QWidget)
 
+from . import cron
 from . import dashboard as d
 from .theme import C, blend, icon, style_window
 
 REFRESH_MS = 5000
-TAB_KEYS = ["overview", "services", "processes", "logs", "ports", "updates", "users"]
+TAB_KEYS = ["overview", "services", "processes", "logs", "ports", "updates", "users", "cron"]
 
 
 class _Signals(QObject):
@@ -146,6 +148,156 @@ def _btn(ic: str, text: str, fn, tip: str = "") -> QPushButton:
     if tip:
         b.setToolTip(tip)
     return b
+
+
+class _CronTextDialog(QDialog):
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit crontab as text")
+        self.resize(720, 460)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("The whole crontab. The server checks the syntax when you save.", objectName="Hint"))
+        self.edit = QPlainTextEdit(text)
+        self.edit.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        self.edit.setLineWrapMode(QPlainTextEdit.NoWrap)
+        lay.addWidget(self.edit, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def text(self) -> str:
+        return self.edit.toPlainText()
+
+
+class _CronJobDialog(QDialog):
+    """Pick when a command runs from a simple form; the cron expression is built for you."""
+
+    KINDS = [("Every few minutes", "minutes"), ("Every hour", "hourly"), ("Every day", "daily"),
+             ("Every week", "weekly"), ("Every month", "monthly"), ("When the server starts", "reboot"),
+             ("Custom (cron expression)", "custom")]
+
+    def __init__(self, entry: cron.Entry | None, now, tz: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit scheduled job" if entry else "Add scheduled job")
+        self.setMinimumWidth(480)
+        self.now, self.tz = now, tz
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+
+        def row(label: str, widget) -> QWidget:
+            w = QWidget()
+            h = QHBoxLayout(w)
+            h.setContentsMargins(0, 0, 0, 0)
+            lab = QLabel(label)
+            lab.setMinimumWidth(90)
+            h.addWidget(lab)
+            h.addWidget(widget, 1)
+            lay.addWidget(w)
+            return w
+
+        self.command = QLineEdit(placeholderText="e.g. /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1")
+        row("Command", self.command)
+        self.kind = QComboBox()
+        for label, key in self.KINDS:
+            self.kind.addItem(label, key)
+        row("Run", self.kind)
+        self.every = QSpinBox()
+        self.every.setRange(1, 59)
+        self.every.setValue(5)
+        self.every.setSuffix(" minutes")
+        self.minute = QSpinBox()
+        self.minute.setRange(0, 59)
+        self.minute.setPrefix("minute ")
+        self.time = QTimeEdit()
+        self.time.setDisplayFormat("HH:mm")
+        self.weekday = QComboBox()
+        for n in (1, 2, 3, 4, 5, 6, 0):
+            self.weekday.addItem(cron.WEEKDAYS[n], n)
+        self.day = QSpinBox()
+        self.day.setRange(1, 31)
+        self.custom = QLineEdit(placeholderText="minute hour day-of-month month day-of-week, e.g. */10 9-17 * * 1-5")
+        self.r_every, self.r_minute = row("Every", self.every), row("At", self.minute)
+        self.r_weekday, self.r_day = row("On", self.weekday), row("On day", self.day)
+        self.r_time, self.r_custom = row("At", self.time), row("Schedule", self.custom)
+        self.enabled = QCheckBox("Enabled")
+        self.enabled.setChecked(True)
+        lay.addWidget(self.enabled)
+
+        self.expr_lbl = QLabel("")
+        self.expr_lbl.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        self.desc_lbl = QLabel("")
+        self.next_lbl = QLabel("", objectName="Hint", wordWrap=True)
+        self.err_lbl = QLabel("")
+        self.err_lbl.setStyleSheet(f"color:{C['danger']};")
+        box = QFrame()
+        box.setStyleSheet(f"QFrame {{ background:{C['surface']}; border:1px solid {C['border']}; border-radius:10px; }}"
+                          "QLabel { border:none; background:transparent; }")
+        bl = QVBoxLayout(box)
+        for w in (self.desc_lbl, self.expr_lbl, self.next_lbl, self.err_lbl):
+            bl.addWidget(w)
+        lay.addWidget(box)
+        lay.addWidget(QLabel("Jobs run on the server's clock and time zone.", objectName="Hint"))
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        lay.addWidget(self.buttons)
+
+        if entry:
+            self.command.setText(entry.command)
+            self.enabled.setChecked(entry.enabled)
+            kind, p = cron.classify(entry.schedule)
+            self.kind.setCurrentIndex(self.kind.findData(kind))
+            self.every.setValue(p.get("every", 5))
+            self.minute.setValue(p.get("minute", 0))
+            from PySide6.QtCore import QTime
+            self.time.setTime(QTime(p.get("hour", 0), p.get("minute", 0)))
+            self.weekday.setCurrentIndex(max(0, self.weekday.findData(p.get("weekday", 1))))
+            self.day.setValue(p.get("day", 1))
+            self.custom.setText(entry.schedule)
+        else:
+            from PySide6.QtCore import QTime
+            self.kind.setCurrentIndex(self.kind.findData("daily"))
+            self.time.setTime(QTime(2, 0))
+        for w in (self.command, self.custom):
+            w.textChanged.connect(self._update)
+        for w in (self.kind, self.weekday):
+            w.currentIndexChanged.connect(self._update)
+        for w in (self.every, self.minute, self.day):
+            w.valueChanged.connect(self._update)
+        self.time.timeChanged.connect(self._update)
+        self._update()
+
+    def schedule(self) -> str:
+        k = self.kind.currentData()
+        if k == "custom":
+            return self.custom.text().strip()
+        t = self.time.time()
+        return cron.build_schedule(k, minute=self.minute.value() if k == "hourly" else t.minute(),
+                                   hour=t.hour(), weekday=self.weekday.currentData(), day=self.day.value(),
+                                   every=self.every.value())
+
+    def values(self) -> tuple[str, str, bool]:
+        return self.schedule(), self.command.text().strip(), self.enabled.isChecked()
+
+    def _update(self) -> None:
+        k = self.kind.currentData()
+        show = {"minutes": [self.r_every], "hourly": [self.r_minute], "daily": [self.r_time],
+                "weekly": [self.r_weekday, self.r_time], "monthly": [self.r_day, self.r_time],
+                "reboot": [], "custom": [self.r_custom]}[k]
+        for w in (self.r_every, self.r_minute, self.r_weekday, self.r_day, self.r_time, self.r_custom):
+            w.setVisible(any(w is x for x in show))
+        expr = self.schedule()
+        err = cron.validate_schedule(expr) if expr else "Enter a schedule."
+        err_cmd = not self.command.text().strip()
+        self.err_lbl.setText(err)
+        self.err_lbl.setVisible(bool(err))
+        self.expr_lbl.setText(expr)
+        self.desc_lbl.setText(f"<b>{cron.describe(expr)}</b>" if not err else "")
+        runs = cron.next_runs(expr, self.now or __import__("datetime").datetime.now(), 3) if not err else []
+        self.next_lbl.setText("Next runs: " + "  ·  ".join(f"{r:%a %d %b %H:%M}" for r in runs)
+                              if runs else ("Runs once each time the server starts." if expr == "@reboot" else ""))
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(not err and not err_cmd)
 
 
 class _AddUserDialog(QDialog):
@@ -305,6 +457,7 @@ class DashboardWindow(QWidget):
         self._build_ports()
         self._build_updates()
         self._build_users()
+        self._build_cron()
 
         self.status = QLabel("", objectName="Hint")
         root.addWidget(self.status)
@@ -540,6 +693,8 @@ class DashboardWindow(QWidget):
             self._job("logs", lambda r: d.logs(r, unit, prio, lines, init))
         elif tab == "ports":
             self._job("ports", d.ports)
+        elif tab == "cron":
+            self._cron_load()
         elif tab == "updates":
             self.upd_lbl.setText("Checking for updates…")
             self._job("updates", d.updates)
@@ -822,15 +977,17 @@ class DashboardWindow(QWidget):
         self._privileged("Install all updates", cmd, then="updates", timeout=1800)
 
     def _privileged(self, what: str, command: str, then: str, allow_plain: bool = False,
-                    timeout: float = 30) -> None:
-        """Confirm, then run as root (directly, or via sudo when needed)."""
+                    timeout: float = 30, show: str = "", plain_only: bool = False) -> None:
+        """Confirm, then run as root (directly, or via sudo when needed). `show` is what the
+        confirmation and the command log display instead of a long / encoded command;
+        `plain_only` never falls back to sudo (the plain attempt's error is shown)."""
         runner = self._runner()
         if runner is None:
             return
         via = "" if self._root else "sudo "
         box = QMessageBox(QMessageBox.Warning if self.color else QMessageBox.Question,
                           "Confirm", f"<b>{what}</b> on <b>{self.server.label}</b>?", parent=self)
-        box.setInformativeText(f"Runs:  {via}{command}")
+        box.setInformativeText(f"Runs:  {via}{show or command}")
         ok = box.addButton(what.split()[0], QMessageBox.AcceptRole)
         box.addButton("Cancel", QMessageBox.RejectRole)
         box.exec()
@@ -840,16 +997,16 @@ class DashboardWindow(QWidget):
         def work(r: d.Runner):
             if allow_plain and not self._root:
                 plain = r.run(command)            # own processes don't need sudo
-                if plain.ok:
+                if plain.ok or plain_only:
                     return plain
             if not self._root and self._sudo_pw is None and d.needs_password(r, self._root):
                 return "need-password"
             return d.run_privileged(r, command, self._root, self._sudo_pw, timeout)
-        self._pending_action = (what, command, then, allow_plain, timeout)
+        self._pending_action = (what, command, then, allow_plain, timeout, show)
         self._job("action", work)
 
     def _show_action(self, res) -> None:
-        what, command, then, allow_plain, timeout = self._pending_action
+        what, command, then, allow_plain, timeout, show = self._pending_action
         if res == "need-password":
             pw, ok = QInputDialog.getText(self, "sudo password",
                                           f"Password for sudo on {self.server.label} "
@@ -860,7 +1017,8 @@ class DashboardWindow(QWidget):
             self._job("action", lambda r: d.run_privileged(r, command, self._root, self._sudo_pw, timeout))
             return
         if hasattr(self.pane, "log_command"):        # command log: the dashboard's actions too
-            self.pane.log_command(command + ("" if res.ok else f"   # failed (exit {res.code})"), "dashboard")
+            self.pane.log_command((show or command) + ("" if res.ok else f"   # failed (exit {res.code})"),
+                                  "dashboard")
         if res.ok:
             self.status.setText(f"✔ {what}: done")
         else:
@@ -872,6 +1030,192 @@ class DashboardWindow(QWidget):
         self._loaded.discard(then)
         if self._tab_key() == then:
             self.refresh(force=True)
+
+    # ---- cron ----
+    def _build_cron(self) -> None:
+        lay = self._page("Cron")
+        self._cron_entries: list[cron.Entry] = []
+        self._cron_rows: list[int] = []
+        self._cron_text = ""
+        self._cron_now = None
+        self._cron_tz = ""
+        self.cron_user = QComboBox()
+        me = self.server.username or "connected user"
+        self.cron_user.addItem(f"Jobs of {me}", "")
+        if self.server.username != "root":
+            self.cron_user.addItem("Jobs of root", "root")
+        self.cron_user.addItem("Another user…", "@other")
+        self.cron_user.addItem("System jobs (read-only)", "@system")
+        self.cron_user.activated.connect(self._cron_user_picked)
+        self.cron_buttons = {
+            "add": _btn("plus", "Add job", self._cron_add, "Schedule a new command (a form, no cron syntax needed)"),
+            "edit": _btn("edit", "Edit", self._cron_edit, "Change the selected job"),
+            "toggle": _btn("bolt", "Disable", self._cron_toggle, "Turn the selected job off or on without deleting it"),
+            "delete": _btn("trash", "Delete", self._cron_delete, "Remove the selected job"),
+            "text": _btn("file", "Edit as text", self._cron_edit_text, "Edit the whole crontab as plain text"),
+        }
+        lay.addLayout(_toolbar(self.cron_user, "stretch", *self.cron_buttons.values(),
+                               _btn("refresh", "", lambda: self.refresh(force=True), "Reload")))
+        self.cron_table = _table(["On", "When", "Schedule", "Runs as", "Command"])
+        self.cron_table.itemSelectionChanged.connect(self._update_cron_buttons)
+        self.cron_table.doubleClicked.connect(lambda _i: self._cron_edit())
+        lay.addWidget(self.cron_table, 1)
+        self.cron_info = QLabel("", objectName="Hint", wordWrap=True)
+        lay.addWidget(self.cron_info)
+        self._update_cron_buttons()
+
+    @property
+    def _cron_who(self) -> str:
+        return self.cron_user.currentData() or ""
+
+    def _cron_user_picked(self, _i: int) -> None:
+        if self.cron_user.currentData() == "@other":
+            name, ok = QInputDialog.getText(self, "Another user", "Account name:")
+            name = name.strip()
+            if not ok or not d.valid_username(name):
+                if ok:
+                    QMessageBox.warning(self, "Another user", "That isn't a valid account name.")
+                self.cron_user.setCurrentIndex(0)
+                return
+            idx = self.cron_user.findData(name)
+            if idx < 0:
+                self.cron_user.insertItem(self.cron_user.findData("@other"), f"Jobs of {name}", name)
+                idx = self.cron_user.findData(name)
+            self.cron_user.setCurrentIndex(idx)
+        self.refresh(force=True)
+
+    def _cron_load(self) -> None:
+        who = self._cron_who
+
+        def work(r: d.Runner):
+            script = cron.read_script(who)
+            if who in ("", "@system"):
+                return who, r.run(script).out
+            if not self._root and self._sudo_pw is None and d.needs_password(r, self._root):
+                return who, "need-password"
+            res = d.run_privileged(r, f"sh -c {shlex.quote(script)}", self._root, self._sudo_pw)
+            if not res.ok and "password" in (res.err + res.out).lower():
+                self._sudo_pw = None
+            return who, res.out if res.ok else f"error:{(res.err or res.out).strip()}"
+        self._job("cron", work)
+
+    def _show_cron(self, res) -> None:
+        who, out = res
+        if who != self._cron_who:                   # the user picker moved on meanwhile
+            return
+        if out == "need-password":
+            pw, ok = QInputDialog.getText(self, "sudo password",
+                                          f"Password for sudo on {self.server.label} "
+                                          f"(used for this dashboard only, never saved):", QLineEdit.Password)
+            if ok:
+                self._sudo_pw = pw
+                self._cron_load()
+            else:
+                self._cron_fill([], "Reading another user's jobs needs sudo.")
+            return
+        if out.startswith("error:"):
+            self._cron_fill([], out[6:][:300] or "Could not read the crontab.")
+            return
+        text, now, tz = cron.parse_read(out)
+        self._cron_text, self._cron_now, self._cron_tz = text, now, tz
+        self._cron_fill(cron.parse_crontab(text, system=who == "@system"))
+
+    def _cron_fill(self, entries: list[cron.Entry], error: str = "") -> None:
+        self._cron_entries = entries
+        system = self._cron_who == "@system"
+        jobs = [(i, e) for i, e in enumerate(entries) if e.kind == "job"]
+        self._cron_rows = [i for i, _ in jobs]
+        t = self.cron_table
+        t.setRowCount(len(jobs))
+        for row, (_i, e) in enumerate(jobs):
+            dim = None if e.enabled else C["faint"]
+            t.setItem(row, 0, _item("●" if e.enabled else "○", C["ok"] if e.enabled else C["faint"]))
+            t.setItem(row, 1, _item(cron.describe(e.schedule), dim))
+            t.setItem(row, 2, _item(e.schedule, dim or C["muted"]))
+            who = f"{e.user}  ({e.source.rsplit('/', 1)[-1]})" if system and e.user else "–"
+            t.setItem(row, 3, _item(who, C["muted"]))
+            t.setItem(row, 4, _item(e.command, dim))
+        env = [e.raw.strip() for e in entries if e.kind == "env"]
+        bits = []
+        if error:
+            bits.append(error)
+        elif not jobs:
+            bits.append("No scheduled jobs." + ("" if system else " Use “Add job” to create one."))
+        if env:
+            bits.append("Settings in this crontab: " + ", ".join(env[:4]) + (" …" if len(env) > 4 else ""))
+        if self._cron_now:
+            bits.append(f"Server time: {self._cron_now:%Y-%m-%d %H:%M} {self._cron_tz} (jobs run on server time)")
+        self.cron_info.setText("  ·  ".join(bits))
+        self._update_cron_buttons()
+
+    def _selected_job(self) -> tuple[int, cron.Entry] | None:
+        rows = self.cron_table.selectionModel().selectedRows()
+        if not rows or rows[0].row() >= len(self._cron_rows):
+            return None
+        i = self._cron_rows[rows[0].row()]
+        return i, self._cron_entries[i]
+
+    def _update_cron_buttons(self) -> None:
+        sel = self._selected_job()
+        editable = self._cron_who != "@system"
+        self.cron_buttons["add"].setEnabled(editable)
+        self.cron_buttons["text"].setEnabled(editable)
+        for k in ("edit", "toggle", "delete"):
+            self.cron_buttons[k].setEnabled(editable and sel is not None)
+        if sel:
+            self.cron_buttons["toggle"].setText(" Disable" if sel[1].enabled else " Enable")
+
+    def _cron_save(self, text: str, what: str) -> None:
+        who = self._cron_who
+        if who == "@system":
+            return
+        shown = f"crontab {'-u ' + who + ' ' if who else ''}-   (replaces the crontab with the edited text)"
+        self._privileged(what, cron.save_command(who, text), then="cron", allow_plain=True,
+                         show=shown, plain_only=not who)
+
+    def _cron_replace(self, index: int | None, entry_raw: str | None, what: str) -> None:
+        """Save the crontab with line `index` replaced by `entry_raw` (None: removed; no index: appended)."""
+        lines = [e.raw for e in self._cron_entries]
+        if index is None:
+            lines.append(entry_raw)
+        elif entry_raw is None:
+            del lines[index]
+        else:
+            lines[index] = entry_raw
+        self._cron_save("\n".join(lines) + "\n", what)
+
+    def _cron_add(self) -> None:
+        dlg = _CronJobDialog(None, self._cron_now, self._cron_tz, self)
+        if dlg.exec() == QDialog.Accepted:
+            sched, command, enabled = dlg.values()
+            self._cron_replace(None, cron.format_job(sched, command, enabled), "Add scheduled job")
+
+    def _cron_edit(self) -> None:
+        sel = self._selected_job()
+        if not sel or self._cron_who == "@system":
+            return
+        dlg = _CronJobDialog(sel[1], self._cron_now, self._cron_tz, self)
+        if dlg.exec() == QDialog.Accepted:
+            sched, command, enabled = dlg.values()
+            self._cron_replace(sel[0], cron.format_job(sched, command, enabled), "Save scheduled job")
+
+    def _cron_toggle(self) -> None:
+        sel = self._selected_job()
+        if sel:
+            e = sel[1]
+            self._cron_replace(sel[0], cron.format_job(e.schedule, e.command, not e.enabled),
+                               f"{'Disable' if e.enabled else 'Enable'} scheduled job")
+
+    def _cron_delete(self) -> None:
+        sel = self._selected_job()
+        if sel:
+            self._cron_replace(sel[0], None, "Delete scheduled job")
+
+    def _cron_edit_text(self) -> None:
+        dlg = _CronTextDialog(self._cron_text, self)
+        if dlg.exec() == QDialog.Accepted:
+            text = dlg.text()
+            self._cron_save(text if text.endswith("\n") or not text else text + "\n", "Save crontab")
 
     # ---- users and groups ----
     def _selected_account(self) -> d.Account | None:

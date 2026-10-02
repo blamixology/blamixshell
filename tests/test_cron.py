@@ -1,0 +1,89 @@
+"""Crontab parsing, form <-> expression, descriptions and next-run previews."""
+import sys
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from blamixshell import cron  # noqa: E402
+
+TAB = """# backups
+MAILTO=ops@example.com
+*/5 * * * * /usr/local/bin/check.sh >/dev/null 2>&1
+#off# 30 2 * * 1-5 /opt/backup.sh --full
+@reboot /srv/start.sh
+0 3 1 * * echo "monthly"
+
+not a job at all
+"""
+
+
+def test_parse_keeps_everything_and_finds_jobs():
+    entries = cron.parse_crontab(TAB)
+    assert [e.kind for e in entries].count("job") == 4
+    jobs = [e for e in entries if e.kind == "job"]
+    assert jobs[0].schedule == "*/5 * * * *" and jobs[0].command.startswith("/usr/local/bin/check.sh")
+    assert jobs[1].enabled is False and jobs[1].schedule == "30 2 * * 1-5"
+    assert jobs[2].schedule == "@reboot"
+    assert next(e for e in entries if e.kind == "env").raw.startswith("MAILTO")
+    assert cron.build_crontab(entries) == TAB            # nothing lost on a round trip
+
+
+def test_system_crontab_has_user_and_source():
+    text = "# ---- /etc/cron.d/foo\n17 * * * * root run-parts /etc/cron.hourly\n@daily www-data /bin/job\n"
+    jobs = cron.parse_crontab(text, system=True)
+    assert [(j.user, j.source) for j in jobs] == [("root", "/etc/cron.d/foo"), ("www-data", "/etc/cron.d/foo")]
+    assert jobs[0].command == "run-parts /etc/cron.hourly"
+
+
+def test_validation():
+    for good in ("* * * * *", "*/15 9-17 * * mon-fri", "0 0 1,15 jan,jul *", "@daily", "5/10 * * * *"):
+        assert cron.validate_schedule(good) == "", good
+    for bad in ("", "* * * *", "61 * * * *", "* 24 * * *", "*/0 * * * *", "@sometimes", "5-1 * * * *", "a * * * *"):
+        assert cron.validate_schedule(bad), bad
+
+
+def test_form_round_trip():
+    cases = [("minutes", {"every": 5}), ("minutes", {"every": 1}), ("hourly", {"minute": 15}),
+             ("daily", {"minute": 30, "hour": 2}), ("weekly", {"minute": 0, "hour": 6, "weekday": 1}),
+             ("monthly", {"minute": 5, "hour": 4, "day": 28}), ("reboot", {})]
+    for kind, params in cases:
+        expr = cron.build_schedule(kind, **params)
+        assert cron.classify(expr) == (kind, params), expr
+    assert cron.classify("*/5 9-17 * * 1-5")[0] == "custom"
+    assert cron.classify("0 0 * * 7") == ("weekly", {"minute": 0, "hour": 0, "weekday": 0})
+
+
+def test_describe():
+    assert cron.describe("* * * * *") == "Every minute"
+    assert cron.describe("*/10 * * * *") == "Every 10 minutes"
+    assert cron.describe("30 2 * * *") == "Every day at 02:30"
+    assert cron.describe("0 6 * * 1") == "Every Monday at 06:00"
+    assert cron.describe("0 9 * * 1-5") == "Every weekday at 09:00"
+    assert cron.describe("0 9 * * 6,0") == "Every weekend day at 09:00"
+    assert cron.describe("0 */4 * * *") == "Every 4 hours at :00"
+    assert cron.describe("@reboot") == "At server startup"
+    assert cron.describe("nonsense") == "Invalid schedule"
+
+
+def test_next_runs():
+    now = datetime(2026, 10, 2, 19, 27)               # a Friday
+    assert cron.next_runs("*/15 * * * *", now, 2) == [datetime(2026, 10, 2, 19, 30), datetime(2026, 10, 2, 19, 45)]
+    assert cron.next_runs("0 3 * * *", now, 1) == [datetime(2026, 10, 3, 3, 0)]
+    assert cron.next_runs("0 9 * * 1", now, 1) == [datetime(2026, 10, 5, 9, 0)]          # next Monday
+    assert cron.next_runs("0 0 1 * *", now, 2) == [datetime(2026, 11, 1), datetime(2026, 12, 1)]
+    assert cron.next_runs("0 0 29 2 *", now, 1) == [datetime(2028, 2, 29)]               # leap day
+    assert cron.next_runs("@reboot", now) == [] and cron.next_runs("bad", now) == []
+    # day-of-month OR day-of-week when both are given (the classic cron rule)
+    runs = cron.next_runs("0 0 13 * 5", datetime(2026, 10, 1), 3)
+    assert runs == [datetime(2026, 10, 2), datetime(2026, 10, 9), datetime(2026, 10, 13)]
+
+
+def test_read_and_save_helpers():
+    out = "@@cron\nno crontab for bob\n@@date\n2026-10-02 19:27\n@@tz\nUTC\n"
+    text, now, tz = cron.parse_read(out)
+    assert text == "" and now == datetime(2026, 10, 2, 19, 27) and tz == "UTC"
+    assert "-u root" in cron.read_script("root") and "/etc/cron.d" in cron.read_script("@system")
+    cmd = cron.save_command("", "* * * * * echo 'hi'\n")
+    assert cmd.startswith("sh -c ") and "base64 -d | crontab -" in cmd and "hi" not in cmd   # sent encoded
+    assert "crontab -u alice -" in cron.save_command("alice", "x\n")

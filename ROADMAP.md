@@ -14,6 +14,7 @@ Legend: ✅ done · 🚧 in progress · 🗓 planned · 💡 later / maybe
 | ✅ | **Health strip** | CPU, memory, disk and load of the active server in the status bar; click for the dashboard. |
 | ✅ | **Install updates from the dashboard** | Optional (Settings, off by default): an *Install updates* button on the Updates tab runs the non-interactive upgrade (apt, dnf, yum, zypper, pacman, apk) after a confirmation. |
 | ✅ | **Users and groups** | Add, delete, lock / unlock accounts and change their groups from the dashboard (confirmed, run with sudo). Passwords are set in the terminal, never sent from the dashboard. |
+| ✅ | **Cron editor** | A Cron tab in the dashboard: see a server's scheduled jobs in plain words, add or edit them from a simple form (every few minutes / hour / day / week / month / at startup, with a preview of the next runs), switch jobs off without deleting them, or edit the whole crontab as text. Own jobs, root or another user's (sudo), and system jobs read-only. |
 | ✅ | **Dashboard refresh interval** | Pick 2 / 5 / 10 / 30 / 60 seconds in the dashboard header; remembered. |
 | ✅ | **Autocomplete from history** | Optional (Settings, off by default): a grey suggestion from the commands you typed on this server; Right arrow accepts it. |
 | ✅ | **Offline / managed installs** | `UPDATECHECK=0` (MSI), Group Policy, or `policy.ini` turns the update check off and locks it; **Install update from file** for offline machines; documented silent installs. |
