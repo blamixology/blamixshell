@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.9.1](https://github.com/blamixology/blamixshell/releases/tag/v1.9.1) - 2026-10-02
+
+### Improvements
+- Cron form: browse server for script/folder, script exists/executable check, output to log or discard, run-in folder, login shell, % escaping (e1bd8c3)
+
 ## [1.9.0](https://github.com/blamixology/blamixshell/releases/tag/v1.9.0) - 2026-10-02
 
 ### Improvements
