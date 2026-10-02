@@ -788,7 +788,8 @@ class DashboardWindow(QWidget):
 
     def _build_users(self) -> None:
         lay = self._page("Users")
-        self._accounts: list[d.Account] = []
+        self._accounts: list[d.Account] = []          # what the table shows
+        self._every_account: list[d.Account] = []     # including system accounts
         self._all_groups: list[str] = []
         self.usr_buttons = {
             "add": _btn("plus", "Add user", self._add_user, "Create an account with a home folder"),
@@ -798,10 +799,14 @@ class DashboardWindow(QWidget):
                            "Types the passwd command in the terminal: the password is never sent from here"),
             "delete": _btn("trash", "Delete", self._delete_user, "Remove the selected account"),
         }
-        lay.addLayout(_toolbar("stretch", *self.usr_buttons.values()))
+        self.usr_system = QCheckBox("Show system accounts")
+        self.usr_system.toggled.connect(lambda _on: self._fill_users())
+        lay.addLayout(_toolbar(self.usr_system, "stretch", *self.usr_buttons.values()))
         self.usr_table = _table(["Account", "UID", "Logged in", "Groups", "Locked", "Shell", "Home"])
         self.usr_table.itemSelectionChanged.connect(self._update_user_buttons)
         lay.addWidget(self.usr_table, 1)
+        self.usr_note = QLabel("", objectName="Hint", wordWrap=True)
+        lay.addWidget(self.usr_note)
         lay.addWidget(QLabel("LOGGED IN NOW", objectName="SectionLabel"))
         self.who_view = QPlainTextEdit(readOnly=True)
         self.who_view.setMaximumHeight(110)
@@ -1099,7 +1104,14 @@ class DashboardWindow(QWidget):
 
     def _show_users(self, res) -> None:
         accounts, sessions, groups = res
-        self._accounts, self._all_groups = accounts, groups
+        self._every_account, self._all_groups = accounts, groups
+        self._fill_users()
+        self.who_view.setPlainText("\n".join(sessions) or "Nobody is logged in (besides non-interactive sessions).")
+
+    def _fill_users(self) -> None:
+        every = self._every_account
+        accounts = every if self.usr_system.isChecked() else [a for a in every if not a.system]
+        self._accounts = accounts
         t = self.usr_table
         t.setRowCount(len(accounts))
         for i, a in enumerate(accounts):
@@ -1111,8 +1123,16 @@ class DashboardWindow(QWidget):
                                   C["warn"] if a.locked else C["muted"]))
             t.setItem(i, 5, _item(a.shell, C["muted"]))
             t.setItem(i, 6, _item(a.home, C["muted"]))
+        hidden = len(every) - len(accounts)
+        if not every:
+            note = ("The server returned no account list (getent passwd and /etc/passwd were empty or "
+                    "unreadable for this login).")
+        elif hidden:
+            note = f"{hidden} system account{'s' if hidden != 1 else ''} hidden."
+        else:
+            note = ""
+        self.usr_note.setText(note)
         self._update_user_buttons()
-        self.who_view.setPlainText("\n".join(sessions) or "Nobody is logged in (besides non-interactive sessions).")
 
     # ================================================================ actions
     def _selected(self, table: QTableWidget):

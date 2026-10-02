@@ -452,3 +452,16 @@ def test_old_centos_uid_min_and_logged_in_accounts_are_listed():
 def test_useradd_home_options():
     assert d.useradd_command("bob", "/bin/sh", None, "/srv/bob") == "useradd -m -d /srv/bob -s /bin/sh bob"
     assert d.useradd_command("bob", "/bin/sh", None, "", False) == "useradd -M -s /bin/sh bob"
+
+
+def test_directory_account_found_by_name_and_system_accounts_flagged():
+    # `getent passwd` doesn't enumerate LDAP/SSSD users: they appear from the by-name lookup
+    text = ("@@passwd\nroot:x:0:0:root:/root:/sbin/nologin\ndaemon:x:2:2:daemon:/sbin:/sbin/nologin\n"
+            "safemobile:*:10234:10234:Safe Mobile:/home/safemobile:/bin/bash\n"
+            "safemobile:*:10234:10234:Safe Mobile:/home/safemobile:/bin/bash\n"
+            "@@ids\nsafemobile:domain_users wheel docker\n@@who\nsafemobile pts/0 2024-01-01 10:00\n")
+    accounts, _ = d.parse_users(text)
+    assert [a.name for a in accounts] == ["safemobile"]
+    assert accounts[0].groups == ["domain_users", "wheel", "docker"] and accounts[0].logged_in == 1
+    every, _ = d.parse_users(text, include_system=True)
+    assert [(a.name, a.system) for a in every] == [("root", True), ("daemon", True), ("safemobile", False)]

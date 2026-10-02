@@ -730,10 +730,15 @@ class Account:
     logged_in: int = 0
     groups: list[str] = field(default_factory=list)     # primary group first
     locked: bool | None = None                           # None: unknown (needs root to read shadow)
+    system: bool = False                                 # service / system account (hidden by default)
 
 
+# Directory accounts (LDAP / SSSD / AD) are often not listed by `getent passwd` (no enumeration),
+# so the connected user and everyone logged in are looked up by name as well.
 USERS_SCRIPT = r"""
-echo @@passwd; getent passwd 2>/dev/null || cat /etc/passwd
+ME="$(id -un 2>/dev/null) $(who 2>/dev/null | awk '{print $1}' | sort -u)"
+echo @@passwd; { getent passwd 2>/dev/null || cat /etc/passwd; for u in $ME; do getent passwd "$u" 2>/dev/null; done; }
+echo @@ids; for u in $ME; do echo "$u:$(id -Gn "$u" 2>/dev/null)"; done
 echo @@group; getent group 2>/dev/null || cat /etc/group
 echo @@shadow; getent shadow 2>/dev/null
 echo @@defs; grep -E '^UID_(MIN|MAX)' /etc/login.defs 2>/dev/null
@@ -755,8 +760,9 @@ def parse_groups(text: str) -> list[str]:
     return sorted(names)
 
 
-def parse_users(text: str) -> tuple[list[Account], list[str]]:
-    """(login accounts: root + uid >= 1000 with a real shell, current sessions)."""
+def parse_users(text: str, include_system: bool = False) -> tuple[list[Account], list[str]]:
+    """(login accounts: root + regular users with a real shell, current sessions).
+    With include_system every account is returned, system ones flagged `system`."""
     s = split_sections(text)
     by_gid: dict[int, str] = {}
     members: dict[str, list[str]] = {}
@@ -781,29 +787,39 @@ def parse_users(text: str) -> tuple[list[Account], list[str]]:
         p = line.split(":")
         if len(p) >= 2:
             shadow[p[0]] = p[1].startswith("!")
+    ids = {}
+    for line in s.get("ids", "").splitlines():
+        name, _, names = line.partition(":")
+        if names.split():
+            ids[name] = names.split()
     sessions = [l for l in s.get("who", "").splitlines() if l.strip()]
     counts: dict[str, int] = {}
     for l in sessions:
         counts[l.split()[0]] = counts.get(l.split()[0], 0) + 1
     accounts = []
+    seen: set[str] = set()
     for line in s.get("passwd", "").splitlines():
         p = line.split(":")
-        if len(p) < 7 or not p[2].isdigit():
+        if len(p) < 7 or not p[2].isdigit() or p[0] in seen:
             continue
+        seen.add(p[0])
         uid, shell = int(p[2]), p[6]
         real = not shell.endswith(("nologin", "false"))
         # regular accounts (the server's UID_MIN: 1000, or 500 on old CentOS), root, and
         # anyone logged in right now whatever their uid (LDAP / service-style logins)
-        if (uid == 0 or uid_min <= uid < uid_max) and real or counts.get(p[0]):
+        regular = (uid == 0 or uid_min <= uid < uid_max) and real or bool(counts.get(p[0]))
+        if regular or include_system:
             primary = by_gid.get(int(p[3])) if p[3].isdigit() else None
-            groups = ([primary] if primary else []) + [g for g in members.get(p[0], []) if g != primary]
-            accounts.append(Account(p[0], uid, p[5], shell, counts.get(p[0], 0), groups, shadow.get(p[0])))
+            groups = ids.get(p[0]) or ([primary] if primary else []) + [g for g in members.get(p[0], [])
+                                                                       if g != primary]
+            accounts.append(Account(p[0], uid, p[5], shell, counts.get(p[0], 0), groups, shadow.get(p[0]),
+                                    system=not regular))
     return accounts, sessions
 
 
 def users(runner: Runner) -> tuple[list[Account], list[str], list[str]]:
     out = runner.run(USERS_SCRIPT).out
-    accounts, sessions = parse_users(out)
+    accounts, sessions = parse_users(out, include_system=True)
     return accounts, sessions, parse_groups(split_sections(out).get("group", ""))
 
 
