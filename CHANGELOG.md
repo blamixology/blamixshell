@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.8.0](https://github.com/blamixology/blamixshell/releases/tag/v1.8.0) - 2026-10-02
+
+### Improvements
+- Dashboard: refresh interval selector; add, delete, lock users and edit groups (0289457)
+
 ## [1.7.0](https://github.com/blamixology/blamixshell/releases/tag/v1.7.0) - 2026-10-02
 
 ### Improvements
