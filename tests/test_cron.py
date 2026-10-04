@@ -147,3 +147,23 @@ def test_read_falls_back_to_the_spool_file_and_reports_how():
     said, me, home, how = cron.parse_diag(out)
     assert (me, home, how) == ("bob", "/home/bob", "exit 0, via spool, /usr/bin/crontab")
     assert cron.parse_read(out)[0] == "@reboot /x.sh"
+
+
+def test_backups_keep_the_newest_and_skip_duplicates(tmp_path):
+    from datetime import timedelta
+    t0 = datetime(2026, 10, 2, 18, 0, 0)
+    assert cron.save_backup("srv1", "", "  \n", tmp_path) is None                     # nothing to keep
+    first = cron.save_backup("srv1", "", "@reboot /a.sh\n", tmp_path, t0)
+    assert first and first.read_text() == "@reboot /a.sh\n"
+    assert cron.save_backup("srv1", "", "@reboot /a.sh\n", tmp_path, t0 + timedelta(seconds=5)) is None
+    for i in range(cron.BACKUP_KEEP + 3):
+        cron.save_backup("srv1", "", f"* * * * * /job{i}\n", tmp_path, t0 + timedelta(minutes=i + 1))
+    found = cron.list_backups("srv1", "", tmp_path)
+    assert len(found) == cron.BACKUP_KEEP and found[0].read_text().endswith(f"/job{cron.BACKUP_KEEP + 2}\n")
+    assert cron.list_backups("srv1", "root", tmp_path) == [] and cron.list_backups("other", "", tmp_path) == []
+    assert "1 job" in cron.backup_label(found[0]) and "2026-10-02" in cron.backup_label(found[0])
+
+
+def test_run_now_command_unescapes_percent():
+    assert cron.run_now_command("date +\\%F") == "sh -c 'date +%F' 2>&1"
+    assert cron.run_now_command("echo 'a b'").startswith("sh -c ") and cron.run_now_command("x").endswith("2>&1")

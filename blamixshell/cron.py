@@ -468,3 +468,58 @@ def parse_listing(out: str) -> tuple[str, list[str], list[str]]:
     dirs = sorted(l[:-1] for l in lines[1:] if l.endswith("/"))
     files = sorted(l for l in lines[1:] if l and not l.endswith("/"))
     return lines[0], dirs, files
+
+
+# ---------------------------------------------------------------- backups and "run now"
+BACKUP_KEEP = 20
+
+
+def _backup_root() -> "Path":
+    from pathlib import Path
+    from .paths import data_dir
+    return Path(data_dir()) / "cron-backups"
+
+
+def backup_dir(server_id: str, user: str = "", root=None):
+    safe = lambda s: re.sub(r"[^\w.@-]+", "_", s)[:80] or "x"            # noqa: E731
+    return (root or _backup_root()) / safe(server_id) / safe(user or "me")
+
+
+def save_backup(server_id: str, user: str, text: str, root=None, now: datetime | None = None):
+    """Keep a copy of a crontab before it is replaced (the newest BACKUP_KEEP are kept).
+    Returns the file, or None when there was nothing worth saving."""
+    if not text.strip():
+        return None
+    folder = backup_dir(server_id, user, root)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        existing = sorted(folder.glob("*.cron"))
+        if existing and existing[-1].read_text(encoding="utf-8") == text:
+            return None                                                  # same as the last copy
+        path = folder / f"{(now or datetime.now()):%Y%m%d-%H%M%S}.cron"
+        path.write_text(text, encoding="utf-8")
+        for old in sorted(folder.glob("*.cron"))[:-BACKUP_KEEP]:
+            old.unlink()
+        return path
+    except OSError:
+        return None            # a backup must never block the edit
+
+
+def list_backups(server_id: str, user: str = "", root=None) -> list:
+    folder = backup_dir(server_id, user, root)
+    return sorted(folder.glob("*.cron"), reverse=True) if folder.is_dir() else []
+
+
+def backup_label(path) -> str:
+    try:
+        when = datetime.strptime(path.stem, "%Y%m%d-%H%M%S")
+        jobs = sum(1 for e in parse_crontab(path.read_text(encoding="utf-8")) if e.kind == "job")
+        return f"{when:%Y-%m-%d %H:%M:%S}  ·  {jobs} job{'s' if jobs != 1 else ''}"
+    except (ValueError, OSError):
+        return path.stem
+
+
+def run_now_command(command_line: str) -> str:
+    """One-off run of a crontab command (output and errors together): the line as cron would
+    hand it to the shell, so a \\% becomes a plain %."""
+    return f"sh -c {shlex.quote(unescape_percent(command_line.strip()))} 2>&1"

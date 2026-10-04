@@ -5,6 +5,7 @@ Bound to a terminal pane and reuses its SSH connection (extra exec channels, lik
 """
 from __future__ import annotations
 
+import re
 import shlex
 import threading
 import time
@@ -19,10 +20,11 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
 
 from . import cron
 from . import dashboard as d
+from . import firewall as fw
 from .theme import C, blend, icon, style_window
 
 REFRESH_MS = 5000
-TAB_KEYS = ["overview", "services", "processes", "logs", "ports", "updates", "users", "cron"]
+TAB_KEYS = ["overview", "services", "processes", "logs", "ports", "updates", "users", "cron", "firewall"]
 
 
 class _Signals(QObject):
@@ -148,6 +150,102 @@ def _btn(ic: str, text: str, fn, tip: str = "") -> QPushButton:
     if tip:
         b.setToolTip(tip)
     return b
+
+
+class _ListPicker(QDialog):
+    def __init__(self, title: str, text: str, items: list[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.index = -1
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(text))
+        self.list = QListWidget()
+        self.list.addItems(items)
+        self.list.setCurrentRow(0)
+        self.list.itemDoubleClicked.connect(lambda _i: self._ok())
+        lay.addWidget(self.list)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self._ok)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _ok(self) -> None:
+        self.index = self.list.currentRow()
+        self.accept()
+
+
+class _OutputDialog(QDialog):
+    def __init__(self, title: str, command: str, code, text: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(720, 420)
+        lay = QVBoxLayout(self)
+        ok = code == 0
+        head = QLabel(f"<b>{'Finished' if ok else 'Failed'}</b>  ·  exit code {code}")
+        head.setStyleSheet(f"color:{C['ok'] if ok else C['danger']};")
+        lay.addWidget(head)
+        lay.addWidget(QLabel(command, objectName="Hint", wordWrap=True))
+        view = QPlainTextEdit(readOnly=True)
+        view.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        view.setPlainText((text[-20000:]).rstrip() or "(no output)")
+        lay.addWidget(view, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.rejected.connect(self.reject)
+        bb.accepted.connect(self.accept)
+        bb.button(QDialogButtonBox.Close).clicked.connect(self.accept)
+        lay.addWidget(bb)
+
+
+class _FirewallRuleDialog(QDialog):
+    def __init__(self, manager: str, zones: list[str], default_zone: str, parent=None):
+        super().__init__(parent)
+        self.manager = manager
+        self.setWindowTitle("Add firewall rule")
+        lay = QFormLayout(self)
+        self.kind = QComboBox()
+        self.kind.addItem("Open a port", "port")
+        if manager == "firewalld":
+            self.kind.addItem("Allow a service (like http)", "service")
+        self.port = QLineEdit(placeholderText="e.g. 8080, or a range 8000-8100")
+        self.proto = QComboBox()
+        self.proto.addItems(["tcp", "udp"])
+        self.service = QLineEdit(placeholderText="e.g. http, https, mysql")
+        self.zone = QComboBox()
+        self.zone.setEditable(True)
+        self.zone.addItems(zones or ([default_zone] if default_zone else []))
+        self.zone.setCurrentText(default_zone)
+        lay.addRow("Rule", self.kind)
+        self.r_port, self.r_proto = QWidget(), QWidget()
+        lay.addRow("Port", self.port)
+        lay.addRow("Protocol", self.proto)
+        lay.addRow("Service", self.service)
+        if manager == "firewalld":
+            lay.addRow("Zone", self.zone)
+        self._rows = {"port": [self.port, self.proto], "service": [self.service]}
+        self.kind.currentIndexChanged.connect(self._sync)
+        lay.addRow(QLabel("Opening a port makes whatever listens there reachable from outside. The change is "
+                          "permanent and applied immediately.", objectName="Hint", wordWrap=True))
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addRow(bb)
+        self._form = lay
+        self._sync()
+
+    def _sync(self) -> None:
+        k = self.kind.currentData()
+        for key, widgets in self._rows.items():
+            for w in widgets:
+                w.setVisible(key == k)
+                lab = self._form.labelForField(w)
+                if lab:
+                    lab.setVisible(key == k)
+
+    def values(self) -> tuple[str, str, str, str]:
+        k = self.kind.currentData()
+        zone = self.zone.currentText().strip() if self.manager == "firewalld" else ""
+        return k, (self.service.text() if k == "service" else self.port.text()).strip(), self.proto.currentText(), zone
 
 
 class _CronTextDialog(QDialog):
@@ -660,6 +758,7 @@ class DashboardWindow(QWidget):
         self._build_updates()
         self._build_users()
         self._build_cron()
+        self._build_firewall()
 
         self.status = QLabel("", objectName="Hint")
         root.addWidget(self.status)
@@ -757,6 +856,19 @@ class DashboardWindow(QWidget):
         self.log_follow.setToolTip("Reload every 5 seconds and keep the end in view")
         lay.addLayout(_toolbar(self.log_unit, self.log_prio, self.log_lines, _btn("download", "Load",
                                lambda: self.refresh(force=True)), self.log_follow, "stretch"))
+        self._log_raw = ""
+        self.log_find = QLineEdit(placeholderText="Filter the lines shown (text, any case)")
+        self.log_find.setMinimumWidth(260)
+        self.log_find.textChanged.connect(lambda _t: self._apply_log_filter())
+        self.log_count = QLabel("", objectName="Hint")
+        self.log_views = QComboBox()
+        self.log_views.setMinimumWidth(170)
+        self.log_views.activated.connect(self._apply_log_view)
+        self._fill_log_views()
+        lay.addLayout(_toolbar(self.log_find, self.log_count, "stretch", self.log_views,
+                               _btn("plus", "Save view", self._save_log_view,
+                                    "Remember this service, level, size and filter for this server"),
+                               _btn("trash", "", self._delete_log_view, "Delete the selected saved view")))
         self.log_view = QPlainTextEdit(readOnly=True)
         self.log_view.setLineWrapMode(QPlainTextEdit.NoWrap)
         mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
@@ -902,6 +1014,8 @@ class DashboardWindow(QWidget):
             self._job("ports", d.ports)
         elif tab == "cron":
             self._cron_load()
+        elif tab == "firewall":
+            self._fw_load()
         elif tab == "updates":
             self.upd_lbl.setText("Checking for updates…")
             self._job("updates", d.updates)
@@ -1064,9 +1178,63 @@ class DashboardWindow(QWidget):
     def _show_logs(self, text: str) -> None:
         bar = self.log_view.verticalScrollBar()
         at_end = bar.value() >= bar.maximum() - 4
-        self.log_view.setPlainText(text.rstrip() or "(no log lines)")
+        self._log_raw = text.rstrip()
+        self._apply_log_filter()
         if at_end or self.log_follow.isChecked() or "logs" not in self._loaded:
             bar.setValue(bar.maximum())
+
+    def _apply_log_filter(self) -> None:
+        lines = self._log_raw.splitlines()
+        needle = self.log_find.text().strip().lower()
+        shown = [l for l in lines if needle in l.lower()] if needle else lines
+        self.log_count.setText(f"{len(shown)} of {len(lines)} lines" if needle else "")
+        self.log_view.setPlainText("\n".join(shown) or ("(no lines match the filter)" if lines else "(no log lines)"))
+
+    def _log_view_list(self) -> list:
+        return list((self.settings.get("log_views") or {}).get(self.server.id, []))
+
+    def _store_log_views(self, views: list) -> None:
+        every = dict(self.settings.get("log_views") or {})
+        every[self.server.id] = views
+        self.settings["log_views"] = every
+        if hasattr(self.settings, "save"):
+            self.settings.save()
+
+    def _fill_log_views(self, select: str = "") -> None:
+        self.log_views.clear()
+        self.log_views.addItem("Saved views…", None)
+        for v in self._log_view_list():
+            self.log_views.addItem(v["name"], v)
+        if select:
+            self.log_views.setCurrentIndex(max(0, self.log_views.findText(select)))
+
+    def _save_log_view(self) -> None:
+        unit = self.log_unit.currentText().strip()
+        name, ok = QInputDialog.getText(self, "Save view", "Name for this view:", text=unit or "All logs")
+        name = name.strip()
+        if not ok or not name:
+            return
+        view = {"name": name, "unit": unit, "prio": self.log_prio.currentText(),
+                "lines": self.log_lines.currentText(), "find": self.log_find.text()}
+        views = [v for v in self._log_view_list() if v["name"] != name] + [view]
+        self._store_log_views(views)
+        self._fill_log_views(name)
+
+    def _apply_log_view(self, _i: int) -> None:
+        v = self.log_views.currentData()
+        if not v:
+            return
+        self.log_unit.setCurrentText(v.get("unit", ""))
+        self.log_prio.setCurrentIndex(max(0, self.log_prio.findText(v.get("prio", ""))))
+        self.log_lines.setCurrentIndex(max(0, self.log_lines.findText(v.get("lines", ""))))
+        self.log_find.setText(v.get("find", ""))
+        self.refresh(force=True)
+
+    def _delete_log_view(self) -> None:
+        v = self.log_views.currentData()
+        if v:
+            self._store_log_views([x for x in self._log_view_list() if x["name"] != v["name"]])
+            self._fill_log_views()
 
     def _show_ports(self, ports: list) -> None:
         t = self.port_table
@@ -1243,6 +1411,12 @@ class DashboardWindow(QWidget):
                                   "dashboard")
         if res.ok:
             self.status.setText(f"✔ {what}: done")
+            backup = getattr(self, "_cron_backup", None)
+            if then == "cron" and backup:
+                kept = cron.save_backup(self.server.id, backup[0], backup[1])
+                self._cron_backup = None
+                if kept:
+                    self.status.setText(f"✔ {what}: done (the previous crontab is kept under Restore…)")
         else:
             msg = (res.err or res.out).strip() or f"exit code {res.code}"
             if "incorrect password" in msg.lower() or "sorry, try again" in msg.lower():
@@ -1252,6 +1426,127 @@ class DashboardWindow(QWidget):
         self._loaded.discard(then)
         if self._tab_key() == then:
             self.refresh(force=True)
+
+    # ---- firewall ----
+    def _build_firewall(self) -> None:
+        lay = self._page("Firewall")
+        self._fw = fw.Firewall()
+        self._fw_rows: list[fw.Rule] = []
+        self.fw_lbl = QLabel("")
+        self.fw_buttons = {
+            "add": _btn("plus", "Add rule", self._fw_add, "Open a port or allow a service"),
+            "remove": _btn("trash", "Remove", self._fw_remove, "Remove the selected rule"),
+            "reload": _btn("refresh", "Reload rules", self._fw_reload, "Apply the saved rules again"),
+        }
+        lay.addLayout(_toolbar(self.fw_lbl, "stretch", *self.fw_buttons.values(),
+                               _btn("refresh", "", lambda: self.refresh(force=True), "Read the rules again")))
+        self.fw_table = _table(["Where", "Type", "Rule", "Detail"], stretch=3)
+        self.fw_table.itemSelectionChanged.connect(self._update_fw_buttons)
+        lay.addWidget(self.fw_table, 1)
+        self.fw_hint = QLabel("", objectName="Hint", wordWrap=True)
+        lay.addWidget(self.fw_hint)
+        self._update_fw_buttons()
+
+    def _fw_load(self) -> None:
+        def work(r: d.Runner):
+            out = r.run(fw.READ_SCRIPT, timeout=20).out
+            if fw.needs_root(out) and not self._root:
+                if self._sudo_pw is None and d.needs_password(r, self._root):
+                    return "need-password"
+                res = d.run_privileged(r, f"sh -c {shlex.quote(fw.READ_SCRIPT)}", self._root, self._sudo_pw, 30)
+                if res.ok:
+                    out = res.out
+            return out
+        self._job("firewall", work)
+
+    def _show_firewall(self, res: str) -> None:
+        if res == "need-password":
+            pw, ok = QInputDialog.getText(self, "sudo password", f"Password for sudo on {self.server.label} "
+                                          "(used for this dashboard only, never saved):", QLineEdit.Password)
+            if ok:
+                self._sudo_pw = pw
+                self._fw_load()
+            else:
+                self.fw_hint.setText("Reading the firewall rules needs root or sudo.")
+            return
+        f = fw.parse(res)
+        self._fw, self._fw_rows = f, f.rules
+        t = self.fw_table
+        t.setRowCount(len(f.rules))
+        for i, r in enumerate(f.rules):
+            col = C["ok"] if r.kind in ("allow", "service", "port") else C["danger"] if r.kind in ("deny", "reject") \
+                else C["warn"] if r.kind == "limit" else None
+            t.setItem(i, 0, _item(r.scope or "–", C["muted"]))
+            t.setItem(i, 1, _item(r.kind, col))
+            t.setItem(i, 2, _item(r.value))
+            t.setItem(i, 3, _item(r.detail or "–", C["muted"]))
+        names = {"firewalld": "firewalld", "ufw": "ufw", "iptables": "iptables", "nftables": "nftables"}
+        if f.manager == "none":
+            self.fw_lbl.setText("No firewall tool found")
+            hint = "Looked for firewalld, ufw, iptables and nftables."
+        else:
+            state = {"running": "● running", "active": "● active", "inactive": "○ not running"}.get(f.state, f.state or "?")
+            self.fw_lbl.setText(f"<b>{names[f.manager]}</b>  ·  {state}"
+                                + (f"  ·  default zone {f.default_zone}" if f.default_zone else ""))
+            if f.needs_root:
+                hint = "Reading these rules needs root: connect as root, or use an account with sudo."
+            elif f.manager not in fw.EDITABLE:
+                hint = "Read-only here: change iptables / nftables rules in the terminal."
+            elif not f.editable:
+                hint = "The firewall isn't running, so there is nothing to change. Start it on the server first."
+            else:
+                hint = ("Changes are saved permanently and applied at once. Rules for the SSH port can't be "
+                        "removed from here (they would cut this connection).")
+        self.fw_hint.setText(hint)
+        self._update_fw_buttons()
+
+    def _selected_fw_rule(self) -> fw.Rule | None:
+        rows = self.fw_table.selectionModel().selectedRows()
+        if not rows or rows[0].row() >= len(self._fw_rows):
+            return None
+        return self._fw_rows[rows[0].row()]
+
+    def _update_fw_buttons(self) -> None:
+        ok = self._fw.editable
+        r = self._selected_fw_rule()
+        self.fw_buttons["add"].setEnabled(ok)
+        self.fw_buttons["reload"].setEnabled(ok)
+        self.fw_buttons["remove"].setEnabled(bool(ok and r and fw.remove_command(self._fw.manager, r)))
+
+    def _fw_add(self) -> None:
+        zones = sorted({r.scope for r in self._fw.rules if r.scope} | ({self._fw.default_zone} - {""}))
+        dlg = _FirewallRuleDialog(self._fw.manager, zones, self._fw.default_zone, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        kind, value, proto, zone = dlg.values()
+        if kind == "service":
+            if not re.fullmatch(r"[a-z0-9_-]+", value):
+                QMessageBox.warning(self, "Add rule", "A service name uses letters, digits, - and _ (like http).")
+                return
+            self._privileged(f"Allow service {value}", fw.add_service_command(value, zone), then="firewall")
+            return
+        port = fw.normalize_port(value, self._fw.manager)
+        if not port:
+            QMessageBox.warning(self, "Add rule", "Enter a port (80) or a range (8000-8100), from 1 to 65535.")
+            return
+        self._privileged(f"Open port {port}/{proto}", fw.add_port_command(self._fw.manager, port, proto, zone),
+                         then="firewall")
+
+    def _fw_remove(self) -> None:
+        r = self._selected_fw_rule()
+        cmd = fw.remove_command(self._fw.manager, r) if r else None
+        if not r or not cmd:
+            return
+        if fw.protects_ssh(r, int(getattr(self.server, "port", 22) or 22)):
+            QMessageBox.warning(self, "Remove rule", "This rule allows SSH. Removing it would cut this connection, "
+                                "so it isn't offered here. Use the terminal if you really mean to.")
+            return
+        self._privileged(f"Remove rule {r.value}", cmd, then="firewall")
+
+    def _fw_reload(self) -> None:
+        cmd = fw.reload_command(self._fw.manager)
+        if cmd:
+            self._privileged("Reload firewall", cmd, then="firewall")
 
     # ---- cron ----
     def _build_cron(self) -> None:
@@ -1274,9 +1569,12 @@ class DashboardWindow(QWidget):
         self.cron_buttons = {
             "add": _btn("plus", "Add job", self._cron_add, "Schedule a new command (a form, no cron syntax needed)"),
             "edit": _btn("edit", "Edit", self._cron_edit, "Change the selected job"),
+            "run": _btn("terminal", "Run now", self._cron_run_now, "Run the selected job once, now, and see its output"),
             "toggle": _btn("bolt", "Disable", self._cron_toggle, "Turn the selected job off or on without deleting it"),
             "delete": _btn("trash", "Delete", self._cron_delete, "Remove the selected job"),
             "text": _btn("file", "Edit as text", self._cron_edit_text, "Edit the whole crontab as plain text"),
+            "restore": _btn("import", "Restore…", self._cron_restore,
+                            "Go back to an earlier copy (a copy is kept before every change)"),
         }
         lay.addLayout(_toolbar(self.cron_user, "stretch", *self.cron_buttons.values(),
                                _btn("refresh", "", lambda: self.refresh(force=True), "Reload")))
@@ -1400,7 +1698,8 @@ class DashboardWindow(QWidget):
         editable = self._cron_who != "@system"
         self.cron_buttons["add"].setEnabled(editable)
         self.cron_buttons["text"].setEnabled(editable)
-        for k in ("edit", "toggle", "delete"):
+        self.cron_buttons["restore"].setEnabled(editable)
+        for k in ("edit", "toggle", "delete", "run"):
             self.cron_buttons[k].setEnabled(editable and sel is not None)
         if sel:
             self.cron_buttons["toggle"].setText(" Disable" if sel[1].enabled else " Enable")
@@ -1420,6 +1719,7 @@ class DashboardWindow(QWidget):
         if who == "@system":
             return
         shown = f"crontab {'-u ' + who + ' ' if who else ''}-   (replaces the crontab with the edited text)"
+        self._cron_backup = (who, self._cron_text)          # kept once the change went through
         self._privileged(what, cron.save_command(who, text), then="cron", allow_plain=True,
                          show=shown, plain_only=not who)
 
@@ -1455,6 +1755,66 @@ class DashboardWindow(QWidget):
             e = sel[1]
             self._cron_replace(sel[0], cron.format_job(e.schedule, e.command, not e.enabled),
                                f"{'Disable' if e.enabled else 'Enable'} scheduled job")
+
+    def _cron_restore(self) -> None:
+        who = self._cron_who
+        files = cron.list_backups(self.server.id, who)
+        if not files:
+            QMessageBox.information(self, "Restore", "No earlier copies yet. A copy is kept every time you "
+                                    "change this crontab from here.")
+            return
+        pick = _ListPicker("Restore an earlier crontab", "Choose a copy to review:",
+                           [cron.backup_label(p) for p in files], self)
+        if pick.exec() != QDialog.Accepted or pick.index < 0:
+            return
+        text = files[pick.index].read_text(encoding="utf-8")
+        dlg = _CronTextDialog(text, self)
+        dlg.setWindowTitle("Restore crontab: review, then save")
+        if dlg.exec() == QDialog.Accepted:
+            t = dlg.text()
+            self._cron_save(t if t.endswith("\n") or not t else t + "\n", "Restore crontab")
+
+    def _cron_run_now(self, _checked: bool = False, confirmed: bool = False) -> None:
+        sel = self._selected_job()
+        if not sel or self._cron_who == "@system":
+            return
+        e = sel[1]
+        if not confirmed:
+            box = QMessageBox(QMessageBox.Question, "Run now", f"Run this job now on <b>{self.server.label}</b>?",
+                              parent=self)
+            box.setInformativeText(e.command + "\n\nRuns once, outside its schedule, in a plain shell (not exactly "
+                                   "cron's environment). The output is shown when it ends; it waits up to 2 minutes.")
+            run = box.addButton("Run now", QMessageBox.AcceptRole)
+            box.addButton("Cancel", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is not run:
+                return
+        who, cmd = self._cron_who, cron.run_now_command(e.command)
+        self._cron_run_args = (e.command, who)
+
+        def work(r: d.Runner):
+            if not who:
+                res = r.run(cmd, timeout=120)
+            else:
+                if not self._root and self._sudo_pw is None and d.needs_password(r, self._root):
+                    return e.command, "need-password", ""
+                inner = cmd if who == "root" else f"su -s /bin/sh {shlex.quote(who)} -c {shlex.quote(cmd)}"
+                res = d.run_privileged(r, inner, self._root, self._sudo_pw, 120)
+            return e.command, res.code, res.out + ("" if res.ok or res.out else res.err)
+        self._job("cronrun", work)
+
+    def _show_cronrun(self, res) -> None:
+        command, code, out = res
+        if code == "need-password":
+            pw, ok = QInputDialog.getText(self, "sudo password", f"Password for sudo on {self.server.label} "
+                                          "(used for this dashboard only, never saved):", QLineEdit.Password)
+            if ok:
+                self._sudo_pw = pw
+                self._cron_run_now(confirmed=True)
+            return
+        if hasattr(self.pane, "log_command"):
+            self.pane.log_command(f"{command}   # run now from the dashboard (exit {code})", "dashboard")
+        _OutputDialog("Job output", command, code, out, self).exec()
 
     def _cron_delete(self) -> None:
         sel = self._selected_job()
