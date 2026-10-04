@@ -465,3 +465,13 @@ def test_directory_account_found_by_name_and_system_accounts_flagged():
     assert accounts[0].groups == ["domain_users", "wheel", "docker"] and accounts[0].logged_in == 1
     every, _ = d.parse_users(text, include_system=True)
     assert [(a.name, a.system) for a in every] == [("root", True), ("daemon", True), ("safemobile", False)]
+
+
+def test_group_and_passwd_lists_may_come_twice_without_duplicates():
+    block = "root:x:0:0:root:/root:/bin/bash\nbob:x:1001:1001::/home/bob:/bin/bash\n"
+    groups = "wheel:x:10:bob\nbob:x:1001:\n"
+    text = f"@@passwd\n{block}{block}@@group\n{groups}{groups}@@who\n"
+    accounts, _ = d.parse_users(text)
+    assert [a.name for a in accounts] == ["root", "bob"]
+    assert accounts[1].groups == ["bob", "wheel"]
+    assert d.parse_groups(groups + groups) == ["bob", "wheel"]

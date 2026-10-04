@@ -737,9 +737,9 @@ class Account:
 # so the connected user and everyone logged in are looked up by name as well.
 USERS_SCRIPT = r"""
 ME="$(id -un 2>/dev/null) $(who 2>/dev/null | awk '{print $1}' | sort -u)"
-echo @@passwd; { getent passwd 2>/dev/null || cat /etc/passwd; for u in $ME; do getent passwd "$u" 2>/dev/null; done; }
+echo @@passwd; { getent passwd 2>/dev/null; cat /etc/passwd 2>/dev/null; for u in $ME; do getent passwd "$u" 2>/dev/null; done; }
 echo @@ids; for u in $ME; do echo "$u:$(id -Gn "$u" 2>/dev/null)"; done
-echo @@group; getent group 2>/dev/null || cat /etc/group
+echo @@group; { getent group 2>/dev/null; cat /etc/group 2>/dev/null; }
 echo @@shadow; getent shadow 2>/dev/null
 echo @@defs; grep -E '^UID_(MIN|MAX)' /etc/login.defs 2>/dev/null
 echo @@who; who 2>/dev/null
@@ -752,11 +752,11 @@ COMMON_GROUPS = ("sudo", "wheel", "admin", "docker", "adm", "www-data", "ssh", "
 def parse_groups(text: str) -> list[str]:
     """Group names a person would pick from: regular groups (gid >= 1000) and the usual
     administrative ones (sudo, wheel, docker, ...)."""
-    names = []
+    names = set()
     for line in text.splitlines():
         p = line.split(":")
         if len(p) >= 3 and p[2].isdigit() and (int(p[2]) >= 1000 and int(p[2]) < 60000 or p[0] in COMMON_GROUPS):
-            names.append(p[0])
+            names.add(p[0])
     return sorted(names)
 
 
@@ -766,10 +766,12 @@ def parse_users(text: str, include_system: bool = False) -> tuple[list[Account],
     s = split_sections(text)
     by_gid: dict[int, str] = {}
     members: dict[str, list[str]] = {}
+    seen_groups: set[str] = set()
     for line in s.get("group", "").splitlines():
         p = line.split(":")
-        if len(p) < 4 or not p[2].isdigit():
-            continue
+        if len(p) < 4 or not p[2].isdigit() or p[0] in seen_groups:
+            continue                       # (the group list can come twice: getent and /etc/group)
+        seen_groups.add(p[0])
         by_gid[int(p[2])] = p[0]
         for m in p[3].split(","):
             if m:
