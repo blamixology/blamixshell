@@ -2,6 +2,12 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.10.1](https://github.com/blamixology/blamixshell/releases/tag/v1.10.1) - 2026-10-05
+
+### Improvements
+- Build only on tags and manual runs, readable run names; users: also read /etc/passwd and /etc/group directly (c1a34ce)
+- README: add build, release, downloads, license, python and platform badges (ec055ad)
+
 ## [1.10.0](https://github.com/blamixology/blamixshell/releases/tag/v1.10.0) - 2026-10-04
 
 ### Improvements
