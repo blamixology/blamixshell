@@ -816,6 +816,12 @@ class SettingsDialog(_Base):
         self.health = QCheckBox("Show CPU, memory and disk of the active server in the status bar")
         self.health.setChecked(settings.get("health_strip", True))
         f.addRow("", self.health)
+        self.health_alerts = QCheckBox("Warn me when the active server runs low (disk or memory 90%, swap 60%, "
+                                       "high load)")
+        self.health_alerts.setToolTip("A message in the status bar (and a flashing taskbar icon) the moment a "
+                                      "limit is crossed. Needs the status bar strip above. Off by default.")
+        self.health_alerts.setChecked(settings.get("health_alerts", False))
+        f.addRow("", self.health_alerts)
         self.health_iv = QComboBox()
         for sec in (2, 5, 10, 30):
             self.health_iv.addItem(f"{sec} seconds", sec)
@@ -987,6 +993,7 @@ class SettingsDialog(_Base):
         if self.upd.isEnabled():
             s["check_updates"] = self.upd.isChecked()
         s["health_strip"] = self.health.isChecked()
+        s["health_alerts"] = self.health_alerts.isChecked()
         s["health_interval"] = self.health_iv.currentData()
         s["history_autocomplete"] = self.hist.isChecked()
         s["dashboard_install_updates"] = self.dash_install.isChecked()

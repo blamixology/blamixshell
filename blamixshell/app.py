@@ -390,6 +390,7 @@ class MainWindow(QMainWindow):
         self._health = _HealthSignals()
         self._health.done.connect(self._show_health)
         self._health_prev: dict[int, tuple] = {}      # id(pane) -> last CPU sample
+        self._alerted: dict[int, set] = {}            # id(pane) -> alerts already shown
         self._health_busy = False
         self._health_timer = QTimer(self)
         self._health_timer.timeout.connect(self._poll_health)
@@ -643,7 +644,7 @@ class MainWindow(QMainWindow):
         if h.swap is not None and h.swap >= 10:       # only when it matters
             parts.insert(2, part("swap", h.swap, 25, 60))
         self.health_lbl.setText("  ·  ".join(parts) + "&nbsp;&nbsp;")
-        from .dashboard import human_kb
+        from .dashboard import health_alerts, human_kb
         tip = [f"{pane.server.label} ({h.cpus} CPU{'s' if h.cpus != 1 else ''})"]
         if h.cpu is not None:
             tip.append(f"CPU {h.cpu:.0f}%")
@@ -655,6 +656,16 @@ class MainWindow(QMainWindow):
             tip.append(f"/ {human_kb(h.disk_kb[0])} / {human_kb(h.disk_kb[1])} used")
         if h.loads:
             tip.append("Load " + " ".join(f"{x:.2f}" for x in h.loads) + " (1 / 5 / 15 min)")
+        alerts = health_alerts(h) if self.settings.get("health_alerts") else {}
+        fresh = [m for k, m in alerts.items() if k not in self._alerted.get(id(pane), set())]
+        self._alerted[id(pane)] = set(alerts)
+        if alerts:
+            self.health_lbl.setText(f"<span style='color:{C['danger']}'>⚠</span> " + self.health_lbl.text())
+            tip += ["", "⚠ " + ", ".join(alerts.values())]
+        if fresh:
+            self.statusBar().showMessage(f"⚠ {pane.server.label}: " + ", ".join(fresh), 20000)
+            if not self.isActiveWindow():
+                QApplication.alert(self, 4000)
         tip.append("Click for the dashboard.")
         self.health_lbl.setToolTip("\n".join(tip))
         self.health_lbl.show()

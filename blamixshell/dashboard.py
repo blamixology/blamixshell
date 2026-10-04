@@ -950,3 +950,20 @@ def human_uptime(seconds: float) -> str:
     if h:
         return f"{h}h {m}m"
     return f"{m}m"
+
+
+# ---------------------------------------------------------------- status-bar alerts
+def health_alerts(h: Health) -> dict[str, str]:
+    """What is wrong right now on the active server: {key: message}. Used to warn once when
+    something newly crosses a limit (disk and memory 90%, swap 60%, load 1.5 per CPU)."""
+    out: dict[str, str] = {}
+    if h.disk is not None and h.disk >= 90:
+        out["disk"] = f"disk {h.disk:.0f}% full"
+    if h.mem is not None and h.mem >= 90:
+        out["mem"] = f"memory {h.mem:.0f}% used"
+    if h.swap is not None and h.swap >= 60:
+        out["swap"] = f"swap {h.swap:.0f}% used"
+    cpus = h.cpus or 1
+    if h.load is not None and h.load >= cpus * 1.5:
+        out["load"] = f"load {h.load:.2f} on {cpus} CPU{'s' if cpus != 1 else ''}"
+    return out

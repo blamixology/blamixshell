@@ -12,7 +12,7 @@ import time
 
 from PySide6.QtCore import QObject, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                                QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QSpinBox, QTimeEdit,
                                QProgressBar, QPushButton, QScrollArea, QTableWidget, QTableWidgetItem,
@@ -21,10 +21,12 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
 from . import cron
 from . import dashboard as d
 from . import firewall as fw
+from . import report, storage, units
 from .theme import C, blend, icon, style_window
 
 REFRESH_MS = 5000
-TAB_KEYS = ["overview", "services", "processes", "logs", "ports", "updates", "users", "cron", "firewall"]
+TAB_KEYS = ["overview", "services", "processes", "logs", "ports", "updates", "users", "cron", "firewall",
+            "storage"]
 
 
 class _Signals(QObject):
@@ -150,6 +152,134 @@ def _btn(ic: str, text: str, fn, tip: str = "") -> QPushButton:
     if tip:
         b.setToolTip(tip)
     return b
+
+
+class _ViewDialog(QDialog):
+    def __init__(self, title: str, text: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(720, 460)
+        lay = QVBoxLayout(self)
+        view = QPlainTextEdit(readOnly=True)
+        view.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        view.setPlainText(text.rstrip() or "(empty)")
+        lay.addWidget(view, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+
+class _ReportDialog(QDialog):
+    def __init__(self, markdown: str, label: str, parent=None):
+        super().__init__(parent)
+        from datetime import date
+        from pathlib import Path
+        safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in label).strip("-") or "server"
+        self.default_path = str(Path.home() / f"report-{safe}-{date.today():%Y-%m-%d}.md")
+        self.setWindowTitle(f"Server report: {label}")
+        self.resize(820, 560)
+        lay = QVBoxLayout(self)
+        self.view = QPlainTextEdit(markdown)
+        self.view.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        self.view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        lay.addWidget(self.view, 1)
+        row = QHBoxLayout()
+        self.msg = QLabel("", objectName="Hint")
+        row.addWidget(self.msg, 1)
+        row.addWidget(_btn("copy", "Copy", self._copy, "Copy the report to the clipboard"))
+        row.addWidget(_btn("download", "Save…", self._save, "Save as a Markdown file"))
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        lay.addLayout(row)
+
+    def _copy(self) -> None:
+        QApplication.clipboard().setText(self.view.toPlainText())
+        self.msg.setText("Copied.")
+
+    def _save(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Save report", self.default_path,
+                                              "Markdown (*.md);;All files (*)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(self.view.toPlainText())
+            self.msg.setText(f"Saved {path}")
+        except OSError as e:
+            self.msg.setText(f"Could not save: {e}")
+
+
+class _NewServiceDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("New systemd service")
+        self.setMinimumWidth(560)
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+        self.name = QLineEdit(placeholderText="my-app  (becomes my-app.service)")
+        self.desc = QLineEdit(placeholderText="what it does, e.g. My Node app")
+        self.command = QLineEdit(placeholderText="full path + arguments, e.g. /usr/bin/node /srv/app/server.js")
+        self.user = QLineEdit(placeholderText="optional, default root")
+        self.workdir = QLineEdit(placeholderText="optional, e.g. /srv/app")
+        self.restart = QComboBox()
+        for label, key in (("Restart it if it fails", "on-failure"), ("Always restart it", "always"),
+                           ("Don't restart it", "no")):
+            self.restart.addItem(label, key)
+        self.env = QPlainTextEdit(placeholderText="optional environment, one per line:\nPORT=8080\nNODE_ENV=production")
+        self.env.setFixedHeight(70)
+        self.enable = QCheckBox("Start at boot")
+        self.enable.setChecked(True)
+        self.start = QCheckBox("Start it now")
+        self.start.setChecked(True)
+        for label, w in (("Name", self.name), ("Description", self.desc), ("Command", self.command),
+                         ("Run as user", self.user), ("Working folder", self.workdir), ("Restart", self.restart),
+                         ("Environment", self.env)):
+            form.addRow(label, w)
+        lay.addLayout(form)
+        opts = QHBoxLayout()
+        opts.addWidget(self.enable)
+        opts.addWidget(self.start)
+        opts.addStretch(1)
+        lay.addLayout(opts)
+        lay.addWidget(QLabel("UNIT FILE", objectName="SectionLabel"))
+        self.preview = QPlainTextEdit(readOnly=True)
+        self.preview.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        self.preview.setFixedHeight(150)
+        lay.addWidget(self.preview)
+        self.err = QLabel("")
+        self.err.setStyleSheet(f"color:{C['danger']};")
+        lay.addWidget(self.err)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.button(QDialogButtonBox.Ok).setText("Create")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        lay.addWidget(self.buttons)
+        for w in (self.name, self.desc, self.command, self.user, self.workdir):
+            w.textChanged.connect(self._update)
+        self.env.textChanged.connect(self._update)
+        self.restart.currentIndexChanged.connect(self._update)
+        self._update()
+
+    def _text(self) -> str:
+        return units.build_unit(self.desc.text(), self.command.text(), self.user.text(), self.workdir.text(),
+                                self.restart.currentData(), self.env.toPlainText().splitlines())
+
+    def _update(self) -> None:
+        self.preview.setPlainText(self._text())
+        name = self.name.text().strip()
+        err = ""
+        if name and not units.valid_name(name):
+            err = "The name can use letters, digits, - _ . and @ (no spaces, no .service)."
+        elif self.command.text().strip():
+            err = units.exec_error(self.command.text())
+        self.err.setText(err)
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(
+            bool(name) and units.valid_name(name) and bool(self.command.text().strip()) and not err)
+
+    def values(self) -> tuple[str, str, bool, bool]:
+        return self.name.text().strip(), self._text(), self.enable.isChecked(), self.start.isChecked()
 
 
 class _ListPicker(QDialog):
@@ -738,6 +868,9 @@ class DashboardWindow(QWidget):
         head.addSpacing(8)
         head.addWidget(self.auto)
         head.addWidget(self.interval)
+        head.addWidget(_btn("file", "Report…", self._make_report,
+                            "Collect a Markdown report of this server (overview, services, updates, ports, accounts, "
+                            "cron, firewall) to save or paste into a ticket"))
         head.addWidget(_btn("refresh", "Refresh", lambda: self.refresh(force=True)))
         root.addLayout(head)
 
@@ -759,6 +892,7 @@ class DashboardWindow(QWidget):
         self._build_users()
         self._build_cron()
         self._build_firewall()
+        self._build_storage()
 
         self.status = QLabel("", objectName="Hint")
         root.addWidget(self.status)
@@ -819,7 +953,10 @@ class DashboardWindow(QWidget):
             acts.append(b)
         lay.addLayout(_toolbar(self.svc_filter, self.svc_failed, "stretch", *acts,
                                _btn("file", "Status", self._service_status),
-                               _btn("terminal", "Logs", self._service_logs)))
+                               _btn("code", "Unit file", self._view_unit, "Show the selected service's unit file"),
+                               _btn("terminal", "Logs", self._service_logs),
+                               _btn("plus", "New service…", self._new_service,
+                                    "Create a systemd service from a simple form")))
         self.svc_table = _table(["Service", "State", "Startup", "Description"])
         self.svc_table.doubleClicked.connect(lambda _i: self._service_status())
         self.svc_table.itemSelectionChanged.connect(self._update_service_buttons)
@@ -1016,6 +1153,8 @@ class DashboardWindow(QWidget):
             self._cron_load()
         elif tab == "firewall":
             self._fw_load()
+        elif tab == "storage":
+            self._job("storage", lambda r: storage.parse_filesystems(r.run(storage.FS_SCRIPT, timeout=20).out))
         elif tab == "updates":
             self.upd_lbl.setText("Checking for updates…")
             self._job("updates", d.updates)
@@ -1426,6 +1565,156 @@ class DashboardWindow(QWidget):
         self._loaded.discard(then)
         if self._tab_key() == then:
             self.refresh(force=True)
+
+    # ---- services: unit file and creating one ----
+    def _view_unit(self) -> None:
+        sel = self._selected_service()
+        if not sel:
+            self.status.setText("Select a service first.")
+            return
+        init, unit = sel
+        if init != "systemd":
+            self.status.setText("Unit files exist on systemd servers only.")
+            return
+        self._job("unitcat", lambda r: (unit, r.run(f"systemctl cat {shlex.quote(unit)} --no-pager 2>&1").out))
+
+    def _show_unitcat(self, res) -> None:
+        unit, text = res
+        _ViewDialog(f"Unit file: {unit}", text, self).exec()
+
+    def _new_service(self) -> None:
+        if not self._services or self._services[0].init != "systemd":
+            QMessageBox.information(self, "New service", "Creating services from here works on servers that run "
+                                    "systemd. Open the Services tab first so the server's init system is known.")
+            return
+        dlg = _NewServiceDialog(self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        name, text, enable, start = dlg.values()
+        if any(s.unit == f"{name}.service" for s in self._services):
+            QMessageBox.warning(self, "New service", f"{name}.service already exists on this server.")
+            return
+        todo = "write the unit file" + (", enable it at boot" if enable else "") + (", start it" if start else "")
+        self._privileged(f"Create service {name}", units.create_command(name, text, enable, start),
+                         then="services", timeout=60,
+                         show=f"{todo}: /etc/systemd/system/{name}.service")
+
+    # ---- storage ----
+    def _build_storage(self) -> None:
+        lay = self._page("Storage")
+        self._filesystems: list[storage.Filesystem] = []
+        self.sto_virtual = QCheckBox("Show virtual filesystems (tmpfs, overlay, …)")
+        self.sto_virtual.toggled.connect(lambda _on: self._fill_storage())
+        lay.addLayout(_toolbar(self.sto_virtual, "stretch",
+                               _btn("refresh", "", lambda: self.refresh(force=True), "Read the disks again")))
+        self.sto_table = _table(["Mounted on", "Type", "Size", "Used", "Free", "Use", "Inodes"], stretch=0)
+        self.sto_table.doubleClicked.connect(self._sto_drill)
+        lay.addWidget(self.sto_table, 2)
+        lay.addWidget(QLabel("BIGGEST FOLDERS", objectName="SectionLabel"))
+        self.du_path = QLineEdit("/")
+        self.du_path.returnPressed.connect(self._du_run)
+        lay.addLayout(_toolbar(self.du_path, _btn("up", "", self._du_up, "Parent folder"),
+                               _btn("search", "Analyze", self._du_run,
+                                    "Measure the folders inside this one (stays on one filesystem)")))
+        self.du_table = _table(["Size", "Folder"], stretch=1)
+        self.du_table.doubleClicked.connect(self._du_drill)
+        lay.addWidget(self.du_table, 3)
+        self.du_msg = QLabel("Double-click a filesystem above, or type a folder and press Analyze. Big folders "
+                             "can take a minute.", objectName="Hint", wordWrap=True)
+        lay.addWidget(self.du_msg)
+
+    def _show_storage(self, fs: list) -> None:
+        self._filesystems = fs
+        self._fill_storage()
+
+    def _fill_storage(self) -> None:
+        rows = [f for f in self._filesystems if self.sto_virtual.isChecked() or not f.virtual]
+        t = self.sto_table
+        t.setRowCount(len(rows))
+
+        def pct(v):
+            return None if v is None else C["danger"] if v >= 90 else C["warn"] if v >= 80 else None
+        for i, f in enumerate(rows):
+            t.setItem(i, 0, _item(f.mount))
+            t.setItem(i, 1, _item(f.fstype, C["muted"]))
+            t.setItem(i, 2, _item(d.human_kb(f.size_kb), None, True))
+            t.setItem(i, 3, _item(d.human_kb(f.used_kb), None, True))
+            t.setItem(i, 4, _item(d.human_kb(f.avail_kb), None, True))
+            t.setItem(i, 5, _item(f"{f.percent:.0f}%", pct(f.percent), True))
+            t.setItem(i, 6, _item("–" if f.inode_percent is None else f"{f.inode_percent:.0f}%",
+                                  pct(f.inode_percent), True))
+
+    def _sto_drill(self, index) -> None:
+        item = self.sto_table.item(index.row(), 0)
+        if item:
+            self.du_path.setText(item.text())
+            self._du_run()
+
+    def _du_run(self) -> None:
+        path = self.du_path.text().strip() or "/"
+        if not path.startswith(("/", "~")):
+            self.du_msg.setText("Give a full path, like /var or /srv/data.")
+            return
+        self.du_msg.setText(f"Measuring {path} …")
+        self._job("du", lambda r: (path, *storage.parse_du(r.run(storage.du_command(path), timeout=120).out, path)))
+
+    def _du_up(self) -> None:
+        self.du_path.setText(storage.parent(self.du_path.text().strip() or "/"))
+        self._du_run()
+
+    def _du_drill(self, index) -> None:
+        item = self.du_table.item(index.row(), 1)
+        if item:
+            self.du_path.setText(item.text())
+            self._du_run()
+
+    def _show_du(self, res) -> None:
+        path, total, inside = res
+        t = self.du_table
+        t.setRowCount(len(inside))
+        for i, (kb, p) in enumerate(inside):
+            share = kb / total if total else 0
+            t.setItem(i, 0, _item(d.human_kb(kb), C["warn"] if share >= 0.5 else None, True))
+            t.setItem(i, 1, _item(p))
+        self.du_msg.setText(f"{path}: {d.human_kb(total)} in total, {len(inside)} entries shown. Double-click a "
+                            "folder to go into it." if total else
+                            f"Nothing readable in {path} (or it is empty / on another filesystem).")
+
+    # ---- report ----
+    def _make_report(self) -> None:
+        if self._runner() is None:
+            self.status.setText("Connect first: the report is collected from the server.")
+            return
+        self.status.setText("Collecting the report … (a few seconds)")
+
+        def work(r: d.Runner):
+            data, errs = {}, {}
+
+            def grab(key, fn):
+                try:
+                    data[key] = fn()
+                except Exception as e:
+                    errs[key] = str(e) or e.__class__.__name__
+
+            def jobs():
+                body, _now, _tz = cron.parse_read(r.run(cron.read_script("")).out)
+                return [e for e in cron.parse_crontab(body) if e.kind == "job"]
+            grab("overview", lambda: d.overview(r))
+            grab("services", lambda: d.services(r))
+            grab("updates", lambda: d.updates(r))
+            grab("ports", lambda: d.ports(r))
+            grab("users", lambda: d.users(r))
+            grab("cron", jobs)
+            grab("firewall", lambda: fw.parse(r.run(fw.READ_SCRIPT, timeout=20).out))
+            return data, errs
+        self._job("report", work)
+
+    def _show_report(self, res) -> None:
+        from datetime import datetime
+        data, errs = res
+        self.status.setText("")
+        md = report.build(self.server.label, self.server.address, datetime.now(), data, errs)
+        _ReportDialog(md, self.server.label, self).exec()
 
     # ---- firewall ----
     def _build_firewall(self) -> None:
