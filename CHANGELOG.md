@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.12.0](https://github.com/blamixology/blamixshell/releases/tag/v1.12.0) - 2026-10-05
+
+### Improvements
+- Dashboard: cron login-shell fallbacks + diagnostics, Docker/Podman tab, SSH keys editor, systemd timers tab, security checks (57335d1)
+
 ## [1.11.0](https://github.com/blamixology/blamixshell/releases/tag/v1.11.0) - 2026-10-05
 
 ### Improvements
