@@ -167,3 +167,13 @@ def test_backups_keep_the_newest_and_skip_duplicates(tmp_path):
 def test_run_now_command_unescapes_percent():
     assert cron.run_now_command("date +\\%F") == "sh -c 'date +%F' 2>&1"
     assert cron.run_now_command("echo 'a b'").startswith("sh -c ") and cron.run_now_command("x").endswith("2>&1")
+
+
+def test_login_shell_fallbacks_and_plain_compose():
+    own = cron.read_script("")
+    assert 'bash -lc "crontab -l"' in own and "src=login-shell" in own and "src=env" in own and "@@diag" in own
+    other = cron.read_script("root")
+    assert "login-shell" not in other and "-u root" in other                 # only for the connected user
+    assert cron.parse_details("@@diag\nid: uid=1(x)\n@@date\n") == "id: uid=1(x)"
+    p = cron.Parts("date +%F", out=cron.OUT_LOG, log="/tmp/x.log")
+    assert cron.compose(p) == "date +\%F >> /tmp/x.log 2>&1" and cron.compose(p, cron_escape=False) == "date +%F >> /tmp/x.log 2>&1"

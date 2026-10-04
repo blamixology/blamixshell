@@ -280,9 +280,18 @@ def read_script(user: str = "") -> str:
         who = f"-u {shlex.quote(user)} " if user else ""
         name = shlex.quote(user) if user else '"$(id -un)"'
         # `crontab -l` is the right way, but on some servers it prints nothing over a non-interactive
-        # login even though the spool file has the jobs: fall back to reading that file directly
+        # login even though the same command in a terminal shows the jobs. For the connected user
+        # the same question is asked other ways (a login shell, so PATH and the environment match
+        # the terminal; explicit LOGNAME), then the spool file is read directly. `src` says which worked.
+        own = ('' if user else
+               'if empty; then alt=$(bash -lc "crontab -l" 2>/dev/null </dev/null); '
+               'if [ -n "$alt" ] && [ "${alt#no crontab}" = "$alt" ]; then out="$alt"; src=login-shell; fi; fi\n'
+               'if empty; then alt=$(LOGNAME="$U" USER="$U" crontab -l 2>/dev/null </dev/null); '
+               'if [ -n "$alt" ] && [ "${alt#no crontab}" = "$alt" ]; then out="$alt"; src=env; fi; fi\n')
         body = (f'U={name}; out=$(crontab {who}-l 2>&1); rc=$?; src=crontab\n'
-                'if [ -z "$out" ] || [ "${out#no crontab}" != "$out" ]; then\n'
+                'empty() { [ -z "$out" ] || [ "${out#no crontab}" != "$out" ]; }\n'
+                + own +
+                'if empty; then\n'
                 '  alt=$(cat "/var/spool/cron/$U" 2>/dev/null || cat "/var/spool/cron/crontabs/$U" 2>/dev/null)\n'
                 '  if [ -n "$alt" ]; then out="$alt"; src=spool; fi\n'
                 'fi\n'
@@ -291,7 +300,11 @@ def read_script(user: str = "") -> str:
     sysinfo = ("echo @@sys; (cat /etc/crontab /etc/cron.d/* 2>/dev/null | grep -Ev '^[[:space:]]*(#|$)|^[A-Za-z_]+=' "
                "| wc -l; for p in hourly daily weekly monthly; do ls -1 /etc/cron.$p 2>/dev/null; done | wc -l) "
                "| tr '\\n' ' '; echo\n") if user != "@system" else ""
-    return (f"echo @@cron; {body}\necho @@date; date '+%Y-%m-%d %H:%M'\necho @@tz; date +%Z\n"
+    details = ('echo @@diag; echo "id: $(id 2>&1)"; echo "LOGNAME=$LOGNAME USER=$USER SHELL=$SHELL"; '
+               'echo "PATH=$PATH"; (type -a crontab 2>&1 || command -v crontab); '
+               'ls -ld /var/spool/cron /var/spool/cron/* 2>&1 | head -20; '
+               'echo "crontab -l now: [$(crontab -l 2>&1)] exit=$?"\n') if user != "@system" else ""
+    return (f"echo @@cron; {body}\n{details}echo @@date; date '+%Y-%m-%d %H:%M'\necho @@tz; date +%Z\n"
             f"echo @@me; id -un 2>/dev/null; echo @@home; echo \"$HOME\"\n{sysinfo}")
 
 
@@ -318,6 +331,12 @@ def parse_diag(text: str) -> tuple[str, str, str, str]:
     rc = s.get("rc", "").split()
     how = f"exit {rc[0]}, via {rc[1]}" + (f", {rc[2]}" if len(rc) > 2 else "") if len(rc) >= 2 else ""
     return s.get("cron", "").strip(), s.get("me", "").strip(), s.get("home", "").strip(), how
+
+
+def parse_details(text: str) -> str:
+    """The extra facts collected for "Why is this empty?" (account, PATH, which crontab, spool files)."""
+    from .dashboard import split_sections
+    return split_sections(text).get("diag", "").strip()
 
 
 def parse_sys(text: str) -> tuple[int, int]:
@@ -399,13 +418,15 @@ class Parts:
     log: str = ""
 
 
-def compose(p: Parts) -> str:
+def compose(p: Parts, cron_escape: bool = True) -> str:
+    """The command line for a crontab (cron_escape) or, with it off, the plain command for other uses."""
     cmd = p.command.strip()
     if p.folder.strip():
         cmd = f"cd {shell_path(p.folder.strip())} && {cmd}"
     if p.login:
         cmd = f"bash -lc {shlex.quote(cmd)}"
-    return escape_percent(join_output(cmd, p.out, p.log))
+    line = join_output(cmd, p.out, p.log)
+    return escape_percent(line) if cron_escape else line
 
 
 def decompose(line: str) -> Parts:

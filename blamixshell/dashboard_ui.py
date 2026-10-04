@@ -21,12 +21,12 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QCh
 from . import cron
 from . import dashboard as d
 from . import firewall as fw
-from . import report, storage, units
+from . import docker, report, security, sshkeys, storage, timers, units
 from .theme import C, blend, icon, style_window
 
 REFRESH_MS = 5000
 TAB_KEYS = ["overview", "services", "processes", "logs", "ports", "updates", "users", "cron", "firewall",
-            "storage"]
+            "storage", "docker", "timers", "security"]
 
 
 class _Signals(QObject):
@@ -152,6 +152,115 @@ def _btn(ic: str, text: str, fn, tip: str = "") -> QPushButton:
     if tip:
         b.setToolTip(tip)
     return b
+
+
+class _SshKeysDialog(QDialog):
+    """The keys in an account's authorized_keys: add a public key, remove one, then save."""
+
+    def __init__(self, name: str, home: str, text: str, is_me: bool, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"SSH keys of {name}")
+        self.resize(780, 430)
+        self.original, self.text, self.is_me = text, text, is_me
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(f"{home}/.ssh/authorized_keys: who can log in as <b>{name}</b> with a key.",
+                             wordWrap=True))
+        self.table = _table(["Type", "Fingerprint", "Comment", "Options"], stretch=2)
+        self.table.itemSelectionChanged.connect(self._sync)
+        lay.addWidget(self.table, 1)
+        row = QHBoxLayout()
+        self.add_btn = _btn("plus", "Add key…", self._add, "Paste a public key or open a .pub file")
+        self.rm_btn = _btn("trash", "Remove", self._remove, "Remove the selected key")
+        row.addWidget(self.add_btn)
+        row.addWidget(self.rm_btn)
+        self.msg = QLabel("", objectName="Hint", wordWrap=True)
+        row.addWidget(self.msg, 1)
+        lay.addLayout(row)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        self.buttons.accepted.connect(self._save)
+        self.buttons.rejected.connect(self.reject)
+        lay.addWidget(self.buttons)
+        self._fill()
+
+    def _fill(self) -> None:
+        self.keys = sshkeys.parse(self.text)
+        t = self.table
+        t.setRowCount(len(self.keys))
+        for i, k in enumerate(self.keys):
+            if k.valid:
+                t.setItem(i, 0, _item(k.type))
+                t.setItem(i, 1, _item(k.fingerprint, C["muted"]))
+                t.setItem(i, 2, _item(k.comment or "–"))
+                t.setItem(i, 3, _item(k.options or "–", C["warn"] if k.options else C["muted"]))
+            else:
+                t.setItem(i, 0, _item("?", C["warn"]))
+                t.setItem(i, 1, _item("(not a key we can read: kept as it is)", C["warn"]))
+                t.setItem(i, 2, _item(k.raw[:60], C["muted"]))
+                t.setItem(i, 3, _item("–", C["muted"]))
+        self.msg.setText("Changes are written when you press Save." if self.text != self.original else "")
+        self.buttons.button(QDialogButtonBox.Save).setEnabled(self.text != self.original)
+        self._sync()
+
+    def _sync(self) -> None:
+        self.rm_btn.setEnabled(bool(self.table.selectionModel().selectedRows()))
+
+    def _add(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Add a public key")
+        dlg.resize(560, 220)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("Paste the public key (one line, starts with ssh-ed25519 or ssh-rsa …):"))
+        box = QPlainTextEdit()
+        box.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        lay.addWidget(box, 1)
+        err = QLabel("")
+        err.setStyleSheet(f"color:{C['danger']};")
+        lay.addWidget(err)
+        row = QHBoxLayout()
+
+        def open_file():
+            path, _ = QFileDialog.getOpenFileName(dlg, "Public key", "", "Public keys (*.pub);;All files (*)")
+            if path:
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        box.setPlainText(f.read().strip())
+                except OSError as e:
+                    err.setText(str(e))
+        row.addWidget(_btn("folder", "Open .pub file…", open_file))
+        row.addStretch(1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        row.addWidget(bb)
+        lay.addLayout(row)
+        bb.rejected.connect(dlg.reject)
+
+        def ok():
+            msg = sshkeys.validate_public_key(box.toPlainText())
+            err.setText(msg)
+            if not msg:
+                dlg.accept()
+        bb.accepted.connect(ok)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        self.text, added = sshkeys.add_key(self.text, box.toPlainText().strip())
+        self._fill()
+        if not added:
+            self.msg.setText("That key is already there.")
+
+    def _remove(self) -> None:
+        rows = self.table.selectionModel().selectedRows()
+        if rows and rows[0].row() < len(self.keys):
+            self.text = sshkeys.remove_key(self.text, self.keys[rows[0].row()].raw)
+            self._fill()
+
+    def _save(self) -> None:
+        had = [k for k in sshkeys.parse(self.original) if k.valid]
+        left = [k for k in sshkeys.parse(self.text) if k.valid]
+        if self.is_me and had and not left:
+            if QMessageBox.warning(self, "Remove every key?", "This is the account you are connected as. With no key "
+                                   "left you may not be able to log in again (unless a password works).",
+                                   QMessageBox.Ok | QMessageBox.Cancel) != QMessageBox.Ok:
+                return
+        self.accept()
 
 
 class _ViewDialog(QDialog):
@@ -707,6 +816,7 @@ class _CronJobDialog(QDialog):
 
     def values(self) -> tuple[str, str, bool]:
         return self.schedule(), cron.compose(self._parts()), self.enabled.isChecked()
+    # (the plain command for other uses, like a systemd timer: cron.compose(self._parts(), cron_escape=False))
 
     def _update(self) -> None:
         k = self.kind.currentData()
@@ -893,6 +1003,9 @@ class DashboardWindow(QWidget):
         self._build_cron()
         self._build_firewall()
         self._build_storage()
+        self._build_docker()
+        self._build_timers()
+        self._build_security()
 
         self.status = QLabel("", objectName="Hint")
         root.addWidget(self.status)
@@ -1046,6 +1159,7 @@ class DashboardWindow(QWidget):
             "lock": _btn("lock", "Lock", self._toggle_lock, "Block / allow password login for the selected account"),
             "passwd": _btn("terminal", "Set password", self._set_password,
                            "Types the passwd command in the terminal: the password is never sent from here"),
+            "keys": _btn("shield", "SSH keys…", self._ssh_keys, "See and edit the selected account's authorized_keys"),
             "delete": _btn("trash", "Delete", self._delete_user, "Remove the selected account"),
         }
         self.usr_system = QCheckBox("Show system accounts")
@@ -1153,6 +1267,12 @@ class DashboardWindow(QWidget):
             self._cron_load()
         elif tab == "firewall":
             self._fw_load()
+        elif tab == "docker":
+            self._dk_load()
+        elif tab == "timers":
+            self._job("timers", lambda r: timers.parse(r.run(timers.READ_SCRIPT, timeout=30).out))
+        elif tab == "security":
+            self._sec_load(False)
         elif tab == "storage":
             self._job("storage", lambda r: storage.parse_filesystems(r.run(storage.FS_SCRIPT, timeout=20).out))
         elif tab == "updates":
@@ -1599,6 +1719,310 @@ class DashboardWindow(QWidget):
                          then="services", timeout=60,
                          show=f"{todo}: /etc/systemd/system/{name}.service")
 
+    # ---- ssh keys (Users tab) ----
+    def _priv_read(self, r: d.Runner, command: str) -> str:
+        """Read something as the connected user, or as root when that is refused."""
+        out = r.run(command, timeout=20).out
+        if "Permission denied" not in out or self._root:
+            return out
+        if self._sudo_pw is None and d.needs_password(r, self._root):
+            return "need-password"
+        return d.run_privileged(r, command, self._root, self._sudo_pw, 20).out
+
+    def _ssh_keys(self) -> None:
+        a = self._selected_account()
+        if a is None or not a.home:
+            return
+        home, name = a.home, a.name
+        self._job("sshkeys", lambda r: (name, home, self._priv_read(r, sshkeys.read_command(home))))
+
+    def _show_sshkeys(self, res) -> None:
+        name, home, out = res
+        if out == "need-password":
+            pw, ok = QInputDialog.getText(self, "sudo password", f"Password for sudo on {self.server.label} "
+                                          "(used for this dashboard only, never saved):", QLineEdit.Password)
+            if ok:
+                self._sudo_pw = pw
+                self._ssh_keys()
+            return
+        text = sshkeys.clean_read(out)
+        dlg = _SshKeysDialog(name, home, text, name == (self.server.username or ""), self)
+        if dlg.exec() != QDialog.Accepted or dlg.text == text:
+            return
+        cron.save_backup(self.server.id, f"ssh-{name}", text)           # keep what was there
+        n = len([k for k in sshkeys.parse(dlg.text) if k.valid])
+        self._privileged(f"Update SSH keys of {name}", sshkeys.save_command(home, name, dlg.text), then="users",
+                         allow_plain=True, show=f"write {home}/.ssh/authorized_keys ({n} key{'s' if n != 1 else ''})")
+
+    # ---- docker ----
+    def _build_docker(self) -> None:
+        lay = self._page("Docker")
+        self._dk = docker.Containers()
+        self._dk_sudo = False
+        self.dk_lbl = QLabel("")
+        self.dk_buttons = {
+            "start": _btn("bolt", "Start", lambda: self._dk_action("start")),
+            "stop": _btn("x", "Stop", lambda: self._dk_action("stop")),
+            "restart": _btn("refresh", "Restart", lambda: self._dk_action("restart")),
+            "logs": _btn("file", "Logs", self._dk_logs, "The last 300 log lines of the selected container"),
+            "remove": _btn("trash", "Remove", self._dk_remove, "Delete the selected container"),
+        }
+        lay.addLayout(_toolbar(self.dk_lbl, "stretch", *self.dk_buttons.values(),
+                               _btn("refresh", "", lambda: self.refresh(force=True), "Reload the list")))
+        self.dk_table = _table(["State", "Name", "Image", "Status", "Ports", "CPU", "Memory"], stretch=4)
+        self.dk_table.itemSelectionChanged.connect(self._update_dk_buttons)
+        self.dk_table.doubleClicked.connect(lambda _i: self._dk_logs())
+        lay.addWidget(self.dk_table, 1)
+        self.dk_hint = QLabel("", objectName="Hint", wordWrap=True)
+        lay.addWidget(self.dk_hint)
+        self._update_dk_buttons()
+
+    def _dk_load(self) -> None:
+        def work(r: d.Runner):
+            out = r.run(docker.READ_SCRIPT, timeout=45).out
+            used = False
+            if docker.parse(out).needs_access and not self._root:
+                if self._sudo_pw is None and d.needs_password(r, self._root):
+                    return "need-password", False
+                res = d.run_privileged(r, f"sh -c {shlex.quote(docker.READ_SCRIPT)}", self._root, self._sudo_pw, 60)
+                if res.ok:
+                    out, used = res.out, True
+            return out, used
+        self._job("docker", work)
+
+    def _show_docker(self, res) -> None:
+        out, used = res
+        if out == "need-password":
+            pw, ok = QInputDialog.getText(self, "sudo password", f"Password for sudo on {self.server.label} "
+                                          "(used for this dashboard only, never saved):", QLineEdit.Password)
+            if ok:
+                self._sudo_pw = pw
+                self._dk_load()
+            else:
+                self.dk_hint.setText("Docker needs root or membership of the docker group.")
+            return
+        c = docker.parse(out)
+        self._dk, self._dk_sudo = c, used
+        t = self.dk_table
+        t.setRowCount(len(c.items))
+        colors = {"running": C["ok"], "paused": C["warn"], "restarting": C["warn"], "dead": C["danger"]}
+        for i, x in enumerate(c.items):
+            t.setItem(i, 0, _item("● " + x.state, colors.get(x.state, C["muted"])))
+            t.setItem(i, 1, _item(x.name))
+            t.setItem(i, 2, _item(x.image, C["muted"]))
+            t.setItem(i, 3, _item(x.status, C["muted"]))
+            t.setItem(i, 4, _item(x.ports or "–", C["muted"]))
+            t.setItem(i, 5, _item(x.cpu or "–", None, True))
+            t.setItem(i, 6, _item(x.mem or "–", None, True))
+        if c.engine == "none":
+            self.dk_lbl.setText("No Docker or Podman found")
+            self.dk_hint.setText("Looked for the docker and podman commands.")
+        elif c.needs_access:
+            self.dk_lbl.setText(f"<b>{c.engine}</b>  ·  no access")
+            self.dk_hint.setText("This account can't talk to the daemon. Use root, add it to the docker group, or "
+                                 "use an account with sudo.")
+        else:
+            run = sum(1 for x in c.items if x.state == "running")
+            self.dk_lbl.setText(f"<b>{c.engine}</b>  ·  {run} running, {len(c.items) - run} not running")
+            self.dk_hint.setText("Via sudo. " if used else "")
+        self._update_dk_buttons()
+
+    def _selected_container(self) -> docker.Container | None:
+        rows = self.dk_table.selectionModel().selectedRows()
+        if not rows or rows[0].row() >= len(self._dk.items):
+            return None
+        return self._dk.items[rows[0].row()]
+
+    def _update_dk_buttons(self) -> None:
+        x = self._selected_container()
+        for k, b in self.dk_buttons.items():
+            on = x is not None
+            if k == "start":
+                on = on and not x.running or (on and x.state == "paused")
+            elif k in ("stop", "restart"):
+                on = on and x.running
+            b.setEnabled(bool(on))
+        if x is not None and x.state == "paused":
+            self.dk_buttons["start"].setText(" Resume")
+        else:
+            self.dk_buttons["start"].setText(" Start")
+
+    def _dk_action(self, action: str) -> None:
+        x = self._selected_container()
+        if not x:
+            return
+        if action == "start" and x.state == "paused":
+            action = "unpause"
+        cmd = docker.action_command(self._dk.engine, action, x.id)
+        self._privileged(f"{action.capitalize()} container {x.name}", cmd, then="docker", allow_plain=True)
+
+    def _dk_remove(self) -> None:
+        x = self._selected_container()
+        if not x:
+            return
+        cmd = docker.action_command(self._dk.engine, "remove", x.id, force=x.running)
+        self._privileged(f"Remove container {x.name}" + (" (it is running: forced)" if x.running else ""), cmd,
+                         then="docker", allow_plain=True)
+
+    def _dk_logs(self) -> None:
+        x = self._selected_container()
+        if not x:
+            return
+        cmd, sudo = docker.logs_command(self._dk.engine, x.id), self._dk_sudo
+
+        def work(r: d.Runner):
+            if sudo and not self._root:
+                return x.name, d.run_privileged(r, f"sh -c {shlex.quote(cmd)}", self._root, self._sudo_pw, 30).out
+            return x.name, r.run(cmd, timeout=30).out
+        self._job("dklogs", work)
+
+    def _show_dklogs(self, res) -> None:
+        name, text = res
+        _ViewDialog(f"Logs: {name}", text, self).exec()
+
+    # ---- timers ----
+    def _build_timers(self) -> None:
+        lay = self._page("Timers")
+        self._timers: list[timers.Timer] = []
+        self.tm_buttons = {
+            "add": _btn("plus", "New timer…", self._tm_add, "Schedule a command with a systemd timer (a simple form)"),
+            "toggle": _btn("bolt", "Disable", self._tm_toggle, "Turn the selected timer off or on"),
+            "run": _btn("terminal", "Run now", self._tm_run, "Start what the selected timer starts, once, now"),
+            "unit": _btn("code", "Unit file", self._tm_unit, "Show the timer's unit file"),
+        }
+        lay.addLayout(_toolbar("stretch", *self.tm_buttons.values(),
+                               _btn("refresh", "", lambda: self.refresh(force=True), "Reload")))
+        self.tm_table = _table(["On", "Timer", "Runs", "Schedule", "Next", "Last"], stretch=3)
+        self.tm_table.itemSelectionChanged.connect(self._update_tm_buttons)
+        lay.addWidget(self.tm_table, 1)
+        self.tm_hint = QLabel("", objectName="Hint", wordWrap=True)
+        lay.addWidget(self.tm_hint)
+        self._update_tm_buttons()
+
+    def _show_timers(self, items: list) -> None:
+        self._timers = items
+        t = self.tm_table
+        t.setRowCount(len(items))
+        for i, x in enumerate(items):
+            on = x.active == "active"
+            t.setItem(i, 0, _item("●" if on else "○", C["ok"] if on else C["faint"]))
+            t.setItem(i, 1, _item(x.name))
+            t.setItem(i, 2, _item(x.unit or "–", C["muted"]))
+            t.setItem(i, 3, _item(x.schedule or "–", C["muted"]))
+            t.setItem(i, 4, _item(x.next))
+            t.setItem(i, 5, _item(x.last, C["muted"]))
+        self.tm_hint.setText("" if items else "No systemd timers found (or this server doesn't run systemd). "
+                             "Use “New timer…” to schedule a command; cron jobs are in the Cron tab.")
+        self._update_tm_buttons()
+
+    def _selected_timer(self) -> timers.Timer | None:
+        rows = self.tm_table.selectionModel().selectedRows()
+        if not rows or rows[0].row() >= len(self._timers):
+            return None
+        return self._timers[rows[0].row()]
+
+    def _update_tm_buttons(self) -> None:
+        x = self._selected_timer()
+        for k in ("toggle", "run", "unit"):
+            self.tm_buttons[k].setEnabled(x is not None)
+        if x is not None:
+            self.tm_buttons["toggle"].setText(" Disable" if x.active == "active" else " Enable")
+
+    def _tm_toggle(self) -> None:
+        x = self._selected_timer()
+        if x:
+            on = x.active != "active"
+            self._privileged(f"{'Enable' if on else 'Disable'} timer {x.name}", timers.toggle_command(x.name, on),
+                             then="timers")
+
+    def _tm_run(self) -> None:
+        x = self._selected_timer()
+        if x and x.unit:
+            self._privileged(f"Run {x.unit} now", timers.run_now_command(x.unit), then="timers")
+
+    def _tm_unit(self) -> None:
+        x = self._selected_timer()
+        if x:
+            self._job("unitcat", lambda r: (x.name, r.run(f"systemctl cat {shlex.quote(x.name)} --no-pager 2>&1").out))
+
+    def _tm_add(self) -> None:
+        dlg = _CronJobDialog(None, self._cron_now, self._cron_tz, self, self._cron_run, "")
+        dlg.setWindowTitle("New systemd timer")
+        if dlg.exec() != QDialog.Accepted:
+            return
+        sched, _cronline, _enabled = dlg.values()
+        command = cron.compose(dlg._parts(), cron_escape=False)
+        boot = sched == "@reboot"
+        calendar = timers.calendar_from_cron(sched)
+        if not boot and calendar is None:
+            QMessageBox.warning(self, "New timer", "That schedule can't be written as a systemd timer (it uses both a "
+                                "day of the month and a weekday). Use a simpler schedule, or the Cron tab.")
+            return
+        hit = cron.script_path(command)
+        default = (hit[0].rsplit("/", 1)[-1].rsplit(".", 1)[0] if hit else "job").lower().replace("_", "-")
+        name, ok = QInputDialog.getText(self, "New timer", "Name (becomes <name>.timer and <name>.service):",
+                                        text=default or "job")
+        name = name.strip()
+        if not ok or not units.valid_name(name):
+            if ok:
+                QMessageBox.warning(self, "New timer", "The name can use letters, digits, - _ . and @.")
+            return
+        svc, tm = timers.build_units(name, command, "", calendar or "", boot)
+        self._privileged(f"Create timer {name}", timers.create_command(name, svc, tm), then="timers", timeout=60,
+                         show=f"write {name}.service and {name}.timer, then enable the timer"
+                              f" ({calendar or 'at startup'})")
+
+    # ---- security ----
+    def _build_security(self) -> None:
+        lay = self._page("Security")
+        self.sec_lbl = QLabel("")
+        self.sec_root = _btn("shield", "Run the checks with sudo", lambda: self._sec_load(True),
+                             "Some checks (shadow file, logs, sudoers) need root to read")
+        self.sec_root.hide()
+        lay.addLayout(_toolbar(self.sec_lbl, "stretch", self.sec_root,
+                               _btn("refresh", "", lambda: self.refresh(force=True), "Check again")))
+        self.sec_table = _table(["", "Check", "Result", "Advice"], stretch=3)
+        lay.addWidget(self.sec_table, 1)
+        lay.addWidget(QLabel("Quick checks from read-only commands: a starting point, not a full audit.",
+                             objectName="Hint"))
+
+    def _sec_load(self, privileged: bool) -> None:
+        def work(r: d.Runner):
+            if not privileged or self._root:
+                return r.run(security.READ_SCRIPT, timeout=40).out
+            if self._sudo_pw is None and d.needs_password(r, self._root):
+                return "need-password"
+            res = d.run_privileged(r, f"sh -c {shlex.quote(security.READ_SCRIPT)}", self._root, self._sudo_pw, 60)
+            return res.out if res.ok else r.run(security.READ_SCRIPT, timeout=40).out
+        self._job("security", work)
+
+    def _show_security(self, out: str) -> None:
+        if out == "need-password":
+            pw, ok = QInputDialog.getText(self, "sudo password", f"Password for sudo on {self.server.label} "
+                                          "(used for this dashboard only, never saved):", QLineEdit.Password)
+            if ok:
+                self._sudo_pw = pw
+                self._sec_load(True)
+            return
+        found = security.parse(out)
+        t = self.sec_table
+        t.setRowCount(len(found))
+        colors = {security.OK: C["ok"], security.WARN: C["warn"], security.BAD: C["danger"],
+                  security.UNKNOWN: C["faint"]}
+        for i, x in enumerate(found):
+            t.setItem(i, 0, _item("?" if x.level == security.UNKNOWN else "●", colors[x.level]))
+            t.setItem(i, 1, _item(x.title))
+            t.setItem(i, 2, _item(x.result, colors[x.level] if x.level != security.OK else None))
+            t.setItem(i, 3, _item(x.advice or "–", C["muted"]))
+        count = lambda lvl: sum(1 for x in found if x.level == lvl)          # noqa: E731
+        bits = [f"<span style='color:{C['danger']}'>{count(security.BAD)} problem{'s' if count(security.BAD) != 1 else ''}</span>",
+                f"<span style='color:{C['warn']}'>{count(security.WARN)} warning{'s' if count(security.WARN) != 1 else ''}</span>",
+                f"{count(security.OK)} fine"]
+        if count(security.UNKNOWN):
+            bits.append(f"{count(security.UNKNOWN)} unknown")
+        self.sec_lbl.setText("  ·  ".join(bits))
+        self.sec_root.setVisible(security.needs_root(found) and not self._root)
+
     # ---- storage ----
     def _build_storage(self) -> None:
         lay = self._page("Storage")
@@ -1845,6 +2269,7 @@ class DashboardWindow(QWidget):
         self._cron_text = ""
         self._cron_sys = (0, 0)
         self._cron_diag = ("", "", "", "")
+        self._cron_details = ""
         self._cron_now = None
         self._cron_tz = ""
         self.cron_user = QComboBox()
@@ -1873,6 +2298,12 @@ class DashboardWindow(QWidget):
         lay.addWidget(self.cron_table, 1)
         self.cron_info = QLabel("", objectName="Hint", wordWrap=True)
         lay.addWidget(self.cron_info)
+        self.cron_why = QPushButton("Why is this empty? Show details")
+        self.cron_why.setFlat(True)
+        self.cron_why.setStyleSheet("text-align:left; padding:2px 0;")
+        self.cron_why.clicked.connect(self._cron_show_details)
+        self.cron_why.hide()
+        lay.addWidget(self.cron_why)
         self._update_cron_buttons()
 
     @property
@@ -1931,6 +2362,7 @@ class DashboardWindow(QWidget):
         self._cron_text, self._cron_now, self._cron_tz = text, now, tz
         self._cron_sys = cron.parse_sys(out)
         self._cron_diag = cron.parse_diag(out)
+        self._cron_details = cron.parse_details(out)
         self._cron_fill(cron.parse_crontab(text, system=who == "@system"))
 
     def _cron_fill(self, entries: list[cron.Entry], error: str = "") -> None:
@@ -1973,6 +2405,7 @@ class DashboardWindow(QWidget):
         if self._cron_now:
             bits.append(f"Server time: {self._cron_now:%Y-%m-%d %H:%M} {self._cron_tz} (jobs run on server time)")
         self.cron_info.setText("  ·  ".join(bits))
+        self.cron_why.setVisible(not jobs and not system and bool(self._cron_details))
         self._update_cron_buttons()
 
     def _selected_job(self) -> tuple[int, cron.Entry] | None:
@@ -1992,6 +2425,12 @@ class DashboardWindow(QWidget):
             self.cron_buttons[k].setEnabled(editable and sel is not None)
         if sel:
             self.cron_buttons["toggle"].setText(" Disable" if sel[1].enabled else " Enable")
+
+    def _cron_show_details(self) -> None:
+        said, me, home, how = self._cron_diag
+        head = (f"Read as {me or '?'} (home {home or '?'}); crontab printed: {said or 'nothing'}"
+                + (f" [{how}]" if how else ""))
+        _ViewDialog("Cron: why no jobs?", f"{head}\n\n{self._cron_details}", self).exec()
 
     def _cron_run(self, command: str) -> str | None:
         """Run a short read-only command on the server for the job form (browse, script check)."""
@@ -2125,7 +2564,7 @@ class DashboardWindow(QWidget):
 
     def _update_user_buttons(self) -> None:
         a = self._selected_account()
-        for k in ("groups", "lock", "passwd", "delete"):
+        for k in ("groups", "lock", "passwd", "delete", "keys"):
             self.usr_buttons[k].setEnabled(a is not None)
         if a is not None:
             self.usr_buttons["lock"].setText(" Unlock" if a.locked else " Lock")
