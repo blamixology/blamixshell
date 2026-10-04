@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.10.0](https://github.com/blamixology/blamixshell/releases/tag/v1.10.0) - 2026-10-04
+
+### Improvements
+- Dashboard: Firewall tab (firewalld/ufw edit, iptables/nft read-only), cron run now + backups/restore, logs filter and saved views (12fb3fb)
+
 ## [1.9.4](https://github.com/blamixology/blamixshell/releases/tag/v1.9.4) - 2026-10-02
 
 ### Improvements
