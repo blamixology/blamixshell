@@ -12,7 +12,7 @@ import time
 
 from PySide6.QtCore import QObject, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QMenu, QToolButton,
                                QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QSpinBox, QTimeEdit,
                                QProgressBar, QPushButton, QScrollArea, QTableWidget, QTableWidgetItem,
@@ -25,6 +25,11 @@ from . import docker, report, security, sshkeys, storage, timers, units
 from .theme import C, blend, icon, style_window
 
 REFRESH_MS = 5000
+# Tabs that stay in the bar; everything else lives in the "More" menu, grouped.
+MAIN_TABS = ("overview", "services", "processes", "logs", "updates")
+MORE_GROUPS = (("System", ("users", "storage", "docker")),
+               ("Network and security", ("ports", "firewall", "security")),
+               ("Scheduling", ("cron", "timers")))
 TAB_KEYS = ["overview", "services", "processes", "logs", "ports", "updates", "users", "cron", "firewall",
             "storage", "docker", "timers", "security"]
 
@@ -1006,9 +1011,48 @@ class DashboardWindow(QWidget):
         self._build_docker()
         self._build_timers()
         self._build_security()
+        self._group_tabs()
 
         self.status = QLabel("", objectName="Hint")
         root.addWidget(self.status)
+
+    def _group_tabs(self) -> None:
+        """Keep the main tabs in the bar and put the others in a grouped "More" menu at its right end
+        (a bar with a dozen tabs overflows into scroll arrows)."""
+        for i, key in enumerate(TAB_KEYS):
+            self.tabs.setTabVisible(i, key in MAIN_TABS)
+        self.more_btn = QToolButton()
+        self.more_btn.setObjectName("MoreTabs")
+        self.more_btn.setPopupMode(QToolButton.InstantPopup)
+        self.more_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.more_btn.setCursor(Qt.PointingHandCursor)
+        menu = QMenu(self.more_btn)
+        self._more_actions: dict[str, object] = {}
+        for title, keys in MORE_GROUPS:
+            menu.addSection(title)
+            for key in keys:
+                i = TAB_KEYS.index(key)
+                act = menu.addAction(self.tabs.tabText(i))
+                act.triggered.connect(lambda _c=False, i=i: self.tabs.setCurrentIndex(i))
+                self._more_actions[key] = act
+        self.more_btn.setMenu(menu)
+        self.tabs.setCornerWidget(self.more_btn, Qt.TopRightCorner)
+        self.tabs.tabBar().setUsesScrollButtons(False)
+        self.tabs.currentChanged.connect(lambda _i: self._sync_more())
+        self._sync_more()
+
+    def _sync_more(self) -> None:
+        """The button names the open tab when it is one from the menu, so you can see where you are."""
+        key = TAB_KEYS[self.tabs.currentIndex()]
+        active = key not in MAIN_TABS
+        self.more_btn.setText((self.tabs.tabText(self.tabs.currentIndex()) if active else "More") + "  ▾")
+        self.more_btn.setStyleSheet(
+            "QToolButton#MoreTabs { padding: 9px 14px; margin: 6px 2px 0 2px; border-radius: 8px; "
+            f"color: {C['text'] if active else C['muted']}; background: {C['surface'] if active else 'transparent'}; }}"
+            f"QToolButton#MoreTabs:hover {{ color: {C['text']}; background: {C['surface'] if active else C['sidebar']}; }}")
+        for k, act in self._more_actions.items():
+            act.setCheckable(True)
+            act.setChecked(k == key)
 
     def _page(self, title: str) -> QVBoxLayout:
         w = QWidget()
