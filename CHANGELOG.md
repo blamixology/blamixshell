@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.11.0](https://github.com/blamixology/blamixshell/releases/tag/v1.11.0) - 2026-10-05
+
+### Improvements
+- Dashboard: Storage tab, new systemd service form + unit viewer, low-resource warnings (opt-in), Markdown server report (2833133)
+
 ## [1.10.1](https://github.com/blamixology/blamixshell/releases/tag/v1.10.1) - 2026-10-05
 
 ### Improvements
