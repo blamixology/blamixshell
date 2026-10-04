@@ -1,5 +1,12 @@
 # BlamixShell
 
+[![build](https://github.com/blamixology/blamixshell/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/blamixology/blamixshell/actions/workflows/release.yml)
+[![release](https://img.shields.io/github/v/release/blamixology/blamixshell)](https://github.com/blamixology/blamixshell/releases/latest)
+[![downloads](https://img.shields.io/github/downloads/blamixology/blamixshell/total)](https://github.com/blamixology/blamixshell/releases)
+[![license](https://img.shields.io/github/license/blamixology/blamixshell)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
+[![platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](https://github.com/blamixology/blamixshell/releases/latest)
+
 > Formerly **ShellDeck**: renamed in 1.2. Your data is carried over automatically (see [Where data lives](#where-data-lives)).
 
 A modern SSH client for **Windows, macOS and Linux**, written in Python. Think PuTTY, plus a proper server manager, tabs and split panes, an SFTP browser, and an encrypted vault. It comes in three front-ends that share one vault:
