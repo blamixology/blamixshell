@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.12.1](https://github.com/blamixology/blamixshell/releases/tag/v1.12.1) - 2026-10-05
+
+### Improvements
+- Dashboard: keep five main tabs visible, group the rest in a More dropdown (no more scroll arrows) (78d1180)
+
 ## [1.12.0](https://github.com/blamixology/blamixshell/releases/tag/v1.12.0) - 2026-10-05
 
 ### Improvements
