@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.13.0](https://github.com/blamixology/blamixshell/releases/tag/v1.13.0) - 2026-10-05
+
+### Improvements
+- Focus mode: only tabs and terminal; leave via Ctrl+Shift+H, tab/terminal right-click menu, corner button or palette (410ca74)
+
 ## [1.12.1](https://github.com/blamixology/blamixshell/releases/tag/v1.12.1) - 2026-10-05
 
 ### Improvements
