@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.14.2](https://github.com/blamixology/blamixshell/releases/tag/v1.14.2) - 2026-10-05
+
+### Improvements
+- Settings: terminal font, size, cursor and colors preview live in open terminals; Cancel reverts (c93bffa)
+
 ## [1.14.1](https://github.com/blamixology/blamixshell/releases/tag/v1.14.1) - 2026-10-05
 
 ### Improvements
