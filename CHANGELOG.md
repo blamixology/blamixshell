@@ -2,6 +2,12 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.14.0](https://github.com/blamixology/blamixshell/releases/tag/v1.14.0) - 2026-10-05
+
+### Improvements
+- Appearance settings: interface themes (Midnight, Graphite, Nord, Solarized, Light, High contrast), interface and tab font/size (b253f3b)
+- Roadmap: open a server from the command line / from BlamixFiles (90891d1)
+
 ## [1.13.0](https://github.com/blamixology/blamixshell/releases/tag/v1.13.0) - 2026-10-05
 
 ### Improvements
