@@ -2,7 +2,15 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.14.1](https://github.com/blamixology/blamixshell/releases/tag/v1.14.1) - 2026-10-05
+
+### Improvements
+- Appearance: themes, fonts and sizes preview live as you select them; Save keeps, Cancel reverts (8adcd83)
+
 ## [1.14.0](https://github.com/blamixology/blamixshell/releases/tag/v1.14.0) - 2026-10-05
+
+### Fixes
+- Tests: theme font-size test uses the platform font scale; fix escape warning in cron test (c8ad686)
 
 ### Improvements
 - Appearance settings: interface themes (Midnight, Graphite, Nord, Solarized, Light, High contrast), interface and tab font/size (b253f3b)
