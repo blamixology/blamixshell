@@ -64,6 +64,7 @@ class TerminalBridge(QObject):
     sig_focus = Signal()
     sig_title = Signal(str)
     sig_command = Signal(str, str)      # screen line where Enter was pressed, or a pasted command
+    sig_context = Signal()              # right-click (when right-click doesn't paste)
 
     @Slot(str)
     def input(self, data: str) -> None:
@@ -95,7 +96,7 @@ class TerminalBridge(QObject):
 
     @Slot()
     def contextMenu(self) -> None:
-        pass
+        self.sig_context.emit()
 
     @Slot(str)
     def shortcut(self, name: str) -> None:
@@ -152,6 +153,7 @@ class TerminalPane(QWidget):
     state_changed = Signal(object)
     user_input = Signal(object, bytes)     # the tab decides where input goes (broadcast)
     dashboard_requested = Signal(object)
+    context_requested = Signal(object)
 
     def __init__(self, server: Server, resolve, settings, parent=None, tint: str = ""):
         super().__init__(parent)
@@ -222,6 +224,7 @@ class TerminalPane(QWidget):
         b.sig_resize.connect(self._on_resize)
         b.sig_shortcut.connect(lambda n: self.shortcut.emit(self, n))
         b.sig_paste.connect(self.paste)
+        b.sig_context.connect(lambda: self.context_requested.emit(self))
         b.sig_focus.connect(lambda: self.activated.emit(self))
         b.sig_title.connect(self._on_title)
         b.sig_command.connect(self._on_command_line)

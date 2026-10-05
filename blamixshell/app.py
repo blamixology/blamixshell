@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QObject, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QGridLayout, QHBoxLayout, QInputDialog,
                                QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton,
                                QSplitter, QStackedWidget, QTabBar, QTabWidget, QToolButton, QVBoxLayout,
@@ -289,6 +289,7 @@ class MainWindow(QMainWindow):
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(0)
         tb = QWidget(objectName="Toolbar")
+        self.toolbar_widget = tb
         tb.setAttribute(Qt.WA_StyledBackground, True)
         tb.setFixedHeight(46)
         tl = QHBoxLayout(tb)
@@ -347,6 +348,8 @@ class MainWindow(QMainWindow):
         self.tabs.setElideMode(Qt.ElideRight)
         self.tabs.setIconSize(QSize(18, 10))
         self.tabs.tabBar().setDrawBase(False)
+        self.tabs.tabBar().setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tabs.tabBar().customContextMenuRequested.connect(self._tab_bar_menu)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(self._on_tab_changed)
         newtab = QToolButton()
@@ -354,6 +357,12 @@ class MainWindow(QMainWindow):
         newtab.setToolTip(kb("New connection (Ctrl+Shift+T)"))
         newtab.clicked.connect(self.open_palette)
         self.tabs.setCornerWidget(newtab, Qt.TopRightCorner)
+        self.focus_btn = QToolButton()               # only visible in focus mode: a way out you can't forget
+        self.focus_btn.setIcon(icon("sidebar", C["muted"], 16))
+        self.focus_btn.setToolTip(kb("Leave focus mode (Ctrl+Shift+H), or right-click a tab"))
+        self.focus_btn.clicked.connect(lambda: self.set_focus_mode(False))
+        self.focus_btn.hide()
+        self.tabs.setCornerWidget(self.focus_btn, Qt.TopLeftCorner)
         self.stack.addWidget(self.welcome)
         self.stack.addWidget(self.tabs)
         cl.addWidget(self.stack, 1)
@@ -398,6 +407,19 @@ class MainWindow(QMainWindow):
 
         self._install_shortcuts()
         self.refresh_all()
+
+        # focus mode: only the tabs and the terminal
+        self.focus_mode = False
+        self._focus_saved = (True, False)
+        self._toast_id = 0
+        self._toast_lbl = QLabel(self)
+        self._toast_lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._toast_lbl.setStyleSheet(f"background:{C['surface2']}; color:{C['text']}; border:1px solid "
+                                      f"{C['border']}; border-radius:10px; padding:8px 14px;")
+        self._toast_lbl.hide()
+        self.statusBar().messageChanged.connect(lambda m: self.focus_mode and m and self._toast(m, 4000))
+        if settings.get("focus_mode"):
+            QTimer.singleShot(0, lambda: self.set_focus_mode(True))
         geo = settings.get("window_geometry")
         if geo:
             self.restoreGeometry(QByteArray.fromBase64(geo.encode()))
@@ -470,7 +492,7 @@ class MainWindow(QMainWindow):
 
     def _install_shortcuts(self) -> None:
         mapping = {"P": "p", "T": "t", "W": "w", "D": "d", "E": "e", "B": "b", "S": "s",
-                   "N": "n", "R": "r", "V": "v", "L": "l", "I": "i", "O": "o"}
+                   "N": "n", "R": "r", "V": "v", "L": "l", "I": "i", "O": "o", "H": "h"}
         # On macOS Qt's "Ctrl" is the Cmd key: Cmd+P, Cmd+D … (Cmd+Shift+… works too)
         prefixes = ["Ctrl+Shift+", "Ctrl+"] if IS_MAC else ["Ctrl+Shift+"]
         for prefix in prefixes:
@@ -500,6 +522,7 @@ class MainWindow(QMainWindow):
             "ctrl+shift+d": lambda: self.split(Qt.Horizontal),
             "ctrl+shift+e": lambda: self.split(Qt.Vertical),
             "ctrl+shift+o": self.rotate_split,
+            "ctrl+shift+h": self.toggle_focus_mode,
             "ctrl+shift+b": lambda: (self.btn_bcast.toggle(), self.toggle_broadcast()),
             "ctrl+shift+s": lambda: (self.btn_sftp.toggle(), self.toggle_sftp()),
             "ctrl+shift+i": lambda: self.open_dashboard(),
@@ -724,6 +747,7 @@ class MainWindow(QMainWindow):
         pane.shortcut.connect(lambda _p, n: self.handle_shortcut(n))
         pane.state_changed.connect(self._on_pane_state)
         pane.dashboard_requested.connect(self.open_dashboard)
+        pane.context_requested.connect(self._terminal_menu)
         if touch and server.id in self.store.servers:
             self.store.touch(server.id)
         return pane
@@ -914,6 +938,12 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def toggle_sidebar(self) -> None:
+        if self.focus_mode:                       # the server list is part of what focus mode hides
+            self.btn_side.blockSignals(True)
+            self.btn_side.setChecked(not self.btn_side.isChecked())
+            self.btn_side.blockSignals(False)
+            self.set_focus_mode(False)
+            return
         vis = self.btn_side.isChecked()
         self.side.setVisible(vis)
         if vis:
@@ -927,6 +957,12 @@ class MainWindow(QMainWindow):
         self.settings.save()
 
     def toggle_sftp(self) -> None:
+        if self.focus_mode:
+            self.btn_sftp.blockSignals(True)
+            self.btn_sftp.setChecked(not self.btn_sftp.isChecked())
+            self.btn_sftp.blockSignals(False)
+            self.set_focus_mode(False)
+            return
         vis = self.btn_sftp.isChecked()
         self.sftp.setVisible(vis)
         self.settings["sftp_visible"] = vis
@@ -939,6 +975,75 @@ class MainWindow(QMainWindow):
                 self.root_split.setSizes(sizes)
             self.sftp.session = None
             self._sync_sftp()
+
+    # ================================================================ focus mode
+    def toggle_focus_mode(self) -> None:
+        self.set_focus_mode(not self.focus_mode)
+
+    def set_focus_mode(self, on: bool) -> None:
+        """Hide everything but the tabs and the terminal (and bring it all back). The way out is
+        shown on screen, in the tab right-click menu, in the terminal menu and as Ctrl+Shift+H."""
+        if on == self.focus_mode:
+            return
+        self.focus_mode = on
+        if on:
+            self._focus_saved = (not self.side.isHidden(), not self.sftp.isHidden())
+            for w in (self.side, self.toolbar_widget, self.sftp):
+                w.hide()
+            self.statusBar().hide()
+            self.focus_btn.show()
+            self._toast(kb("Focus mode: right-click a tab, click the button at the left of the tabs, or press "
+                           "Ctrl+Shift+H to leave"), 7000)
+        else:
+            side, sftp = self._focus_saved
+            self.side.setVisible(side)
+            self.sftp.setVisible(sftp)
+            self.btn_side.setChecked(side)
+            self.btn_sftp.setChecked(sftp)
+            self.toolbar_widget.show()
+            self.statusBar().show()
+            self.focus_btn.hide()
+            self._toast_id += 1
+            self._toast_lbl.hide()
+            if sftp:
+                self._sync_sftp()
+        self.settings["focus_mode"] = on
+        self.settings.save()
+
+    def _toast(self, text: str, ms: int = 4000) -> None:
+        """A short message over the window (the status bar is hidden in focus mode)."""
+        lbl = self._toast_lbl
+        lbl.setText(text)
+        lbl.adjustSize()
+        lbl.move(max(8, (self.width() - lbl.width()) // 2), 64)
+        lbl.raise_()
+        lbl.show()
+        self._toast_id += 1
+        tid = self._toast_id
+        QTimer.singleShot(ms, lambda: tid == self._toast_id and lbl.hide())
+
+    def _focus_action(self, menu: QMenu) -> None:
+        menu.addAction(icon("sidebar"), kb("Leave focus mode  (Ctrl+Shift+H)") if self.focus_mode else
+                       kb("Focus mode: only tabs and terminal  (Ctrl+Shift+H)"), self.toggle_focus_mode)
+
+    def _tab_bar_menu(self, pos) -> None:
+        bar = self.tabs.tabBar()
+        i = bar.tabAt(pos)
+        menu = QMenu(self)
+        self._focus_action(menu)
+        if i >= 0:
+            menu.addSeparator()
+            menu.addAction(icon("x"), "Close tab", lambda: self.close_tab(i))
+        menu.exec(bar.mapToGlobal(pos))
+
+    def _terminal_menu(self, pane) -> None:
+        menu = QMenu(self)
+        menu.addAction(icon("copy"), "Paste", pane.paste)
+        menu.addAction(icon("terminal"), "Clear terminal", lambda: pane.view.bridge.command.emit("clear"))
+        menu.addAction(icon("search"), "Find in terminal", lambda: pane.view.bridge.command.emit("find"))
+        menu.addSeparator()
+        self._focus_action(menu)
+        menu.exec(QCursor.pos())
 
     # ================================================================ palette
     def open_palette(self) -> None:
@@ -955,6 +1060,7 @@ class MainWindow(QMainWindow):
             ("Split down with another server…", "", lambda: self.split_with("down"), "split-v"),
             ("Rotate split (side by side ↔ stacked)", "Ctrl+Shift+O", self.rotate_split, "rotate"),
             ("Toggle server list", "Ctrl+Shift+L", lambda: (self.btn_side.toggle(), self.toggle_sidebar()), "sidebar"),
+            ("Focus mode: only tabs and terminal", "Ctrl+Shift+H", self.toggle_focus_mode, "sidebar"),
             ("Toggle files panel", "Ctrl+Shift+S", lambda: (self.btn_sftp.toggle(), self.toggle_sftp()), "folder"),
             ("Server dashboard", "Ctrl+Shift+I", lambda: self.open_dashboard(), "gauge"),
             ("Toggle broadcast", "Ctrl+Shift+B", lambda: (self.btn_bcast.toggle(), self.toggle_broadcast()), "broadcast"),
@@ -978,7 +1084,7 @@ class MainWindow(QMainWindow):
             acts.append((f"Snippet: {sn.name}", sn.command.replace("\n", " ⏎ ")[:60],
                          lambda c=sn.command: self.send_snippet(c), "code"))
         acts = [(t, kb(sub), cb, ic) for t, sub, cb, ic in acts]
-        pal = CommandPalette(entries + acts, self, anchor=getattr(self, "pal_btn", None))
+        pal = CommandPalette(entries + acts, self, anchor=None if self.focus_mode else getattr(self, "pal_btn", None))
         pal.quick_connect = self.quick_connect
         pal.exec()
 
