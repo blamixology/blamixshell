@@ -753,12 +753,17 @@ class ServerDialog(_Base):
 
 # ======================================================================= settings
 class SettingsDialog(_Base):
+    # the terminal's look: previewed live in the open terminals, kept on Save, put back on Cancel
+    TERMINAL_KEYS = ("font_family", "font_size", "line_height", "theme", "cursor_style", "cursor_blink",
+                     "scrollback", "tint_terminals")
+
     def __init__(self, settings: Settings, store: Store, parent=None):
         super().__init__(parent)
         self.settings = settings
         self.store = store
         self._orig_look = {k: settings.get(k) for k in ("ui_theme", "ui_font", "ui_font_size", "tab_font",
                                                         "tab_font_size")}
+        self._orig_term = {k: settings.get(k) for k in self.TERMINAL_KEYS}
         self.setWindowTitle("Settings")
         self.setMinimumWidth(580)
         lay = QVBoxLayout(self)
@@ -804,8 +809,9 @@ class SettingsDialog(_Base):
         fa.addRow("Interface font", self.ui_font)
         fa.addRow("Interface text size", self.ui_size)
         la.addLayout(fa)
-        la.addWidget(QLabel("Choices show at once so you can judge them. They are kept when you press Save; "
-                            "Cancel puts the previous look back.", objectName="Hint", wordWrap=True))
+        la.addWidget(QLabel("Choices show at once, in the interface and in the open terminals, so you can judge "
+                            "them. They are kept when you press Save; Cancel puts the previous look back.",
+                            objectName="Hint", wordWrap=True))
         la.addWidget(_section("Tabs"))
         fb = QFormLayout()
         fb.setVerticalSpacing(10)
@@ -821,8 +827,8 @@ class SettingsDialog(_Base):
         la.addLayout(fb)
         la.addWidget(QLabel("For the terminal tabs and the tabs of the server dashboard.", objectName="Hint"))
         la.addWidget(_section("Terminal"))
-        la.addWidget(QLabel("The terminal's own font, size, line height and color theme are on the Terminal tab.",
-                            objectName="Hint", wordWrap=True))
+        la.addWidget(QLabel("The terminal's own font, size, line height, cursor and color theme are on the Terminal "
+                            "tab, and preview live in the same way.", objectName="Hint", wordWrap=True))
         la.addStretch(1)
         from PySide6.QtCore import QTimer
         self._look_timer = QTimer(self)
@@ -1036,23 +1042,40 @@ class SettingsDialog(_Base):
         bb.rejected.connect(self.reject)
         lay.addSpacing(8)
         lay.addWidget(bb)
+        self._wire_preview()
+
+    def _wire_preview(self) -> None:
+        """The terminal controls (built after the appearance ones) preview live as well."""
+        self.font.currentTextChanged.connect(lambda _t: self._look_timer.start())
+        for box in (self.theme, self.cursor):
+            box.currentIndexChanged.connect(lambda _i: self._look_timer.start())
+        for spin in (self.size, self.lh, self.scroll):
+            spin.valueChanged.connect(lambda _v: self._look_timer.start())
+        for check in (self.blink, self.tint):
+            check.toggled.connect(lambda _c: self._look_timer.start())
+
+    def _term_values(self) -> dict:
+        fam = self.font.currentText().strip()
+        return {"font_family": f"{fam}, {MONO_DEFAULT}", "font_size": self.size.value(),
+                "line_height": round(self.lh.value(), 2), "theme": self.theme.currentText(),
+                "cursor_style": self.cursor.currentText(), "cursor_blink": self.blink.isChecked(),
+                "scrollback": self.scroll.value(), "tint_terminals": self.tint.isChecked()}
+
+    def _apply_terminals(self, values: dict) -> None:
+        """Show `values` in every open terminal (in memory: nothing is written to disk here)."""
+        self.settings.update({k: v for k, v in values.items() if v is not None})
+        parent = self.parent()
+        for pane in (parent.all_panes() if hasattr(parent, "all_panes") else []):
+            pane.apply_settings()
 
     def _save(self) -> None:
         s = self.settings
-        fam = self.font.currentText().strip()
-        s["font_family"] = f"{fam}, {MONO_DEFAULT}"
-        s["font_size"] = self.size.value()
-        s["line_height"] = round(self.lh.value(), 2)
-        s["theme"] = self.theme.currentText()
+        s.update(self._term_values())
         s["ui_theme"] = self.ui_theme.currentText()
         s["ui_font"] = self.ui_font.currentData() or ""
         s["ui_font_size"] = self.ui_size.value()
         s["tab_font"] = self.tab_font.currentData() or ""
         s["tab_font_size"] = self.tab_size.value()
-        s["cursor_style"] = self.cursor.currentText()
-        s["cursor_blink"] = self.blink.isChecked()
-        s["scrollback"] = self.scroll.value()
-        s["tint_terminals"] = self.tint.isChecked()
         s["copy_on_select"] = self.cos.isChecked()
         s["right_click_paste"] = self.rcp.isChecked()
         s["confirm_multiline_paste"] = self.cmp.isChecked()
@@ -1083,6 +1106,7 @@ class SettingsDialog(_Base):
         from PySide6.QtWidgets import QApplication
         v = self._look_values()
         theme.switch_theme(QApplication.instance(), v["ui_theme"], v)
+        self._apply_terminals(self._term_values())
 
     def reject(self) -> None:
         """Cancel: put the look back as it was when the dialog opened."""
@@ -1090,6 +1114,7 @@ class SettingsDialog(_Base):
         self._look_timer.stop()
         orig = {k: v for k, v in self._orig_look.items() if v is not None}
         theme.switch_theme(QApplication.instance(), orig.get("ui_theme", theme.DEFAULT_THEME), orig)
+        self._apply_terminals(self._orig_term)
         super().reject()
 
     def _clear_history(self) -> None:
