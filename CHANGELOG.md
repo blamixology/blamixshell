@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.14.3](https://github.com/blamixology/blamixshell/releases/tag/v1.14.3) - 2026-10-05
+
+### Improvements
+- Dashboard: click-to-sort tables (services, processes, ports, updates, storage), state and user filters, filters for ports and updates (dc1906a)
+
 ## [1.14.2](https://github.com/blamixology/blamixshell/releases/tag/v1.14.2) - 2026-10-05
 
 ### Improvements
