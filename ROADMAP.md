@@ -67,6 +67,7 @@ Legend: ✅ done · 🚧 in progress · 🗓 planned · 💡 later / maybe
 | | Feature | What it means |
 |---|---|---|
 | 🗓 | **Local terminal tabs** | PowerShell, cmd, WSL or Git Bash in the same window (ConPTY on Windows), bash/zsh on macOS and Linux. The terminal layer is already in place (it runs SSM shells). |
+| 🗓 | **Open a server from the command line / from BlamixFiles** | `blamixshell gui --connect "<server>"` or `--connect user@host:port` (optional `--key`, `--jump`; never a password on the command line). If BlamixShell is already open, the new launch hands the request to it over a local socket instead of opening a second window; a server with the same host, port and user in the vault is reused, otherwise the New server dialog opens prefilled. Needed for BlamixFiles' planned "Open in BlamixShell" button (SFTP / SCP sites only). |
 
 ## Gaps vs. other tools
 
