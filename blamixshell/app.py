@@ -1586,8 +1586,34 @@ class MainWindow(QMainWindow):
         self.close()
         os._exit(0)
 
+    def restart_app(self) -> None:
+        """Start a fresh copy of BlamixShell and close this one (for changes that apply at startup)."""
+        import sys
+        from PySide6.QtCore import QProcess
+        main = sys.modules.get("__main__")
+        spec = getattr(main, "__spec__", None)
+        if getattr(sys, "frozen", False):
+            prog, args = sys.executable, sys.argv[1:]
+        elif spec is not None and spec.name:
+            prog, args = sys.executable, ["-m", spec.name.removesuffix(".__main__")] + sys.argv[1:]
+        else:
+            prog, args = sys.executable, sys.argv
+        self._force_quit = True
+        QProcess.startDetached(prog, args)
+        self.close()
+
     def open_settings(self) -> None:
         if SettingsDialog(self.settings, self.store, self).exec() == QDialog.Accepted:
+            from . import theme
+            theme.apply_palette(QApplication.instance(), self.settings)      # fonts and sizes: at once
+            if self.settings.get("ui_theme", theme.DEFAULT_THEME) != theme.CURRENT:
+                ask = QMessageBox.question(
+                    self, "Restart to change the theme",
+                    f"The “{self.settings.get('ui_theme')}” theme is used after BlamixShell restarts "
+                    "(your sessions are closed and the layout is restored). Restart now?")
+                if ask == QMessageBox.Yes:
+                    self.restart_app()
+                    return
             for p in self.all_panes():
                 p.apply_settings()
                 p.apply_suggest()

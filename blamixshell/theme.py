@@ -8,26 +8,65 @@ from PySide6.QtCore import QByteArray, QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
-C = {
-    "bg": "#0b0d12",
-    "sidebar": "#10131a",
-    "surface": "#151923",
-    "surface2": "#1b2030",
-    "hover": "#222839",
-    "border": "#232838",
-    "text": "#e6e9f2",
-    "muted": "#8a92a8",
-    "faint": "#5b6378",
-    "accent": "#7c8cff",
-    "accent2": "#a78bfa",
-    "ok": "#3ddc97",
-    "warn": "#ffc857",
-    "danger": "#ff5d73",
+# Interface themes. `C` holds the colors of the active one (modules share this one dict, so it is
+# changed in place); a theme is picked at startup (Settings > Appearance, applied after a restart).
+THEMES: dict[str, dict] = {
+    "Midnight": {"dark": True, "colors": {
+        "bg": "#0b0d12", "sidebar": "#10131a", "surface": "#151923", "surface2": "#1b2030", "hover": "#222839",
+        "border": "#232838", "text": "#e6e9f2", "muted": "#8a92a8", "faint": "#5b6378", "accent": "#7c8cff",
+        "accent2": "#a78bfa", "ok": "#3ddc97", "warn": "#ffc857", "danger": "#ff5d73", "on_accent": "#0b0d12"}},
+    "Graphite": {"dark": True, "colors": {
+        "bg": "#121212", "sidebar": "#171717", "surface": "#1e1e1e", "surface2": "#262626", "hover": "#2f2f2f",
+        "border": "#333333", "text": "#e8e8e8", "muted": "#a0a0a0", "faint": "#6b6b6b", "accent": "#5aa0ff",
+        "accent2": "#b48ead", "ok": "#4cd38a", "warn": "#ffcb6b", "danger": "#ff6b6b", "on_accent": "#0a0a0a"}},
+    "Nord": {"dark": True, "colors": {
+        "bg": "#2e3440", "sidebar": "#2b303b", "surface": "#3b4252", "surface2": "#434c5e", "hover": "#4c566a",
+        "border": "#4c566a", "text": "#eceff4", "muted": "#bcc6d8", "faint": "#7f8aa0", "accent": "#88c0d0",
+        "accent2": "#b48ead", "ok": "#a3be8c", "warn": "#ebcb8b", "danger": "#e07a85", "on_accent": "#2e3440"}},
+    "Solarized Dark": {"dark": True, "colors": {
+        "bg": "#002b36", "sidebar": "#00252e", "surface": "#073642", "surface2": "#0b4452", "hover": "#124b5a",
+        "border": "#0f4a58", "text": "#eee8d5", "muted": "#a6b3b3", "faint": "#6f878f", "accent": "#4aa3e8",
+        "accent2": "#8a8fe0", "ok": "#9db300", "warn": "#d4a017", "danger": "#ff6b66", "on_accent": "#002b36"}},
+    "Light": {"dark": False, "colors": {
+        "bg": "#f4f5f8", "sidebar": "#eceef3", "surface": "#ffffff", "surface2": "#f0f2f7", "hover": "#e4e8f0",
+        "border": "#d8dce6", "text": "#1d2433", "muted": "#5b6478", "faint": "#8a92a6", "accent": "#4f5fe8",
+        "accent2": "#7c5cf0", "ok": "#1a9f6a", "warn": "#b7791f", "danger": "#d63a4f", "on_accent": "#ffffff"}},
+    "High contrast": {"dark": True, "colors": {
+        "bg": "#000000", "sidebar": "#0a0a0a", "surface": "#111111", "surface2": "#1a1a1a", "hover": "#2a2a2a",
+        "border": "#6b6b6b", "text": "#ffffff", "muted": "#d0d0d0", "faint": "#a0a0a0", "accent": "#ffd400",
+        "accent2": "#00e5ff", "ok": "#00ff7f", "warn": "#ffb000", "danger": "#ff4d4d", "on_accent": "#000000"}},
 }
+DEFAULT_THEME = "Midnight"
+C: dict[str, str] = {}
+CURRENT = DEFAULT_THEME           # the theme this session runs with
+IS_DARK = True
+
+
+def theme_names() -> list[str]:
+    return list(THEMES)
+
+
+def set_theme(name: str) -> str:
+    """Make `name` the active theme (unknown names fall back to the default). Returns the name used.
+    Call before the windows are built: their inline styles read these colors when they are created."""
+    global CURRENT, IS_DARK
+    name = name if name in THEMES else DEFAULT_THEME
+    t = THEMES[name]
+    colors = dict(t["colors"])
+    bg = QColor(colors["bg"])
+    colors["accent_hover"] = blend(colors["accent"], "#ffffff" if t["dark"] else "#000000", 0.18 if t["dark"] else 0.14)
+    colors["overlay"] = f"rgba({bg.red()},{bg.green()},{bg.blue()},215)"
+    C.clear()
+    C.update(colors)
+    _cache.clear()
+    CURRENT, IS_DARK = name, t["dark"]
+    return name
 
 UI_FONT = "Segoe UI Variable Text"
 
-QSS = f"""
+def _qss() -> str:
+    """The application stylesheet, from the active theme's colors."""
+    return f"""
 * {{ font-family: "{UI_FONT}", "Segoe UI", "Inter", sans-serif; font-size: 10pt; color: {C['text']}; }}
 QMainWindow, QDialog {{ background: {C['bg']}; }}
 QToolTip {{ background: {C['surface2']}; color: {C['text']}; border: 1px solid {C['border']};
@@ -61,8 +100,8 @@ QPushButton {{ background: {C['surface2']}; border: 1px solid {C['border']}; bor
 QPushButton:hover {{ background: {C['hover']}; }}
 QPushButton:pressed {{ background: {C['surface']}; }}
 QPushButton:disabled {{ color: {C['faint']}; }}
-QPushButton#Primary {{ background: {C['accent']}; border: 1px solid {C['accent']}; color: #0b0d12; font-weight: 600; }}
-QPushButton#Primary:hover {{ background: #95a2ff; }}
+QPushButton#Primary {{ background: {C['accent']}; border: 1px solid {C['accent']}; color: {C['on_accent']}; font-weight: 600; }}
+QPushButton#Primary:hover {{ background: {C['accent_hover']}; }}
 QPushButton#Danger {{ background: transparent; border: 1px solid {C['danger']}; color: {C['danger']}; }}
 QPushButton#Ghost, QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 6px; }}
 QPushButton#Ghost:hover, QToolButton:hover {{ background: {C['hover']}; }}
@@ -142,7 +181,7 @@ QRadioButton::indicator:checked {{ border: 1px solid {C['accent']};
 #Palette QListWidget::item {{ padding: 8px 10px; }}
 #PaneHeader {{ background: {C['surface']}; border-bottom: 1px solid {C['border']}; }}
 #PaneHeader[active="true"] {{ border-bottom: 1px solid {C['accent']}; }}
-#Overlay {{ background: rgba(11,13,18,215); }}
+#Overlay {{ background: {C['overlay']}; }}
 #Toolbar {{ background: {C['surface']}; border-bottom: 1px solid {C['border']}; }}
 #Muted {{ color: {C['muted']}; }}
 #Hint {{ color: {C['faint']}; font-size: 8.5pt; }}
@@ -208,6 +247,9 @@ def blend(base: str, color: str, amount: float) -> str:
     return QColor(mix(a.red(), b.red()), mix(a.green(), b.green()), mix(a.blue(), b.blue())).name()
 
 
+set_theme(DEFAULT_THEME)
+
+
 def icon(name: str, color: str | None = None, size: int = 18) -> QIcon:
     color = color or C["muted"]
     key = (name, color, size)
@@ -249,7 +291,10 @@ def star_icon(filled: bool, size: int = 16) -> QIcon:
     return _cache[key]
 
 
-def apply_palette(app) -> None:
+def apply_palette(app, settings=None) -> None:
+    """Palette + stylesheet. `settings` (optional) carries the font choices: the interface font and
+    size, and the font and size of the tabs. These can be re-applied while the app runs."""
+    s = settings or {}
     app.setStyle("Fusion")
     pal = QPalette()
     pal.setColor(QPalette.Window, QColor(C["bg"]))
@@ -260,17 +305,33 @@ def apply_palette(app) -> None:
     pal.setColor(QPalette.Button, QColor(C["surface2"]))
     pal.setColor(QPalette.ButtonText, QColor(C["text"]))
     pal.setColor(QPalette.Highlight, QColor(C["accent"]))
-    pal.setColor(QPalette.HighlightedText, QColor("#0b0d12"))
+    pal.setColor(QPalette.HighlightedText, QColor(C["on_accent"]))
     pal.setColor(QPalette.PlaceholderText, QColor(C["faint"]))
     pal.setColor(QPalette.ToolTipBase, QColor(C["surface2"]))
     pal.setColor(QPalette.ToolTipText, QColor(C["text"]))
     app.setPalette(pal)
     from .paths import assets_dir
     from .platform_ui import FONT_SCALE, pick_ui_font
-    fam = pick_ui_font()
-    qss = QSS.replace("__ASSETS__", assets_dir().as_posix()).replace(UI_FONT, fam)
-    if FONT_SCALE != 1.0:
-        qss = re.sub(r"(\d+(?:\.\d+)?)pt", lambda m: f"{float(m.group(1)) * FONT_SCALE:.1f}pt", qss)
+    fam = str(s.get("ui_font") or "").strip() or pick_ui_font()
+    try:
+        base = float(s.get("ui_font_size") or 10)
+    except (TypeError, ValueError):
+        base = 10.0
+    factor = FONT_SCALE * max(7.0, min(20.0, base)) / 10.0
+    qss = _qss().replace("__ASSETS__", assets_dir().as_posix()).replace(UI_FONT, fam)
+    if factor != 1.0:
+        qss = re.sub(r"(\d+(?:\.\d+)?)pt", lambda m: f"{float(m.group(1)) * factor:.1f}pt", qss)
+    tab = []
+    if str(s.get("tab_font") or "").strip():
+        tab.append(f'font-family: "{str(s["tab_font"]).strip()}";')
+    try:
+        tab_pt = float(s.get("tab_font_size") or 0)
+    except (TypeError, ValueError):
+        tab_pt = 0.0
+    if tab_pt > 0:
+        tab.append(f"font-size: {tab_pt * FONT_SCALE:.1f}pt;")
+    if tab:                                    # (after the scaling above: this size is the final one)
+        qss += "\nQTabBar::tab { " + " ".join(tab) + " }\n"
     app.setStyleSheet(qss)
 
 
@@ -284,8 +345,8 @@ def style_window(widget) -> None:
 
         hwnd = wintypes.HWND(int(widget.winId()))
         dwm = ctypes.windll.dwmapi
-        on = ctypes.c_int(1)
-        dwm.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(on), ctypes.sizeof(on))   # dark mode
+        on = ctypes.c_int(1 if IS_DARK else 0)
+        dwm.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(on), ctypes.sizeof(on))   # dark / light title bar
         col = QColor(C["sidebar"])
         colorref = ctypes.c_int(col.red() | (col.green() << 8) | (col.blue() << 16))
         dwm.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(colorref), ctypes.sizeof(colorref))  # caption

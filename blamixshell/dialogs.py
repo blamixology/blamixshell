@@ -16,6 +16,7 @@ from .models import COLORS, Server, Snippet, Store, Tunnel
 from .platform_ui import MONO_DEFAULT
 from .settings import TERMINAL_THEMES, Settings
 from .ssh_core import test_connection
+from . import theme
 from .theme import C, icon, style_window
 
 
@@ -771,7 +772,57 @@ class SettingsDialog(_Base):
             pl.setSpacing(8)
             tabs.addTab(w, title)
             return pl
-        lt, lg, ll, lv = page("Terminal"), page("General"), page("Logging"), page("Vault && backups")
+        la, lt, lg, ll, lv = (page("Appearance"), page("Terminal"), page("General"), page("Logging"),
+                              page("Vault && backups"))
+
+        # ---- appearance: interface theme, fonts and sizes, tabs
+        la.addWidget(_section("Interface"))
+        fa = QFormLayout()
+        fa.setVerticalSpacing(10)
+        fa.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.ui_theme = QComboBox()
+        self.ui_theme.addItems(theme.theme_names())
+        self.ui_theme.setCurrentText(settings.get("ui_theme", theme.DEFAULT_THEME))
+        families = sorted(QFontDatabase.families(), key=str.lower)
+
+        def font_combo(first: str, current: str) -> QComboBox:
+            box = QComboBox()
+            box.addItem(first, "")
+            for fam in families:
+                box.addItem(fam, fam)
+            box.setCurrentIndex(max(0, box.findData(current)))
+            box.setMaxVisibleItems(18)
+            return box
+        self.ui_font = font_combo("Automatic (the system font)", settings.get("ui_font", ""))
+        self.ui_size = QSpinBox()
+        self.ui_size.setRange(8, 16)
+        self.ui_size.setSuffix(" pt")
+        self.ui_size.setValue(int(settings.get("ui_font_size", 10) or 10))
+        fa.addRow("Interface theme", self.ui_theme)
+        fa.addRow("Interface font", self.ui_font)
+        fa.addRow("Interface text size", self.ui_size)
+        la.addLayout(fa)
+        la.addWidget(QLabel("The theme (colors of the windows, lists and buttons) changes after a restart: you "
+                            "are offered one when you save. Fonts and sizes apply at once.",
+                            objectName="Hint", wordWrap=True))
+        la.addWidget(_section("Tabs"))
+        fb = QFormLayout()
+        fb.setVerticalSpacing(10)
+        fb.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.tab_font = font_combo("Same as the interface", settings.get("tab_font", ""))
+        self.tab_size = QSpinBox()
+        self.tab_size.setRange(0, 20)
+        self.tab_size.setSuffix(" pt")
+        self.tab_size.setSpecialValueText("Same as the interface")
+        self.tab_size.setValue(int(settings.get("tab_font_size", 0) or 0))
+        fb.addRow("Tab font", self.tab_font)
+        fb.addRow("Tab text size", self.tab_size)
+        la.addLayout(fb)
+        la.addWidget(QLabel("For the terminal tabs and the tabs of the server dashboard.", objectName="Hint"))
+        la.addWidget(_section("Terminal"))
+        la.addWidget(QLabel("The terminal's own font, size, line height and color theme are on the Terminal tab.",
+                            objectName="Hint", wordWrap=True))
+        la.addStretch(1)
 
         f = QFormLayout()
         f.setVerticalSpacing(10)
@@ -805,7 +856,7 @@ class SettingsDialog(_Base):
         f.addRow("Font", self.font)
         f.addRow("Size", self.size)
         f.addRow("Line height", self.lh)
-        f.addRow("Color theme", self.theme)
+        f.addRow("Terminal color theme", self.theme)
         f.addRow("Cursor", self.cursor)
         f.addRow("", self.blink)
         f.addRow("Scrollback lines", self.scroll)
@@ -983,6 +1034,11 @@ class SettingsDialog(_Base):
         s["font_size"] = self.size.value()
         s["line_height"] = round(self.lh.value(), 2)
         s["theme"] = self.theme.currentText()
+        s["ui_theme"] = self.ui_theme.currentText()
+        s["ui_font"] = self.ui_font.currentData() or ""
+        s["ui_font_size"] = self.ui_size.value()
+        s["tab_font"] = self.tab_font.currentData() or ""
+        s["tab_font_size"] = self.tab_size.value()
         s["cursor_style"] = self.cursor.currentText()
         s["cursor_blink"] = self.blink.isChecked()
         s["scrollback"] = self.scroll.value()
@@ -1437,7 +1493,7 @@ class UpdateDialog(_Base):
         row.addWidget(later)
         row.addWidget(page)
         if can_install:
-            self.install_btn = QPushButton(icon("download", "#0b0d12"), " Install && restart", objectName="Primary")
+            self.install_btn = QPushButton(icon("download", C["on_accent"]), " Install && restart", objectName="Primary")
             self.install_btn.clicked.connect(lambda: self._done("install"))
             self.install_btn.setDefault(True)
             row.addWidget(self.install_btn)
@@ -1498,7 +1554,7 @@ class AboutDialog(_Base):
         bl.setSpacing(10)
         bl.addWidget(QLabel("If BlamixShell saves you time, you can buy me a coffee. Thanks!", wordWrap=True))
         row = QHBoxLayout()
-        coffee = QPushButton(icon("coffee", "#0b0d12"), " Buy me a coffee", objectName="Primary")
+        coffee = QPushButton(icon("coffee", C["on_accent"]), " Buy me a coffee", objectName="Primary")
         coffee.clicked.connect(lambda: open_url(links.KOFI_URL))
         sponsor = QPushButton(icon("heart", C["muted"]), " Sponsor on GitHub")
         sponsor.clicked.connect(lambda: open_url(links.SPONSOR_URL))

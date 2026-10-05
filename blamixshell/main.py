@@ -30,10 +30,12 @@ def main() -> None:
     from .models import Store
     from .paths import assets_dir, default_vault_path, set_vault_path, vault_path
     from .settings import Settings
-    from .theme import apply_palette
+    from .theme import apply_palette, set_theme
     from .vault import Vault, VaultError, WrongPassword
 
-    apply_palette(app)
+    early = Settings()                       # the look is chosen before any window is built
+    set_theme(early.get("ui_theme", "Midnight"))
+    apply_palette(app, early)
     ico = assets_dir() / ("app.ico" if sys.platform == "win32" else "app.png")
     if ico.exists():
         app.setWindowIcon(QIcon(str(ico)))

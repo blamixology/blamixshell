@@ -71,6 +71,11 @@ DEFAULTS = {
     "health_strip": True,           # CPU / memory / disk of the active server in the status bar
     "history_autocomplete": False,  # suggest commands from this server's history (opt-in)
     "dashboard_install_updates": False,   # allow installing updates from the dashboard (opt-in)
+    "ui_theme": "Midnight",         # interface colors (applied at startup; see theme.THEMES)
+    "ui_font": "",                  # "" = the system's UI font
+    "ui_font_size": 10,             # base text size of the interface, in points
+    "tab_font": "",                 # "" = same as the interface
+    "tab_font_size": 0,             # 0 = same as the interface
     "focus_mode": False,            # hide the server list, toolbar, status bar and files: tabs + terminal only
     "health_alerts": False,         # warn when the active server runs low on disk / memory (opt-in)
     "health_interval": 5,           # seconds between health samples
