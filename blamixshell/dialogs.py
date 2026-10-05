@@ -757,6 +757,8 @@ class SettingsDialog(_Base):
         super().__init__(parent)
         self.settings = settings
         self.store = store
+        self._orig_look = {k: settings.get(k) for k in ("ui_theme", "ui_font", "ui_font_size", "tab_font",
+                                                        "tab_font_size")}
         self.setWindowTitle("Settings")
         self.setMinimumWidth(580)
         lay = QVBoxLayout(self)
@@ -802,9 +804,8 @@ class SettingsDialog(_Base):
         fa.addRow("Interface font", self.ui_font)
         fa.addRow("Interface text size", self.ui_size)
         la.addLayout(fa)
-        la.addWidget(QLabel("The theme (colors of the windows, lists and buttons) changes after a restart: you "
-                            "are offered one when you save. Fonts and sizes apply at once.",
-                            objectName="Hint", wordWrap=True))
+        la.addWidget(QLabel("Choices show at once so you can judge them. They are kept when you press Save; "
+                            "Cancel puts the previous look back.", objectName="Hint", wordWrap=True))
         la.addWidget(_section("Tabs"))
         fb = QFormLayout()
         fb.setVerticalSpacing(10)
@@ -823,6 +824,15 @@ class SettingsDialog(_Base):
         la.addWidget(QLabel("The terminal's own font, size, line height and color theme are on the Terminal tab.",
                             objectName="Hint", wordWrap=True))
         la.addStretch(1)
+        from PySide6.QtCore import QTimer
+        self._look_timer = QTimer(self)
+        self._look_timer.setSingleShot(True)
+        self._look_timer.setInterval(120)
+        self._look_timer.timeout.connect(self._preview_look)
+        for box in (self.ui_theme, self.ui_font, self.tab_font):
+            box.currentIndexChanged.connect(lambda _i: self._look_timer.start())
+        for spin in (self.ui_size, self.tab_size):
+            spin.valueChanged.connect(lambda _v: self._look_timer.start())
 
         f = QFormLayout()
         f.setVerticalSpacing(10)
@@ -1063,6 +1073,24 @@ class SettingsDialog(_Base):
             s["last_session"] = {}
         s.save()
         self.accept()
+
+    def _look_values(self) -> dict:
+        return {"ui_theme": self.ui_theme.currentText(), "ui_font": self.ui_font.currentData() or "",
+                "ui_font_size": self.ui_size.value(), "tab_font": self.tab_font.currentData() or "",
+                "tab_font_size": self.tab_size.value()}
+
+    def _preview_look(self) -> None:
+        from PySide6.QtWidgets import QApplication
+        v = self._look_values()
+        theme.switch_theme(QApplication.instance(), v["ui_theme"], v)
+
+    def reject(self) -> None:
+        """Cancel: put the look back as it was when the dialog opened."""
+        from PySide6.QtWidgets import QApplication
+        self._look_timer.stop()
+        orig = {k: v for k, v in self._orig_look.items() if v is not None}
+        theme.switch_theme(QApplication.instance(), orig.get("ui_theme", theme.DEFAULT_THEME), orig)
+        super().reject()
 
     def _clear_history(self) -> None:
         from . import cmd_history

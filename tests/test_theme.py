@@ -81,3 +81,44 @@ def test_stylesheet_uses_the_theme_and_the_font_choices():
     finally:
         theme.set_theme(theme.DEFAULT_THEME)
         theme.apply_palette(app)
+
+
+def test_every_color_of_a_theme_is_different():
+    # a color on screen must map back to exactly one token when the theme is switched live
+    try:
+        for name in theme.THEMES:
+            theme.set_theme(name)
+            values = [v.lower() for v in theme.C.values()]
+            assert len(values) == len(set(values)), (name, [v for v in set(values) if values.count(v) > 1])
+    finally:
+        theme.set_theme(theme.DEFAULT_THEME)
+
+
+def test_switching_theme_recolors_widgets_icons_and_labels_in_place():
+    from PySide6.QtWidgets import QLabel, QPushButton, QWidget
+    app = QApplication.instance() or QApplication([])
+    theme.set_theme("Midnight")
+    try:
+        box = QWidget()
+        box.setStyleSheet(f"background:{theme.C['surface']}; border:1px solid {theme.C['border']}; "
+                          f"color:{theme.C['accent']};")
+        label = QLabel(f"<span style='color:{theme.C['danger']}'>bad</span> and <b>plain</b>", box)
+        button = QPushButton("x", box)
+        button.setIcon(theme.icon("lock", theme.C["accent"], 16))
+        before = button.icon().cacheKey()
+        old = dict(theme.C)
+        theme.switch_theme(app, "Light")
+        light = theme.THEMES["Light"]["colors"]
+        ss = box.styleSheet()
+        assert light["surface"] in ss and light["border"] in ss and light["accent"] in ss
+        assert old["surface"] not in ss and old["accent"] not in ss
+        assert light["danger"] in label.text() and old["danger"] not in label.text() and "<b>plain</b>" in label.text()
+        assert button.icon().cacheKey() != before
+        assert theme._icon_meta[button.icon().cacheKey()] == ("lock", light["accent"], 16)
+        assert theme.CURRENT == "Light" and "#f4f5f8" in app.styleSheet()
+        theme.switch_theme(app, "Midnight")                    # and back again, to the very same colors
+        assert theme.C["surface"] in box.styleSheet() and light["surface"] not in box.styleSheet()
+        theme.switch_theme(app, "Midnight")                    # a no-op when nothing changes
+        assert theme.CURRENT == "Midnight"
+    finally:
+        theme.switch_theme(app, theme.DEFAULT_THEME)
