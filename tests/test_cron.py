@@ -176,4 +176,4 @@ def test_login_shell_fallbacks_and_plain_compose():
     assert "login-shell" not in other and "-u root" in other                 # only for the connected user
     assert cron.parse_details("@@diag\nid: uid=1(x)\n@@date\n") == "id: uid=1(x)"
     p = cron.Parts("date +%F", out=cron.OUT_LOG, log="/tmp/x.log")
-    assert cron.compose(p) == "date +\%F >> /tmp/x.log 2>&1" and cron.compose(p, cron_escape=False) == "date +%F >> /tmp/x.log 2>&1"
+    assert cron.compose(p) == "date +\\%F >> /tmp/x.log 2>&1" and cron.compose(p, cron_escape=False) == "date +%F >> /tmp/x.log 2>&1"

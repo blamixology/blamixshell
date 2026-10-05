@@ -10,6 +10,7 @@ from PySide6.QtGui import QColor  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from blamixshell import settings as st, theme  # noqa: E402
+from blamixshell.platform_ui import FONT_SCALE  # noqa: E402
 
 
 def _lum(hex_color: str) -> float:
@@ -67,13 +68,16 @@ def test_stylesheet_uses_the_theme_and_the_font_choices():
         theme.set_theme("Nord")
         theme.apply_palette(app, {"ui_font": "Arial", "ui_font_size": 12, "tab_font": "Courier New", "tab_font_size": 14})
         qss = app.styleSheet()
+        scale = FONT_SCALE                       # 1.0 on Windows, a little more on Linux, 1.3 on macOS
         assert theme.THEMES["Nord"]["colors"]["accent"] in qss and "#0b0d12" not in qss
-        assert 'font-family: "Arial"' in qss and "font-size: 12.0pt" in qss                  # 10pt scaled by 12/10
-        assert 'QTabBar::tab { font-family: "Courier New"; font-size: 14.0pt; }' in qss
+        assert 'font-family: "Arial"' in qss
+        assert f"font-size: {10 * scale * 12 / 10:.1f}pt" in qss                              # 10pt base, scaled by 12/10
+        assert f'QTabBar::tab {{ font-family: "Courier New"; font-size: {14 * scale:.1f}pt; }}' in qss
         theme.apply_palette(app, {})
         plain = app.styleSheet()
-        assert "Courier New" not in plain and "font-size: 10.0pt" not in plain or True
-        assert "QTabBar::tab { font-family" not in plain
+        assert "Courier New" not in plain and "QTabBar::tab { font-family" not in plain
+        default_pt = "10pt" if scale == 1.0 else f"{10 * scale:.1f}pt"   # untouched when there is nothing to scale
+        assert f"font-size: {default_pt}" in plain                                            # back to the default size
     finally:
         theme.set_theme(theme.DEFAULT_THEME)
         theme.apply_palette(app)
