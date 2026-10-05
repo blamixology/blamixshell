@@ -107,7 +107,53 @@ class Tile(QFrame):
         self.value.setStyleSheet(f"font-size:18pt; font-weight:600; color:{col};")
 
 
-def _table(headers: list[str], stretch: int = -1) -> QTableWidget:
+_SIZE = re.compile(r"^([\d.]+)\s*(B|KB|MB|GB|TB)$", re.I)
+_ELAPSED = re.compile(r"^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$")
+
+
+def _auto_key(text: str):
+    """What a cell sorts by: numbers (also 12%, 1,024), sizes (12.5 MB), durations (2-03:04:05) by value,
+    anything else as lower-case text. Numbers come before text."""
+    t = text.strip()
+    try:
+        return (0, float(t.rstrip("%").replace(",", "")))
+    except ValueError:
+        pass
+    m = _SIZE.match(t)
+    if m:
+        return (0, float(m.group(1)) * 1024 ** ["B", "KB", "MB", "GB", "TB"].index(m.group(2).upper()))
+    m = _ELAPSED.match(t)
+    if m:
+        days, hours, mins, secs = (int(x or 0) for x in m.groups())
+        return (0, days * 86400 + hours * 3600 + mins * 60 + secs)
+    return (1, t.lower())
+
+
+class _SortItem(QTableWidgetItem):
+    """A table cell that sorts by value (see _auto_key), or by an explicit key stored with it."""
+
+    def __lt__(self, other) -> bool:  # noqa: N802
+        a, b = self.data(Qt.UserRole + 1), other.data(Qt.UserRole + 1)
+        return (_auto_key(self.text()) if a is None else a) < (_auto_key(other.text()) if b is None else b)
+
+
+class _Filling:
+    """`with _Filling(table):` fill it without the rows jumping around; the sort chosen by clicking a
+    header is applied again when the block ends."""
+
+    def __init__(self, table: QTableWidget):
+        self.t = table
+        self.was = table.isSortingEnabled()
+
+    def __enter__(self):
+        self.t.setSortingEnabled(False)
+        return self.t
+
+    def __exit__(self, *exc):
+        self.t.setSortingEnabled(self.was)
+
+
+def _table(headers: list[str], stretch: int = -1, sortable: bool = False) -> QTableWidget:
     t = QTableWidget(0, len(headers))
     t.setHorizontalHeaderLabels(headers)
     t.verticalHeader().setVisible(False)
@@ -126,11 +172,18 @@ def _table(headers: list[str], stretch: int = -1) -> QTableWidget:
                     f" border-bottom:1px solid {C['border']}; padding:6px 8px; }}"
                     "QTableWidget::item { padding: 4px 8px; }"
                     f"QTableWidget::item:selected {{ background:{C['surface2']}; color:{C['text']}; }}")
+    if sortable:                                  # click a column header to sort, click again to reverse
+        t.setSortingEnabled(True)
+        hh.setSectionsClickable(True)
+        hh.setSortIndicatorShown(True)
+        hh.setSortIndicator(-1, Qt.AscendingOrder)       # (no column chosen yet: the order as it arrives)
     return t
 
 
-def _item(text, color: str | None = None, align_right: bool = False, data=None) -> QTableWidgetItem:
-    it = QTableWidgetItem(str(text))
+def _item(text, color: str | None = None, align_right: bool = False, data=None, sort=None) -> QTableWidgetItem:
+    it = _SortItem(str(text))
+    if sort is not None:
+        it.setData(Qt.UserRole + 1, sort)
     if color:
         it.setForeground(QColor(color))
     if align_right:
@@ -1100,6 +1153,12 @@ class DashboardWindow(QWidget):
         self.svc_filter.textChanged.connect(self._fill_services)
         self.svc_failed = QCheckBox("Failed only")
         self.svc_failed.toggled.connect(self._fill_services)
+        self.svc_state = QComboBox()
+        for label, key in (("All services", ""), ("Running", "running"), ("Not running", "stopped"),
+                           ("Start at boot", "enabled"), ("Don't start at boot", "disabled")):
+            self.svc_state.addItem(label, key)
+        self.svc_state.currentIndexChanged.connect(lambda _i: self._fill_services())
+        self.svc_count = QLabel("", objectName="Hint")
         acts = [_btn("refresh", "", lambda: self.refresh(force=True), "Reload the list")]
         self.svc_buttons: dict[str, QPushButton] = {}
         for a in ("start", "stop", "restart", "enable", "disable"):
@@ -1108,13 +1167,13 @@ class DashboardWindow(QWidget):
                      {"enable": "Start at boot", "disable": "Don't start at boot"}.get(a, ""))
             self.svc_buttons[a] = b
             acts.append(b)
-        lay.addLayout(_toolbar(self.svc_filter, self.svc_failed, "stretch", *acts,
+        lay.addLayout(_toolbar(self.svc_filter, self.svc_state, self.svc_failed, self.svc_count, "stretch", *acts,
                                _btn("file", "Status", self._service_status),
                                _btn("code", "Unit file", self._view_unit, "Show the selected service's unit file"),
                                _btn("terminal", "Logs", self._service_logs),
                                _btn("plus", "New service…", self._new_service,
                                     "Create a systemd service from a simple form")))
-        self.svc_table = _table(["Service", "State", "Startup", "Description"])
+        self.svc_table = _table(["Service", "State", "Startup", "Description"], sortable=True)
         self.svc_table.doubleClicked.connect(lambda _i: self._service_status())
         self.svc_table.itemSelectionChanged.connect(self._update_service_buttons)
         lay.addWidget(self.svc_table, 1)
@@ -1124,16 +1183,21 @@ class DashboardWindow(QWidget):
     def _build_processes(self) -> None:
         lay = self._page("Processes")
         self.ps_sort = QComboBox()
-        self.ps_sort.addItems(["Sort by CPU", "Sort by memory"])
+        self.ps_sort.addItems(["Top by CPU", "Top by memory"])
+        self.ps_sort.setToolTip("Which 500 processes to load. Click a column header to sort what is shown.")
         self.ps_sort.currentIndexChanged.connect(lambda _i: self.refresh(force=True))
         self.ps_filter = QLineEdit(placeholderText="Filter by command, user or PID…")
         self.ps_filter.setMinimumWidth(260)
         self.ps_filter.textChanged.connect(lambda _t: self._fill_processes())
+        self.ps_user = QComboBox()
+        self.ps_user.addItem("All users", "")
+        self.ps_user.currentIndexChanged.connect(lambda _i: self._fill_processes())
+        self.ps_count = QLabel("", objectName="Hint")
         self._procs: list = []
-        lay.addLayout(_toolbar(self.ps_sort, self.ps_filter, "stretch",
+        lay.addLayout(_toolbar(self.ps_sort, self.ps_filter, self.ps_user, self.ps_count, "stretch",
                                _btn("x", "End process…", lambda: self._kill(False)),
                                _btn("x", "Force kill…", lambda: self._kill(True))))
-        self.ps_table = _table(["PID", "User", "CPU %", "Mem %", "Memory", "Running for", "Command"])
+        self.ps_table = _table(["PID", "User", "CPU %", "Mem %", "Memory", "Running for", "Command"], sortable=True)
         lay.addWidget(self.ps_table, 1)
 
     def _build_logs(self) -> None:
@@ -1174,7 +1238,13 @@ class DashboardWindow(QWidget):
         lay = self._page("Ports")
         lay.addWidget(QLabel("Ports this server listens on. Process names need root (or sudo) to be visible.",
                              objectName="Hint"))
-        self.port_table = _table(["Protocol", "Address", "Port", "Process"])
+        self.port_filter = QLineEdit(placeholderText="Filter by port, address or process…")
+        self.port_filter.setMinimumWidth(280)
+        self.port_filter.textChanged.connect(lambda _t: self._fill_ports())
+        self.port_count = QLabel("", objectName="Hint")
+        self._ports: list = []
+        lay.addLayout(_toolbar(self.port_filter, self.port_count, "stretch"))
+        self.port_table = _table(["Protocol", "Address", "Port", "Process"], sortable=True)
         lay.addWidget(self.port_table, 1)
 
     def _build_updates(self) -> None:
@@ -1186,8 +1256,12 @@ class DashboardWindow(QWidget):
         self.upd_install = _btn("download", "Install updates", self._install_updates,
                                 "Installs all pending updates on the server (asks to confirm first)")
         self.upd_install.setEnabled(False)
-        lay.addLayout(_toolbar(self.upd_lbl, "stretch", self.upd_btn, self.upd_install))
-        self.upd_table = _table(["Package", "New version"])
+        self.upd_filter = QLineEdit(placeholderText="Filter packages…")
+        self.upd_filter.setMinimumWidth(220)
+        self.upd_filter.textChanged.connect(lambda _t: self._fill_updates())
+        self._upd_list: list = []
+        lay.addLayout(_toolbar(self.upd_lbl, self.upd_filter, "stretch", self.upd_btn, self.upd_install))
+        self.upd_table = _table(["Package", "New version"], sortable=True)
         lay.addWidget(self.upd_table, 1)
         self.upd_hint = QLabel("", objectName="Hint", wordWrap=True)
         lay.addWidget(self.upd_hint)
@@ -1298,7 +1372,7 @@ class DashboardWindow(QWidget):
             self._job("services", d.services)
         elif tab == "processes":
             sort = "cpu" if self.ps_sort.currentIndex() == 0 else "mem"
-            self._job("processes", lambda r: d.processes(r, sort, limit=200))
+            self._job("processes", lambda r: d.processes(r, sort, limit=500))
         elif tab == "logs":
             unit = self.log_unit.currentText().strip()
             prio = d.PRIORITIES[self.log_prio.currentText()]
@@ -1425,19 +1499,28 @@ class DashboardWindow(QWidget):
 
     def _fill_services(self) -> None:
         q = self.svc_filter.text().strip().lower()
+        state = self.svc_state.currentData() or ""
+        want = {"": lambda s: True, "running": lambda s: s.active == "active",
+                "stopped": lambda s: s.active != "active",
+                "enabled": lambda s: s.enabled == "enabled", "disabled": lambda s: s.enabled == "disabled"}[state]
         rows = [s for s in self._services if (not q or q in s.unit.lower() or q in s.description.lower())
-                and (not self.svc_failed.isChecked() or s.failed)]
+                and (not self.svc_failed.isChecked() or s.failed) and want(s)]
         rows.sort(key=lambda s: (not s.failed, s.unit))
         mixed = len({s.init for s in self._services}) > 1
+        keep = self._selected(self.svc_table)
         t = self.svc_table
-        t.setRowCount(len(rows))
-        for i, s in enumerate(rows):
-            col = C["danger"] if s.failed else C["ok"] if s.active == "active" else C["muted"]
-            label = f"{s.unit}  [supervisor]" if mixed and s.init == "supervisor" else s.unit
-            t.setItem(i, 0, _item(label, data=(s.init, s.unit)))
-            t.setItem(i, 1, _item(f"● {s.active} ({s.sub})", col))
-            t.setItem(i, 2, _item(s.enabled or "–", C["muted"]))
-            t.setItem(i, 3, _item(s.description, C["muted"]))
+        with _Filling(t):
+            t.setRowCount(len(rows))
+            for i, s in enumerate(rows):
+                col = C["danger"] if s.failed else C["ok"] if s.active == "active" else C["muted"]
+                label = f"{s.unit}  [supervisor]" if mixed and s.init == "supervisor" else s.unit
+                t.setItem(i, 0, _item(label, data=(s.init, s.unit)))
+                t.setItem(i, 1, _item(f"● {s.active} ({s.sub})", col, sort=(0 if s.failed else 1, s.active, s.sub)))
+                t.setItem(i, 2, _item(s.enabled or "–", C["muted"]))
+                t.setItem(i, 3, _item(s.description, C["muted"]))
+        self._reselect(t, keep)
+        filtered = len(rows) != len(self._services)
+        self.svc_count.setText(f"{len(rows)} of {len(self._services)}" if filtered else f"{len(rows)} services")
         n_failed = sum(s.failed for s in self._services)
         self.tabs.setTabText(1, f"Services ({n_failed} failed)" if n_failed else "Services")
         self._update_service_buttons()
@@ -1458,25 +1541,36 @@ class DashboardWindow(QWidget):
 
     def _show_processes(self, procs: list) -> None:
         self._procs = procs
+        current = self.ps_user.currentData() or ""
+        self.ps_user.blockSignals(True)
+        self.ps_user.clear()
+        self.ps_user.addItem("All users", "")
+        for u in sorted({p.user for p in procs}):
+            self.ps_user.addItem(u, u)
+        self.ps_user.setCurrentIndex(max(0, self.ps_user.findData(current)))
+        self.ps_user.blockSignals(False)
         self._fill_processes()
 
     def _fill_processes(self) -> None:
         q = self.ps_filter.text().strip().lower()
-        procs = [p for p in self._procs if not q or q in p.command.lower() or q == p.user.lower()
-                 or q == str(p.pid)]
+        user = self.ps_user.currentData() or ""
+        procs = [p for p in self._procs if (not q or q in p.command.lower() or q in p.user.lower()
+                                            or q in str(p.pid)) and (not user or p.user == user)]
         keep = self._selected(self.ps_table)
         t = self.ps_table
-        t.setRowCount(len(procs))
-        for i, p in enumerate(procs):
-            t.setItem(i, 0, _item(p.pid, align_right=True, data=p.pid))
-            t.setItem(i, 1, _item(p.user, C["muted"]))
-            t.setItem(i, 2, _item(f"{p.cpu:.1f}", C["warn"] if p.cpu >= 50 else None, True))
-            t.setItem(i, 3, _item(f"{p.mem:.1f}", None, True))
-            t.setItem(i, 4, _item(d.human_kb(p.rss_kb), C["muted"], True))
-            t.setItem(i, 5, _item(p.elapsed, C["muted"], True))
-            t.setItem(i, 6, _item(p.command))
-            if p.pid == keep:
-                t.selectRow(i)
+        with _Filling(t):
+            t.setRowCount(len(procs))
+            for i, p in enumerate(procs):
+                t.setItem(i, 0, _item(p.pid, align_right=True, data=p.pid))
+                t.setItem(i, 1, _item(p.user, C["muted"]))
+                t.setItem(i, 2, _item(f"{p.cpu:.1f}", C["warn"] if p.cpu >= 50 else None, True))
+                t.setItem(i, 3, _item(f"{p.mem:.1f}", None, True))
+                t.setItem(i, 4, _item(d.human_kb(p.rss_kb), C["muted"], True, sort=(0, p.rss_kb * 1024.0)))
+                t.setItem(i, 5, _item(p.elapsed, C["muted"], True))
+                t.setItem(i, 6, _item(p.command))
+        self._reselect(t, keep)
+        self.ps_count.setText(f"{len(procs)} of {len(self._procs)}" if len(procs) != len(self._procs)
+                              else f"{len(procs)} processes")
 
     def _show_logs(self, text: str) -> None:
         bar = self.log_view.verticalScrollBar()
@@ -1540,14 +1634,25 @@ class DashboardWindow(QWidget):
             self._fill_log_views()
 
     def _show_ports(self, ports: list) -> None:
+        self._ports = ports
+        self._fill_ports()
+
+    def _fill_ports(self) -> None:
+        q = self.port_filter.text().strip().lower()
+        ports = [p for p in self._ports if not q or q in str(p.port) or q in p.address.lower()
+                 or q in (p.process or "").lower() or q in p.proto.lower()
+                 or (q in "all interfaces" and p.address in ("*", "0.0.0.0", "::"))]
         t = self.port_table
-        t.setRowCount(len(ports))
-        for i, p in enumerate(ports):
-            public = p.address in ("*", "0.0.0.0", "::")
-            t.setItem(i, 0, _item(p.proto.upper(), C["muted"]))
-            t.setItem(i, 1, _item("all interfaces" if public else p.address, C["warn"] if public else None))
-            t.setItem(i, 2, _item(p.port, None, True))
-            t.setItem(i, 3, _item(p.process or "–", C["muted"]))
+        with _Filling(t):
+            t.setRowCount(len(ports))
+            for i, p in enumerate(ports):
+                public = p.address in ("*", "0.0.0.0", "::")
+                t.setItem(i, 0, _item(p.proto.upper(), C["muted"]))
+                t.setItem(i, 1, _item("all interfaces" if public else p.address, C["warn"] if public else None))
+                t.setItem(i, 2, _item(p.port, None, True))
+                t.setItem(i, 3, _item(p.process or "–", C["muted"]))
+        self.port_count.setText(f"{len(ports)} of {len(self._ports)}" if len(ports) != len(self._ports)
+                                else f"{len(ports)} listening")
 
     def _show_updates(self, res) -> None:
         mgr, ups = res
@@ -1566,12 +1671,31 @@ class DashboardWindow(QWidget):
             self.upd_lbl.setText(f"<span style='color:{C['ok']}'>● Up to date</span> ({mgr})")
         else:
             self.upd_lbl.setText(f"<b>{len(ups)}</b> update{'s' if len(ups) != 1 else ''} available ({mgr})")
-        t = self.upd_table
-        t.setRowCount(len(ups))
-        for i, u in enumerate(ups):
-            t.setItem(i, 0, _item(u.package))
-            t.setItem(i, 1, _item(u.version or "–", C["muted"]))
+        self._upd_list = ups
+        self._fill_updates()
         self.tabs.setTabText(5, f"Updates ({len(ups)})" if ups else "Updates")
+
+    def _fill_updates(self) -> None:
+        q = self.upd_filter.text().strip().lower()
+        ups = [u for u in self._upd_list if not q or q in u.package.lower()]
+        t = self.upd_table
+        with _Filling(t):
+            t.setRowCount(len(ups))
+            for i, u in enumerate(ups):
+                t.setItem(i, 0, _item(u.package))
+                t.setItem(i, 1, _item(u.version or "–", C["muted"]))
+
+    def _reselect(self, table: QTableWidget, key) -> None:
+        """Select the row whose first cell carries `key` again (after the table was refilled or re-sorted)."""
+        if key is None:
+            return
+        for i in range(table.rowCount()):
+            it = table.item(i, 0)
+            have = it.data(Qt.UserRole) if it else None
+            if have == key or (isinstance(have, (list, tuple)) and isinstance(key, (list, tuple))
+                               and tuple(have) == tuple(key)):
+                table.selectRow(i)
+                return
 
     def _show_users(self, res) -> None:
         accounts, sessions, groups = res
@@ -2075,7 +2199,8 @@ class DashboardWindow(QWidget):
         self.sto_virtual.toggled.connect(lambda _on: self._fill_storage())
         lay.addLayout(_toolbar(self.sto_virtual, "stretch",
                                _btn("refresh", "", lambda: self.refresh(force=True), "Read the disks again")))
-        self.sto_table = _table(["Mounted on", "Type", "Size", "Used", "Free", "Use", "Inodes"], stretch=0)
+        self.sto_table = _table(["Mounted on", "Type", "Size", "Used", "Free", "Use", "Inodes"], stretch=0,
+                                sortable=True)
         self.sto_table.doubleClicked.connect(self._sto_drill)
         lay.addWidget(self.sto_table, 2)
         lay.addWidget(QLabel("BIGGEST FOLDERS", objectName="SectionLabel"))
@@ -2084,7 +2209,7 @@ class DashboardWindow(QWidget):
         lay.addLayout(_toolbar(self.du_path, _btn("up", "", self._du_up, "Parent folder"),
                                _btn("search", "Analyze", self._du_run,
                                     "Measure the folders inside this one (stays on one filesystem)")))
-        self.du_table = _table(["Size", "Folder"], stretch=1)
+        self.du_table = _table(["Size", "Folder"], stretch=1, sortable=True)
         self.du_table.doubleClicked.connect(self._du_drill)
         lay.addWidget(self.du_table, 3)
         self.du_msg = QLabel("Double-click a filesystem above, or type a folder and press Analyze. Big folders "
@@ -2098,19 +2223,20 @@ class DashboardWindow(QWidget):
     def _fill_storage(self) -> None:
         rows = [f for f in self._filesystems if self.sto_virtual.isChecked() or not f.virtual]
         t = self.sto_table
-        t.setRowCount(len(rows))
 
         def pct(v):
             return None if v is None else C["danger"] if v >= 90 else C["warn"] if v >= 80 else None
-        for i, f in enumerate(rows):
-            t.setItem(i, 0, _item(f.mount))
-            t.setItem(i, 1, _item(f.fstype, C["muted"]))
-            t.setItem(i, 2, _item(d.human_kb(f.size_kb), None, True))
-            t.setItem(i, 3, _item(d.human_kb(f.used_kb), None, True))
-            t.setItem(i, 4, _item(d.human_kb(f.avail_kb), None, True))
-            t.setItem(i, 5, _item(f"{f.percent:.0f}%", pct(f.percent), True))
-            t.setItem(i, 6, _item("–" if f.inode_percent is None else f"{f.inode_percent:.0f}%",
-                                  pct(f.inode_percent), True))
+        with _Filling(t):
+            t.setRowCount(len(rows))
+            for i, f in enumerate(rows):
+                t.setItem(i, 0, _item(f.mount))
+                t.setItem(i, 1, _item(f.fstype, C["muted"]))
+                t.setItem(i, 2, _item(d.human_kb(f.size_kb), None, True))
+                t.setItem(i, 3, _item(d.human_kb(f.used_kb), None, True))
+                t.setItem(i, 4, _item(d.human_kb(f.avail_kb), None, True))
+                t.setItem(i, 5, _item(f"{f.percent:.0f}%", pct(f.percent), True))
+                t.setItem(i, 6, _item("–" if f.inode_percent is None else f"{f.inode_percent:.0f}%",
+                                      pct(f.inode_percent), True))
 
     def _sto_drill(self, index) -> None:
         item = self.sto_table.item(index.row(), 0)
@@ -2139,11 +2265,12 @@ class DashboardWindow(QWidget):
     def _show_du(self, res) -> None:
         path, total, inside = res
         t = self.du_table
-        t.setRowCount(len(inside))
-        for i, (kb, p) in enumerate(inside):
-            share = kb / total if total else 0
-            t.setItem(i, 0, _item(d.human_kb(kb), C["warn"] if share >= 0.5 else None, True))
-            t.setItem(i, 1, _item(p))
+        with _Filling(t):
+            t.setRowCount(len(inside))
+            for i, (kb, p) in enumerate(inside):
+                share = kb / total if total else 0
+                t.setItem(i, 0, _item(d.human_kb(kb), C["warn"] if share >= 0.5 else None, True, sort=(0, kb * 1024.0)))
+                t.setItem(i, 1, _item(p))
         self.du_msg.setText(f"{path}: {d.human_kb(total)} in total, {len(inside)} entries shown. Double-click a "
                             "folder to go into it." if total else
                             f"Nothing readable in {path} (or it is empty / on another filesystem).")
