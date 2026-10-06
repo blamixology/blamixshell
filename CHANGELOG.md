@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.15.0](https://github.com/blamixology/blamixshell/releases/tag/v1.15.0) - 2026-10-06
+
+### Improvements
+- Terminal dashboard (blamixshell dash / i in the TUI), show and report commands with --json and --check, one-file CLI build option (25d040f)
+
 ## [1.14.3](https://github.com/blamixology/blamixshell/releases/tag/v1.14.3) - 2026-10-05
 
 ### Improvements
