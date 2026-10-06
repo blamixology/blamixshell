@@ -2,7 +2,12 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
-## [1.15.0](https://github.com/blamixology/blamixshell/releases/tag/v1.15.0) - 2026-10-06
+## [1.16.0](https://github.com/blamixology/blamixshell/releases/tag/v1.16.0) - 2026-10-07
+
+### Improvements
+- Dashboard: System (time, reboot, swap), Mounts (fstab) and Network tabs in the desktop and terminal dashboards (0137420)
+
+## [1.15.0](https://github.com/blamixology/blamixshell/releases/tag/v1.15.0) - 2026-10-07
 
 ### Improvements
 - Terminal dashboard (blamixshell dash / i in the TUI), show and report commands with --json and --check, one-file CLI build option (25d040f)
