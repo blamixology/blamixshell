@@ -50,6 +50,17 @@ def build(label: str, address: str, when: datetime, data: dict, errors: dict | N
                            f"{x.percent:.0f}%"] for x in ov.disks])]
     md.append("")
 
+    sy = data.get("system")
+    if sy is not None:
+        md.append("## System")
+        rows = [["Time zone", f"{sy.tz_name or '–'} ({sy.tz_abbr} {sy.tz_offset})" if sy.tz_abbr else sy.tz_name or "–"],
+                ["Server time", sy.local_time or "–"],
+                ["Clock sync (NTP)", "synchronized" if sy.ntp_synced else "not synchronized" if sy.ntp_synced is False
+                 else "unknown"],
+                ["Reboot required", "yes" if sy.reboot_required else "no" if sy.reboot_required is False else "unknown"],
+                ["Swap", ", ".join(f"{d.human_kb(s.size_kb)} {s.kind} {s.name}" for s in sy.swaps) or "none"]]
+        md += [table(["", ""], rows), ""]
+
     md.append("## Services")
     sv = data.get("services")
     if sv is None:

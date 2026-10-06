@@ -9,6 +9,7 @@ import re
 import shlex
 import threading
 import time
+from types import SimpleNamespace
 
 from PySide6.QtCore import QObject, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPainterPath, QPen
@@ -18,7 +19,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QCh
                                QProgressBar, QPushButton, QScrollArea, QTableWidget, QTableWidgetItem,
                                QTabWidget, QVBoxLayout, QWidget)
 
-from . import cron
+from . import collect, cron
 from . import dashboard as d
 from .tablekeys import auto_key
 from . import firewall as fw
@@ -28,11 +29,11 @@ from .theme import C, blend, icon, style_window
 REFRESH_MS = 5000
 # Tabs that stay in the bar; everything else lives in the "More" menu, grouped.
 MAIN_TABS = ("overview", "services", "processes", "logs", "updates")
-MORE_GROUPS = (("System", ("users", "storage", "docker")),
-               ("Network and security", ("ports", "firewall", "security")),
+MORE_GROUPS = (("System", ("users", "system", "storage", "mounts", "docker")),
+               ("Network and security", ("ports", "network", "firewall", "security")),
                ("Scheduling", ("cron", "timers")))
 TAB_KEYS = ["overview", "services", "processes", "logs", "ports", "updates", "users", "cron", "firewall",
-            "storage", "docker", "timers", "security"]
+            "storage", "docker", "timers", "security", "system", "network", "mounts"]
 
 
 class _Signals(QObject):
@@ -1046,6 +1047,7 @@ class DashboardWindow(QWidget):
         self._build_docker()
         self._build_timers()
         self._build_security()
+        self._build_collect_tabs()
         self._group_tabs()
 
         self.status = QLabel("", objectName="Hint")
@@ -1373,6 +1375,8 @@ class DashboardWindow(QWidget):
             self._job("timers", lambda r: timers.parse(r.run(timers.READ_SCRIPT, timeout=30).out))
         elif tab == "security":
             self._sec_load(False)
+        elif tab in ("system", "network", "mounts"):
+            self._ct_load(tab)
         elif tab == "storage":
             self._job("storage", lambda r: storage.parse_filesystems(r.run(storage.FS_SCRIPT, timeout=20).out))
         elif tab == "updates":
@@ -2121,6 +2125,118 @@ class DashboardWindow(QWidget):
         self._privileged(f"Create timer {name}", timers.create_command(name, svc, tm), then="timers", timeout=60,
                          show=f"write {name}.service and {name}.timer, then enable the timer"
                               f" ({calendar or 'at startup'})")
+
+    # ---- system, network and mounts: tables from collect.py, with the actions it offers ----
+    CT_TITLES = {"system": "System", "network": "Network", "mounts": "Mounts"}
+    CT_HINTS = {"system": "Time and clock, reboot, swap. Everything that changes the system is in Actions and asks first.",
+                "network": "Interfaces, addresses, routes and name servers, as the server sees them. Actions: connection checks.",
+                "mounts": "/etc/fstab compared with what is mounted now. Select a row for Mount / Unmount."}
+
+    def _build_collect_tabs(self) -> None:
+        self._ct: dict[str, object] = {}
+        colors = {"ok": C["ok"], "warn": C["warn"], "bad": C["danger"], "dim": C["faint"], "": None}
+        self._ct_colors = colors
+        for key, title in self.CT_TITLES.items():
+            lay = self._page(title)
+            flt = QLineEdit(placeholderText="Filter…")
+            flt.setMinimumWidth(240)
+            count = QLabel("", objectName="Hint")
+            btn = QToolButton()
+            btn.setText("Actions  ▾")
+            btn.setPopupMode(QToolButton.InstantPopup)
+            btn.setStyleSheet(f"QToolButton {{ border:1px solid {C['border']}; padding:6px 12px; }}")
+            menu = QMenu(btn)
+            menu.aboutToShow.connect(lambda k=key: self._ct_fill_menu(k))
+            btn.setMenu(menu)
+            lay.addLayout(_toolbar(flt, count, "stretch", btn,
+                                   _btn("refresh", "", lambda _=False, k=key: self.refresh(force=True), "Reload")))
+            table = _table([""], sortable=True)
+            lay.addWidget(table, 1)
+            note = QLabel(self.CT_HINTS[key], objectName="Hint", wordWrap=True)
+            lay.addWidget(note)
+            st = SimpleNamespace(table=table, filter=flt, count=count, note=note, data=None, menu=menu, button=btn)
+            flt.textChanged.connect(lambda _t, k=key: self._ct_fill(k))
+            self._ct[key] = st
+
+    def _ct_load(self, key: str) -> None:
+        user = self.server.username or ""
+        self._job(key, lambda r: collect.LOADERS[key](collect.Context(r, user, self._root)))
+
+    def _show_system(self, table) -> None:
+        self._ct_show("system", table)
+
+    def _show_network(self, table) -> None:
+        self._ct_show("network", table)
+
+    def _show_mounts(self, table) -> None:
+        self._ct_show("mounts", table)
+
+    def _ct_show(self, key: str, table) -> None:
+        self._ct[key].data = table
+        self._ct_fill(key)
+
+    def _ct_selected(self, key: str):
+        sel = self._selected(self._ct[key].table)
+        return tuple(sel) if isinstance(sel, (list, tuple)) else sel
+
+    def _ct_fill(self, key: str) -> None:
+        st = self._ct[key]
+        data = st.data
+        if data is None:
+            return
+        q = st.filter.text().strip().lower()
+        idx = [i for i, row in enumerate(data.rows) if not q or q in " ".join(row).lower()]
+        keep = self._selected(st.table)
+        t = st.table
+        with _Filling(t):
+            t.setColumnCount(len(data.columns))
+            t.setHorizontalHeaderLabels(data.columns)
+            hh = t.horizontalHeader()
+            for c in range(len(data.columns)):
+                hh.setSectionResizeMode(c, QHeaderView.ResizeToContents)
+            hh.setSectionResizeMode(len(data.columns) - 1, QHeaderView.Stretch)
+            t.setRowCount(len(idx))
+            for r, i in enumerate(idx):
+                color = self._ct_colors.get(data.styles[i])
+                for c, cell in enumerate(data.rows[i]):
+                    t.setItem(r, c, _item(cell, color, data=data.keys[i] if c == 0 and data.keys[i] is not None else None))
+        self._reselect(t, keep)
+        st.count.setText(f"{len(idx)} of {len(data.rows)}" if len(idx) != len(data.rows) else f"{len(idx)} rows")
+        st.note.setText(data.note or self.CT_HINTS[key])
+
+    def _ct_fill_menu(self, key: str) -> None:
+        st = self._ct[key]
+        st.menu.clear()
+        acts = collect.actions_for(key, self._ct_selected(key))
+        for act in acts:
+            st.menu.addAction(act.label, lambda a=act: self._collect_action(a, key))
+        if not acts:
+            st.menu.addAction("Nothing to do with this row").setEnabled(False)
+
+    def _collect_action(self, act: collect.Action, key: str) -> None:
+        value = ""
+        if act.prompt:
+            value, ok = QInputDialog.getText(self, act.label.rstrip("…"), act.prompt, text=act.placeholder)
+            if not ok or not value.strip():
+                return
+        try:
+            cmd = act.command_for(value.strip())
+        except ValueError as e:
+            QMessageBox.warning(self, act.label.rstrip("…"), str(e))
+            return
+        if act.readonly:                              # only looks: no confirmation, show what it printed
+
+            def work(r: d.Runner):
+                res = r.run(cmd, timeout=60)
+                return act.label.rstrip("…"), (res.out + ("\n" + res.err if res.err.strip() else "")).strip()
+            self._job("ctview", work)
+            return
+        self._privileged(act.label.rstrip("…"), cmd, then=key, allow_plain=act.allow_plain, timeout=120,
+                         show=cmd if len(cmd) < 150 else act.label)
+
+    def _show_ctview(self, res) -> None:
+        title, text = res
+        _ViewDialog(title, text, self).exec()
 
     # ---- security ----
     def _build_security(self) -> None:

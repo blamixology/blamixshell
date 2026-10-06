@@ -7,9 +7,12 @@ Table. A loader raises NeedsSudo when the answer needs root and a password has t
 from __future__ import annotations
 
 import shlex
+import time
 from dataclasses import dataclass, field
+from typing import Callable
 
 from . import cron, dashboard as d, docker, firewall as fw, report, security, storage, timers
+from . import system as sysinfo
 
 
 class NeedsSudo(Exception):
@@ -237,12 +240,80 @@ def load_security(ctx: Context) -> Table:
     return t
 
 
+def load_system(ctx: Context) -> Table:
+    t0 = time.time()
+    out = ctx.runner.run(sysinfo.SYSTEM_SCRIPT, timeout=20).out
+    t1 = time.time()
+    i = sysinfo.parse_system(out)
+    t = Table(["", "Value", "Detail"])
+    t.add(["Host", i.hostname or "–", i.os or ""], "")
+    t.add(["Kernel", i.kernel or "–", f"up {d.human_uptime(i.uptime_s)}" if i.uptime_s else ""], "")
+    tz = " ".join(x for x in (i.tz_name, f"({i.tz_abbr} {i.tz_offset})" if i.tz_abbr else "") if x)
+    t.add(["Time zone", tz or "–", ""], "")
+    drift = i.drift_s((t0 + t1) / 2)
+    t.add(["Server time", i.local_time or "–",
+           ("" if drift is None else f"{'ahead of' if drift >= 0 else 'behind'} this computer by {abs(drift):.0f} s")],
+          "" if drift is None or abs(drift) <= 5 else "warn" if abs(drift) <= 60 else "bad")
+    ntp = ("synchronized" if i.ntp_synced else "not synchronized" if i.ntp_synced is False else "unknown")
+    svc = ("service running" if i.ntp_active else "service off" if i.ntp_active is False else "")
+    t.add(["Clock sync (NTP)", ntp, svc], "ok" if i.ntp_synced else "warn" if i.ntp_synced is False else "dim")
+    t.add(["Reboot required", "yes" if i.reboot_required else "no" if i.reboot_required is False else "unknown", ""],
+          "warn" if i.reboot_required else "dim" if i.reboot_required is None else "")
+    if i.scheduled:
+        t.add(["Scheduled", "shutdown or reboot", i.scheduled.replace("\n", " ")[:80]], "warn")
+    if i.mem_total_kb:
+        t.add(["Memory", d.human_kb(i.mem_total_kb), ""], "")
+    if i.swaps:
+        for s in i.swaps:
+            pct = 100.0 * s.used_kb / s.size_kb if s.size_kb else 0
+            t.add(["Swap", f"{d.human_kb(s.size_kb)} ({s.kind})", f"{s.name}  ·  {pct:.0f}% used"],
+                  "warn" if pct >= 60 else "", key=("swap", s.name, s.kind))
+    else:
+        t.add(["Swap", "none", "add a swap file from the actions"], "warn" if i.mem_total_kb and i.mem_total_kb < 2_000_000 else "dim")
+    return t
+
+
+def load_mounts(ctx: Context) -> Table:
+    out = ctx.runner.run(sysinfo.MOUNTS_SCRIPT, timeout=20).out
+    t = Table(["Device", "Mounted on", "Type", "Options", "Mounted"], note="From /etc/fstab, compared with what is mounted now.")
+    for e in sysinfo.parse_mounts(out):
+        state = "–" if e.mounted is None else "yes" if e.mounted else "NO"
+        style = "dim" if e.mounted is None else "" if e.mounted else ("dim" if "noauto" in e.options else "warn")
+        t.add([e.device, e.mount, e.fstype, e.options, state], style,
+              key=("mount", e.mount, e.mounted, e.fstype))
+    if not t.rows:
+        t.note = "No entries in /etc/fstab (or it can't be read)."
+    return t
+
+
+def load_network(ctx: Context) -> Table:
+    n = sysinfo.parse_network(ctx.runner.run(sysinfo.NETWORK_SCRIPT, timeout=20).out)
+    t = Table(["Type", "Item", "Value", "Detail"])
+    if not n.has_ip_tool:
+        t.note = "The `ip` command isn't installed on this server: only the name servers are shown."
+    t.add(["Hostname", n.hostname or "–", "", ""])
+    for i in n.interfaces:
+        up = i.state == "UP"
+        detail = "  ·  ".join(x for x in (", ".join(i.addresses), i.mac, f"MTU {i.mtu}" if i.mtu else "") if x)
+        t.add(["Interface", i.name, i.state or "–", detail or "–"], "ok" if up else "dim", key=("net", i.name))
+    if n.gateway:
+        t.add(["Gateway", "default route", n.gateway, ""], "")
+    for r in n.routes:
+        t.add(["Route", r.split()[0], r, ""], "dim")
+    for ns in n.dns:
+        t.add(["DNS", "name server", ns, ""], "")
+    if n.search:
+        t.add(["DNS", "search domains", " ".join(n.search), ""], "dim")
+    return t
+
+
 TABS: list[tuple[str, str, object]] = [
     ("overview", "Overview", load_overview), ("services", "Services", load_services),
     ("processes", "Processes", load_processes), ("logs", "Logs", load_logs), ("ports", "Ports", load_ports),
     ("updates", "Updates", load_updates), ("users", "Users", load_users), ("cron", "Cron", load_cron),
     ("firewall", "Firewall", load_firewall), ("docker", "Docker", load_docker), ("timers", "Timers", load_timers),
-    ("storage", "Storage", load_storage), ("security", "Security", load_security),
+    ("storage", "Storage", load_storage), ("mounts", "Mounts", load_mounts), ("system", "System", load_system),
+    ("network", "Network", load_network), ("security", "Security", load_security),
 ]
 LOADERS = {key: fn for key, _title, fn in TABS}
 
@@ -251,9 +322,17 @@ LOADERS = {key: fn for key, _title, fn in TABS}
 @dataclass
 class Action:
     label: str
-    command: str
+    command: str = ""
     allow_plain: bool = False        # try it as yourself first (your own processes need no sudo)
     danger: bool = False
+    prompt: str = ""                 # ask for a value first (shown as the question) ...
+    placeholder: str = ""
+    make: Callable[[str], str] | None = None      # ... and build the command from it (ValueError: wrong value)
+    readonly: bool = False           # only looks: run it as yourself and show the output, no confirmation
+
+    def command_for(self, value: str = "") -> str:
+        """The command to run (a ValueError says what is wrong with `value`)."""
+        return self.make(value) if self.make else self.command
 
 
 def actions_for(tab: str, key) -> list[Action]:
@@ -281,6 +360,38 @@ def actions_for(tab: str, key) -> list[Action]:
             out.append(Action(f"Restart {name}", docker.action_command(engine, "restart", cid), allow_plain=True))
         out.append(Action(f"Remove {name}" + (" (running: forced)" if run else ""),
                           docker.action_command(engine, "remove", cid, force=run), allow_plain=True, danger=True))
+    elif tab == "system":
+        out += [Action("Reboot now", sysinfo.reboot_command(), danger=True),
+                Action("Reboot in a while…", prompt="Reboot in how many minutes?", placeholder="5",
+                       make=lambda v: sysinfo.reboot_command(sysinfo.minutes_from(v)), danger=True),
+                Action("Shut down now", sysinfo.shutdown_command(), danger=True),
+                Action("Shut down in a while…", prompt="Shut down in how many minutes?", placeholder="5",
+                       make=lambda v: sysinfo.shutdown_command(sysinfo.minutes_from(v)), danger=True),
+                Action("Cancel a scheduled reboot or shutdown", sysinfo.cancel_shutdown_command()),
+                Action("Set the time zone…", prompt="Time zone (like Europe/Bucharest or UTC)", placeholder="Europe/Bucharest",
+                       make=sysinfo.timezone_command),
+                Action("Turn clock sync (NTP) on", sysinfo.ntp_command(True)),
+                Action("Turn clock sync (NTP) off", sysinfo.ntp_command(False)),
+                Action("Add a swap file…", prompt="Size of the swap file (like 2G or 512M)", placeholder="2G",
+                       make=lambda v: sysinfo.swap_create_command(sysinfo.swap_size_mb(v)))]
+        if key and key[0] == "swap" and key[2] == "file":
+            out.append(Action(f"Remove the swap file {key[1]}", sysinfo.swap_remove_command(key[1]), danger=True))
+    elif tab == "mounts":
+        if key and key[0] == "mount" and key[1] not in ("none", "swap"):
+            _kind, mp, mounted, _fs = key
+            if mounted is False:
+                out.append(Action(f"Mount {mp}", sysinfo.mount_command(mp)))
+            elif mounted:
+                try:
+                    out.append(Action(f"Unmount {mp}", sysinfo.umount_command(mp), danger=True))
+                except ValueError:
+                    pass                     # the system needs it: not offered
+        out.append(Action("Check /etc/fstab (what mount -a would do)", sysinfo.verify_fstab_command(), readonly=True))
+    elif tab == "network":
+        out += [Action("Check a host…", prompt="Host or host:port to test from the server", placeholder="example.com:443",
+                       make=lambda v: sysinfo.check_command(*sysinfo.parse_target(v)), readonly=True),
+                Action("Check the internet (1.1.1.1:443)", sysinfo.check_command("1.1.1.1", 443), readonly=True),
+                Action("Check name lookup (example.com)", sysinfo.check_command("example.com"), readonly=True)]
     elif tab == "timers" and key:
         name, unit, on = key
         out.append(Action(f"{'Disable' if on else 'Enable'} {name}", timers.toggle_command(name, not on)))
@@ -323,6 +434,7 @@ def collect_report(ctx: Context) -> tuple[dict, dict]:
     grab("users", lambda: d.users(ctx.runner))
     grab("cron", jobs)
     grab("firewall", lambda: fw.parse(ctx.runner.run(fw.READ_SCRIPT, timeout=20).out))
+    grab("system", lambda: sysinfo.parse_system(ctx.runner.run(sysinfo.SYSTEM_SCRIPT, timeout=20).out))
     return data, errs
 
 

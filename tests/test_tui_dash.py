@@ -36,9 +36,9 @@ async def until(pilot, cond, tries=100):
     return False
 
 
-def run_dashboard_test(scenario):
+def run_dashboard_test(scenario, replies=None):
     from textual.widgets import DataTable
-    runner = FakeRunner()
+    runner = FakeRunner(replies)
     ctx = collect.Context(runner, username="deploy", root=True)           # root: no sudo prompts in this test
     ov = d.Overview(host="web-1", os="CentOS 7", kernel="3.10", cpus=2, cpu_percent=10, load=(0.1, 0.1, 0.1),
                     mem_total_kb=1000, mem_avail_kb=500)
@@ -130,3 +130,45 @@ def test_nothing_runs_when_the_confirmation_is_declined():
         await pilot.pause(0.3)
         assert not any(c.startswith("kill") for c in runner.calls)
     run_dashboard_test(scenario)
+
+
+def test_system_actions_ask_for_a_value_then_confirm_and_checks_just_show_output():
+    import test_system as ts
+    from blamixshell import system as sy
+    replies = {sy.SYSTEM_SCRIPT: ts.SYSTEM, sy.NETWORK_SCRIPT: ts.NETWORK, sy.MOUNTS_SCRIPT: ts.MOUNTS}
+
+    async def scenario(app, pilot, runner, DataTable):
+        screen = app.screen
+        screen.query_one("TabbedContent").active = "tab-system"
+        assert await until(pilot, lambda: screen.pane("system").loaded)
+        table = screen.pane("system").query_one(DataTable)
+        assert "Reboot required" in cells(table) and "Europe/Bucharest" in " ".join(cells(table, 1))
+        table.focus()
+        await pilot.press("a")
+        await pilot.pause()
+        assert type(app.screen).__name__ == "ChoiceScreen"
+        assert app.screen.labels[0] == "Reboot now" and app.screen.labels[1].startswith("Reboot in a while")
+        await pilot.press("down", "enter")                                     # "Reboot in a while…" asks for minutes
+        await pilot.pause()
+        assert type(app.screen).__name__ == "PromptScreen"
+        await pilot.press("x", "enter")                                        # not a number: a message, nothing runs
+        await pilot.pause()
+        assert type(app.screen).__name__ == "DashboardScreen"
+        await pilot.press("a", "down", "enter")
+        await pilot.pause()
+        await pilot.press("7", "enter")
+        await pilot.pause()
+        assert type(app.screen).__name__ == "ConfirmScreen"                    # the value is turned into a command, asked
+        assert "shutdown -r +7" in str(app.screen.message)
+        await pilot.click("#no")
+        await pilot.pause(0.2)
+        assert not any(c.startswith("shutdown") for c in runner.calls)
+        # a read-only check runs at once and shows what it found
+        screen.query_one("TabbedContent").active = "tab-network"
+        assert await until(pilot, lambda: screen.pane("network").loaded)
+        nt = screen.pane("network").query_one(DataTable)
+        nt.focus()
+        await pilot.press("a", "down", "enter")                                # "Check the internet"
+        assert await until(pilot, lambda: type(app.screen).__name__ == "TextScreen")
+        assert any("1.1.1.1" in c and "ping" in c for c in runner.calls)
+    run_dashboard_test(scenario, replies)

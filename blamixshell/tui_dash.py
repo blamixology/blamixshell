@@ -287,7 +287,7 @@ class DashboardScreen(Screen):
         key = self.active_key()
         acts = collect.actions_for(key, self.pane(key).selected_key())
         if not acts:
-            self.notify("Nothing to do with this row here." if key in ("services", "processes", "docker", "timers")
+            self.notify("Nothing to do with this row here." if key in ("services", "processes", "docker", "timers", "mounts")
                         else "This tab has no actions.", timeout=3)
             return
 
@@ -295,20 +295,48 @@ class DashboardScreen(Screen):
             if i is None:
                 return
             act = acts[i]
-            self.app.push_screen(
-                ConfirmScreen(f"{act.label}\n\non {self.server.label}\n\nRuns: {act.command[:200]}",
-                              yes="Run", variant="error" if act.danger else "primary"),
-                lambda ok: ok and self.run_action(act, key))
+            if act.prompt:                       # asks for a value first (minutes, a time zone, a size, a host …)
+                self.app.push_screen(PromptScreen(act.label.rstrip("…"), act.prompt, act.placeholder),
+                                     lambda value: value and self.do_action(act, key, value))
+            else:
+                self.do_action(act, key, "")
         self.app.push_screen(ChoiceScreen([a.label for a in acts]), picked)
 
-    def run_action(self, act: collect.Action, key: str) -> None:
+    def do_action(self, act: collect.Action, key: str, value: str) -> None:
+        try:
+            cmd = act.command_for(value)
+        except ValueError as e:
+            self.notify(str(e), severity="error", timeout=6)
+            return
+        if act.readonly:                         # only looks: no confirmation, the output is shown
+            self.show_output(act, cmd)
+            return
+        self.app.push_screen(
+            ConfirmScreen(f"{act.label}\n\non {self.server.label}\n\nRuns: {cmd[:200]}",
+                          yes="Run", variant="error" if act.danger else "primary"),
+            lambda ok: ok and self.run_action(act, key, cmd))
+
+    def show_output(self, act: collect.Action, cmd: str) -> None:
+        self.notify(f"{act.label} …", timeout=3)
+
+        def work() -> None:
+            try:
+                res = self.ctx.runner.run(cmd, timeout=60)
+                text = (res.out + ("\n" + res.err if res.err.strip() else "")).strip()
+            except Exception as e:
+                text = f"Could not run it: {e}"
+            self.app.call_from_thread(self.app.push_screen, TextScreen(act.label.rstrip("…"), text))
+        self.run_worker(work, thread=True, group="readonly")
+
+    def run_action(self, act: collect.Action, key: str, cmd: str | None = None) -> None:
+        cmd = cmd or act.command
         self.notify(f"Running: {act.label} …", timeout=3)
 
         def work() -> None:
             try:
-                res = self.ctx.run(act.command, allow_plain=act.allow_plain)
+                res = self.ctx.run(cmd, allow_plain=act.allow_plain)
             except collect.NeedsSudo:
-                self.app.call_from_thread(self.ask_sudo, lambda: self.run_action(act, key))
+                self.app.call_from_thread(self.ask_sudo, lambda: self.run_action(act, key, cmd))
                 return
             except Exception as e:
                 self.app.call_from_thread(self.notify, f"{act.label}: {e}", severity="error")
