@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QCh
 
 from . import cron
 from . import dashboard as d
+from .tablekeys import auto_key
 from . import firewall as fw
 from . import docker, report, security, sshkeys, storage, timers, units
 from .theme import C, blend, icon, style_window
@@ -107,26 +108,7 @@ class Tile(QFrame):
         self.value.setStyleSheet(f"font-size:18pt; font-weight:600; color:{col};")
 
 
-_SIZE = re.compile(r"^([\d.]+)\s*(B|KB|MB|GB|TB)$", re.I)
-_ELAPSED = re.compile(r"^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$")
-
-
-def _auto_key(text: str):
-    """What a cell sorts by: numbers (also 12%, 1,024), sizes (12.5 MB), durations (2-03:04:05) by value,
-    anything else as lower-case text. Numbers come before text."""
-    t = text.strip()
-    try:
-        return (0, float(t.rstrip("%").replace(",", "")))
-    except ValueError:
-        pass
-    m = _SIZE.match(t)
-    if m:
-        return (0, float(m.group(1)) * 1024 ** ["B", "KB", "MB", "GB", "TB"].index(m.group(2).upper()))
-    m = _ELAPSED.match(t)
-    if m:
-        days, hours, mins, secs = (int(x or 0) for x in m.groups())
-        return (0, days * 86400 + hours * 3600 + mins * 60 + secs)
-    return (1, t.lower())
+_auto_key = auto_key        # (moved to tablekeys.py, shared with the terminal dashboard)
 
 
 class _SortItem(QTableWidgetItem):

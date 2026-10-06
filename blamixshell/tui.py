@@ -39,16 +39,16 @@ class ConfirmScreen(ModalScreen[bool]):
     """
     BINDINGS = [Binding("escape", "dismiss(False)", "Cancel")]
 
-    def __init__(self, message: str):
+    def __init__(self, message: str, yes: str = "Delete", variant: str = "error"):
         super().__init__()
-        self.message = message
+        self.message, self.yes, self.variant = message, yes, variant
 
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):
             yield Label(self.message)
             with Horizontal(id="row"):
                 yield Button("Cancel", id="no")
-                yield Button("Delete", variant="error", id="yes")
+                yield Button(self.yes, variant=self.variant, id="yes")
 
     @on(Button.Pressed)
     def _pressed(self, ev: Button.Pressed) -> None:
@@ -63,20 +63,20 @@ class PromptScreen(ModalScreen[str | None]):
     """
     BINDINGS = [Binding("escape", "dismiss(None)", "Cancel")]
 
-    def __init__(self, title: str, hint: str = "", placeholder: str = ""):
+    def __init__(self, title: str, hint: str = "", placeholder: str = "", password: bool = False):
         super().__init__()
-        self.title_text, self.hint, self.placeholder = title, hint, placeholder
+        self.title_text, self.hint, self.placeholder, self.password = title, hint, placeholder, password
 
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):
             yield Label(Text(self.title_text, style="bold"))
-            yield Input(placeholder=self.placeholder, id="value")
+            yield Input(placeholder=self.placeholder, id="value", password=self.password)
             if self.hint:
                 yield Label(self.hint, id="hint")
 
     @on(Input.Submitted)
     def _submit(self, ev: Input.Submitted) -> None:
-        self.dismiss(ev.value.strip() or None)
+        self.dismiss((ev.value if self.password else ev.value.strip()) or None)
 
 
 class ServerForm(ModalScreen[Server | None]):
@@ -213,6 +213,7 @@ class BlamixShellTUI(App):
         Binding("d", "delete", "Delete"),
         Binding("f", "favorite", "Fav"),
         Binding("x", "exec", "Run on group"),
+        Binding("i", "dashboard", "Dashboard"),
         Binding("escape", "clear_search", "Clear", show=False),
         Binding("q", "quit", "Quit"),
     ]
@@ -325,7 +326,7 @@ class BlamixShellTUI(App):
                 t.append(f"{v}\n")
             if s.notes:
                 t.append("\n" + s.notes, style="italic")
-            t.append("\n\n⏎ connect   e edit   x run command   f favorite", style="dim")
+            t.append("\n\n⏎ connect   i dashboard   e edit   x run command   f favorite", style="dim")
             panel.update(t)
         elif sel and sel[0] == "group":
             path = sel[1]
@@ -391,6 +392,37 @@ class BlamixShellTUI(App):
             except SystemExit:
                 input("\nPress Enter to return to BlamixShell…")
         self.rebuild(select_id=s.id)
+
+    def action_dashboard(self) -> None:
+        s = self.selected_server()
+        if not s:
+            return
+        if not s.uses_ssh:
+            self.notify("The dashboard needs SSH: switch this server to SSH over AWS SSM.", severity="warning")
+            return
+        from . import collect, dashboard as dash
+        from .cli import Connector
+        from .ssh_core import friendly_error
+        from .tui_dash import DashboardScreen
+        opened: dict = {}
+        with self.suspend():                  # prompts (password, host key, 2FA) happen in the plain terminal
+            try:
+                opened["client"], opened["chain"] = Connector(self.store).open(s)
+            except SystemExit:
+                pass
+            except Exception as e:
+                print(friendly_error(e))
+                input("\nPress Enter to return to BlamixShell…")
+        if "client" not in opened:
+            return
+        ctx = collect.Context(dash.Runner(opened["client"]), s.username)
+
+        def closed(_result) -> None:
+            opened["client"].close()
+            for cl in opened["chain"]:
+                cl.close()
+            self.rebuild(select_id=s.id)
+        self.push_screen(DashboardScreen(s, ctx), closed)
 
     def action_add(self) -> None:
         group = ""

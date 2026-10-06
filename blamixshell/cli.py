@@ -572,6 +572,113 @@ def cmd_connect(store: Store, a) -> int:
     return interactive_shell(s, store, record=a.record)
 
 
+def _open_server(store: Store, target: str, accept_new: bool = False):
+    """(server, client, chain) for `target`, with the usual prompts; exits with a message when it can't."""
+    s = find_server(store, target) or adhoc_server(target)
+    if not s:
+        die(f"No server matching “{target}”")
+    if not s.uses_ssh:
+        die(f"{s.label} is an AWS SSM shell: this needs SSH (switch it to SSH over SSM).")
+    try:
+        client, chain = Connector(store, accept_new=accept_new).open(s)
+    except AuthConfigError as e:
+        die(str(e))
+    except Exception as e:
+        die(friendly_error(e))
+    return s, client, chain
+
+
+def _close_server(client, chain) -> None:
+    client.close()
+    for cl in chain:
+        cl.close()
+
+
+def cmd_dash(store: Store, a) -> int:
+    """The server dashboard, full screen in this terminal (the desktop dashboard's tabs)."""
+    try:
+        from . import collect, dashboard as dash
+        from .tui_dash import run_dashboard
+    except ImportError:
+        die("The terminal dashboard needs the 'textual' package (pip install textual).")
+    s, client, chain = _open_server(store, a.target, a.accept_new)
+    try:
+        run_dashboard(s, collect.Context(dash.Runner(client), s.username))
+    finally:
+        _close_server(client, chain)
+    return 0
+
+
+def cmd_show(store: Store, a) -> int:
+    """Print one dashboard tab as a table or JSON. Exit code 1 with --check when something is marked bad."""
+    import json
+    from . import collect, dashboard as dash
+    names = [k for k, _t, _f in collect.TABS]
+    hits = [k for k in names if k == a.tab.lower()] or [k for k in names if k.startswith(a.tab.lower())]
+    if len(hits) != 1:
+        die(f"Unknown tab “{a.tab}”. Tabs: {', '.join(names)}")
+    key = hits[0]
+    s, client, chain = _open_server(store, a.target, a.accept_new)
+    try:
+        ctx = collect.Context(dash.Runner(client), s.username)
+        if a.sudo:
+            ctx.sudo_pw = getpass.getpass(f"sudo password on {s.label}: ")
+        try:
+            table = collect.LOADERS[key](ctx)
+        except collect.NeedsSudo:
+            die("This needs root and sudo asks for a password: run again with --sudo.")
+        except Exception as e:
+            die(friendly_error(e))
+    finally:
+        _close_server(client, chain)
+    rows = list(zip(table.rows, table.styles))
+    if a.filter:
+        q = a.filter.lower()
+        rows = [(r, st) for r, st in rows if q in " ".join(r).lower()]
+    if a.sort:
+        from .tablekeys import auto_key
+        cols = [x.lower() for x in table.columns]
+        col = next((i for i, x in enumerate(cols) if x.startswith(a.sort.lower())), None)
+        if col is None:
+            die(f"Unknown column “{a.sort}”. Columns: {', '.join(table.columns)}")
+        rows.sort(key=lambda rs: auto_key(rs[0][col]), reverse=a.desc)
+    if a.json:
+        print(json.dumps({"server": s.label, "tab": key, "note": table.note, "columns": table.columns,
+                          "rows": [dict(zip(table.columns, r)) | ({"status": st} if st else {}) for r, st in rows]},
+                         indent=2, ensure_ascii=False))
+    else:
+        cols = [x or " " for x in table.columns]
+        cut = lambda v: v if len(v) <= 90 else v[:89] + "…"            # noqa: E731
+        shown = [[cut(x) for x in r] for r, _ in rows]
+        widths = [max([len(h)] + [len(r[i]) for r in shown]) for i, h in enumerate(cols)]
+        color = {"ok": "32", "warn": "33", "bad": "31", "dim": "90"}
+        print(c(f"{s.label}  ·  {key}" + (f"  ·  {table.note}" if table.note else ""), "1;36"))
+        print(c("  ".join(h.ljust(widths[i]) for i, h in enumerate(cols)), "90"))
+        for r, (_raw, st) in zip(shown, rows):
+            line = "  ".join(x.ljust(widths[i]) for i, x in enumerate(r)).rstrip()
+            print(c(line, color[st]) if st in color else line)
+        if not rows:
+            print(c("(nothing)", "90"))
+    return 1 if a.check and any(st == "bad" for _r, st in rows) else 0
+
+
+def cmd_report(store: Store, a) -> int:
+    """A Markdown report of the server (overview, failed services, updates, ports, accounts, cron, firewall)."""
+    from . import collect, dashboard as dash
+    s, client, chain = _open_server(store, a.target, a.accept_new)
+    try:
+        md = collect.build_report(s.label, s.address, collect.Context(dash.Runner(client), s.username))
+    finally:
+        _close_server(client, chain)
+    if a.output:
+        from pathlib import Path
+        Path(a.output).write_text(md, encoding="utf-8")
+        print(f"Report saved: {a.output}")
+    else:
+        print(md, end="")
+    return 0
+
+
 def cmd_status(store: Store, a) -> int:
     """One-screen overview of a server (the dashboard's Overview, in the terminal)."""
     from . import dashboard as dash
@@ -825,6 +932,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--user", help="import: SSH user (default: from the OS: ubuntu, ec2-user …)")
     sp.add_argument("--shell", action="store_true", help="import as plain SSM shells (no SSH)")
     sp.add_argument("--no-eic", action="store_true", help="import: don't use EC2 Instance Connect keys")
+    sp = sub.add_parser("dash", help="server dashboard in the terminal (services, processes, logs, docker, …)")
+    sp.add_argument("target")
+    sp.add_argument("--accept-new", action="store_true", help="trust an unknown host key (never a changed one)")
+    sp = sub.add_parser("show", help="print one dashboard tab: overview, services, processes, ports, updates, "
+                                     "users, cron, firewall, docker, timers, storage, security")
+    sp.add_argument("target")
+    sp.add_argument("tab", help="a tab name (a unique start is enough: serv, proc, fire …)")
+    sp.add_argument("-f", "--filter", help="only rows containing this text")
+    sp.add_argument("--sort", help="sort by a column (a unique start is enough, e.g. cpu, mem, pid)")
+    sp.add_argument("--desc", action="store_true", help="with --sort: biggest first")
+    sp.add_argument("--json", action="store_true", help="JSON output, for scripts")
+    sp.add_argument("--check", action="store_true", help="exit with 1 when any row is marked bad (health checks)")
+    sp.add_argument("--sudo", action="store_true", help="ask for the sudo password (firewall, docker, security)")
+    sp.add_argument("--accept-new", action="store_true", help="trust an unknown host key (never a changed one)")
+    sp = sub.add_parser("report", help="Markdown report of a server")
+    sp.add_argument("target")
+    sp.add_argument("-o", "--output", help="write to this file instead of the screen")
+    sp.add_argument("--accept-new", action="store_true", help="trust an unknown host key (never a changed one)")
     sp = sub.add_parser("add", help="add a server")
     for f in ("name", "host", "user", "auth", "key", "group", "tags", "jump"):
         sp.add_argument(f"--{f}")
@@ -849,7 +974,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 HANDLERS = {"ls": cmd_ls, "list": cmd_ls, "connect": cmd_connect, "c": cmd_connect, "ssh": cmd_connect,
             "tunnel": cmd_tunnel, "t": cmd_tunnel, "fwd": cmd_tunnel,
-            "status": cmd_status, "st": cmd_status,
+            "status": cmd_status, "st": cmd_status, "dash": cmd_dash, "show": cmd_show, "report": cmd_report,
             "exec": cmd_exec, "x": cmd_exec, "add": cmd_add, "rm": cmd_rm, "remove": cmd_rm,
             "import": cmd_import, "passwd": cmd_passwd, "aws": cmd_aws}
 

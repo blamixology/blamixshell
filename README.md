@@ -47,7 +47,21 @@ No Qt needed; only `paramiko`, `cryptography` and `textual` are required.
 ./install_cli.sh          # installs `blamixshell` into ~/.local/bin (uses pipx if present)
 blamixshell                 # opens the TUI
 ```
-Or build a portable folder with no Python needed on the target: `./build_cli.sh`, which produces `dist/blamixshell-cli/blamixshell`.
+Or build a portable folder with no Python needed on the target: `./build_cli.sh`, which produces `dist/blamixshell-cli/blamixshell`. `ONEFILE=1 ./build_cli.sh` makes one single executable instead (`dist/blamixshell-<os>-<arch>`).
+
+**Server dashboard in the terminal** (the same tabs as the desktop dashboard, built from the same readers; works over SSH on a headless box):
+
+```bash
+blamixshell dash web-1                 # full screen; in the TUI, select a server and press i
+blamixshell show web-1 services        # one tab as a table (a unique start of the name is enough: serv, proc, fire …)
+blamixshell show web-1 processes --sort cpu --desc -f nginx
+blamixshell show web-1 storage --json  # JSON for scripts
+blamixshell show web-1 services --check && echo healthy   # exit code 1 when a row is marked bad (failed service, disk ≥ 90 %, …)
+blamixshell show web-1 firewall --sudo # firewall, docker and security need root: ask for the sudo password
+blamixshell report web-1 -o web-1.md   # Markdown report: overview, failed services, updates, ports, accounts, cron, firewall
+```
+
+Tabs: overview, services, processes, logs, ports, updates, users, cron, firewall, docker, timers, storage, security. In `dash`: click a column header (or press `1`–`7`) to sort, `/` to filter, `[` and `]` for the next tab, `a` or Enter for the actions of the selected row (start/stop/restart a service, end a process, start/stop/remove a container, enable/disable a timer; each one asks first), `l` for its log, `S` to give the sudo password, `p` to save a report, `r` to reload.
 
 ### Prebuilt downloads
 Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml`) build Windows, macOS (Apple Silicon + Intel) and Linux packages plus the Linux CLI, then attach them to a GitHub Release.
