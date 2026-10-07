@@ -70,7 +70,7 @@ class Watch:
 
     def should_retry(self) -> bool:
         """Keep trying on our own? (A shutdown doesn't come back by itself; every wait ends at some point.)"""
-        if self.state == "up" or self.gave_up:
+        if self.state == "up" or self.gave_up or self.patience() <= 0:
             return False
         if self.elapsed() > self.patience():
             self.gave_up = True

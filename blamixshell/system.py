@@ -190,7 +190,7 @@ def swap_create_command(size_mb: int, path: str = "/swapfile") -> str:
 def swap_remove_command(path: str) -> str:
     """Turn a swap *file* off, drop it from /etc/fstab and delete it."""
     path = _swap_path(path)
-    steps = [f"swapoff {path}", f"sed -i '\#^{path}[[:space:]]#d' /etc/fstab", f"rm -f {path}"]
+    steps = [f"swapoff {path}", f"sed -i '\\#^{path}[[:space:]]#d' /etc/fstab", f"rm -f {path}"]
     return "sh -c " + shlex.quote(" && ".join(steps))
 
 
