@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.17.1](https://github.com/blamixology/blamixshell/releases/tag/v1.17.1) - 2026-10-08
+
+### Fixes
+- One-file Linux CLI uses manylinux2014 wheels so it runs on CentOS 7 (glibc 2.17) (51eba66)
+
 ## [1.17.0](https://github.com/blamixology/blamixshell/releases/tag/v1.17.0) - 2026-10-08
 
 ### New
