@@ -33,12 +33,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0 libgl1
+        run: bash .github/apt-install.sh libegl1 libxkbcommon0 libgl1
       - run: pip install -r requirements.txt textual pytest pexpect
       - run: pytest -q tests
         env: { QT_QPA_PLATFORM: offscreen }
@@ -47,13 +48,14 @@ jobs:
   #    jump host, host-key prompts, parallel exec, CLI + TUI in a real pty
   test-live:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - name: Start a throwaway sshd on 127.0.0.1:2222
         run: |
-          sudo apt-get update && sudo apt-get install -y openssh-server libegl1 libxkbcommon0 libgl1
+          bash .github/apt-install.sh openssh-server libegl1 libxkbcommon0 libgl1
           sudo useradd -m -s /bin/bash tester
           echo 'tester:Secret123!' | sudo chpasswd
           ssh-keygen -t ed25519 -N pp -f "$RUNNER_TEMP/id_ed25519" -q
@@ -89,6 +91,7 @@ jobs:
           - { os: macos-15-intel, name: macos-x64 }
           - { os: ubuntu-22.04,   name: linux-x64 }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -135,7 +138,7 @@ jobs:
       - name: Build (Linux GUI + CLI)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update && sudo apt-get install -y libxcb-cursor0 libegl1
+          bash .github/apt-install.sh libxcb-cursor0 libegl1
           pyinstaller --noconfirm --clean --onedir --windowed --name BlamixShell \
             --add-data "blamixshell/assets:blamixshell/assets" --exclude-module tkinter run.py
           python packaging/prune_qt.py dist/BlamixShell
@@ -163,6 +166,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [test, test-live]
     runs-on: ubuntu-22.04
+    timeout-minutes: 40
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -195,6 +199,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [test, test-live]
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -216,6 +221,7 @@ jobs:
     if: ${{ !cancelled() && needs.build.result == 'success' && startsWith(github.ref, 'refs/tags/v') }}
     needs: [build, cli-linux, cli-musl]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }          # full history + tags
