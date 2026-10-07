@@ -983,6 +983,7 @@ class DashboardWindow(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(self._interval_ms())
+        self._place()
         self._connection_changed()
 
     # ================================================================ layout
@@ -1096,7 +1097,13 @@ class DashboardWindow(QWidget):
         lay = QVBoxLayout(w)
         lay.setContentsMargins(2, 12, 2, 2)
         lay.setSpacing(10)
-        self.tabs.addTab(w, title)
+        # in a scroll area: a page with a wide toolbar scrolls sideways on a narrow window instead of making
+        # the whole dashboard wider than the screen
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(w)
+        self.tabs.addTab(scroll, title)
         return lay
 
     def _build_overview(self) -> None:
@@ -2920,11 +2927,37 @@ class DashboardWindow(QWidget):
             self.status.setText("Typed into the terminal: review it there and press Enter to run.")
 
     # ================================================================ window
+    def _place(self) -> None:
+        """A sensible size (the last one you used, never bigger than the screen) and a position centered over
+        the main window, or on the screen when that isn't visible: never off the edge."""
+        parent = self.parentWidget()
+        screen = (parent.screen() if parent is not None else None) or QApplication.primaryScreen()
+        avail = screen.availableGeometry()
+        saved = self.settings.get("dashboard_size")
+        w, h = (saved if isinstance(saved, (list, tuple)) and len(saved) == 2 else (1100, 720))
+        try:
+            w, h = int(w), int(h)
+        except (TypeError, ValueError):
+            w, h = 1100, 720
+        self.resize(max(760, min(w, int(avail.width() * 0.94))), max(520, min(h, int(avail.height() * 0.92))))
+        w, h = self.width(), self.height()
+        if parent is not None and parent.isVisible() and not parent.isMinimized():
+            center = parent.frameGeometry().center()
+        else:
+            center = avail.center()
+        x = max(avail.left(), min(center.x() - w // 2, avail.right() - w + 1))
+        y = max(avail.top(), min(center.y() - h // 2, avail.bottom() - h + 1))
+        self.move(x, y)
+
     def showEvent(self, e):  # noqa: N802
         super().showEvent(e)
         style_window(self)
 
     def closeEvent(self, e):  # noqa: N802
+        if not self.isMaximized() and not self.isFullScreen():          # remember the size for next time
+            self.settings["dashboard_size"] = [self.width(), self.height()]
+            if hasattr(self.settings, "save"):
+                self.settings.save()
         self._closed = True
         self._sudo_pw = None
         self._timer.stop()

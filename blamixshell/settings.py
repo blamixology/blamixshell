@@ -70,6 +70,7 @@ DEFAULTS = {
     "log_retention_days": 0,        # delete logs older than this (0 = keep)
     "health_strip": True,           # CPU / memory / disk of the active server in the status bar
     "history_autocomplete": False,  # suggest commands from this server's history (opt-in)
+    "dashboard_size": [],                 # [width, height] the dashboard window had last time
     "dashboard_install_updates": False,   # allow installing updates from the dashboard (opt-in)
     "ui_theme": "Midnight",         # interface colors (applied at startup; see theme.THEMES)
     "ui_font": "",                  # "" = the system's UI font
