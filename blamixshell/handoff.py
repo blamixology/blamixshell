@@ -124,10 +124,17 @@ def send(req: dict, timeout_ms: int = 1500) -> bool:
         return False
     sock.write(json.dumps(req).encode() + b"\n")
     sock.flush()
-    ok = sock.waitForBytesWritten(timeout_ms) and sock.waitForReadyRead(timeout_ms * 2) and \
-        bytes(sock.readAll()).startswith(b"ok")
+    # (on Linux flush() usually writes everything at once, and waitForBytesWritten() then says False)
+    while sock.bytesToWrite() > 0:
+        if not sock.waitForBytesWritten(timeout_ms):
+            break
+    reply = b""
+    while b"\n" not in reply:                  # the open window answers "ok" once it has the request
+        if not sock.bytesAvailable() and not sock.waitForReadyRead(timeout_ms * 2):
+            break
+        reply += bytes(sock.readAll())
     sock.disconnectFromServer()
-    return ok
+    return reply.startswith(b"ok")
 
 
 def listen(on_request):
