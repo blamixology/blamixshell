@@ -2,12 +2,16 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
-## [1.17.0](https://github.com/blamixology/blamixshell/releases/tag/v1.17.0) - 2026-10-07
+## [1.17.0](https://github.com/blamixology/blamixshell/releases/tag/v1.17.0) - 2026-10-08
+
+### New
+- Add gui --connect (hands off to the open window), package search/install/remove, alerts history, log highlighting with context and errors-only, report --json (e9f06c2)
 
 ### Fixes
 - A shutdown no longer reports 'gave up' on the first tick (zero patience); silence a swap-script escape warning (8175424)
 
 ### Improvements
+- Apt installs can't hang anymore (skip when installed, timeouts, fallback mirror); time limits on every job (59a6fdb)
 - Dashboard: reconnect after dropped connections or reboots, firewall actions for iptables/nftables, richer security checks with details windows, one-file CLI binaries with self-update (7e7b6af)
 - Dashboard: open centered at a sensible size inside the screen, remember the size; pages scroll instead of forcing the window wider (55dfec7)
 
