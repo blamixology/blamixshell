@@ -666,13 +666,17 @@ def cmd_show(store: Store, a) -> int:
 
 
 def cmd_report(store: Store, a) -> int:
-    """A Markdown report of the server (overview, failed services, updates, ports, accounts, cron, firewall)."""
+    """A Markdown report of the server (overview, failed services, updates, ports, accounts, cron, firewall);
+    --json: the same parts as JSON, with a short summary for scripts."""
+    import json
     from . import collect, dashboard as dash
     s, client, chain = _open_server(store, a.target, a.accept_new)
     try:
-        md = collect.build_report(s.label, s.address, collect.Context(dash.Runner(client), s.username))
+        md = collect.build_report(s.label, s.address, collect.Context(dash.Runner(client), s.username), a.json)
     finally:
         _close_server(client, chain)
+    if a.json:
+        md = json.dumps(md, indent=2, ensure_ascii=False) + "\n"
     if a.output:
         from pathlib import Path
         Path(a.output).write_text(md, encoding="utf-8")
@@ -1012,6 +1016,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("report", help="Markdown report of a server")
     sp.add_argument("target")
     sp.add_argument("-o", "--output", help="write to this file instead of the screen")
+    sp.add_argument("--json", action="store_true", help="JSON instead of Markdown (with a short summary), for scripts")
     sp.add_argument("--accept-new", action="store_true", help="trust an unknown host key (never a changed one)")
     sp = sub.add_parser("add", help="add a server")
     for f in ("name", "host", "user", "auth", "key", "group", "tags", "jump"):
@@ -1029,7 +1034,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("source", choices=["ssh-config", "putty"])
     sub.add_parser("passwd", help="change the master password")
     sub.add_parser("tui", help="full-screen terminal UI")
-    sub.add_parser("gui", help="launch the desktop app")
+    sp = sub.add_parser("gui", help="launch the desktop app (--connect: open a server in it, or in the one already open)")
+    sp.add_argument("--connect", "-c", metavar="SERVER", help="a saved server's name, or user@host:port")
+    sp.add_argument("--key", help="with a new user@host: the private key file to use")
+    sp.add_argument("--jump", metavar="SERVER", help="with a new user@host: a saved server to go through")
     sub.add_parser("where", help="show where data is stored")
     sub.add_parser("selftest", help=argparse.SUPPRESS)
     sp = sub.add_parser("update", help="check GitHub for a newer BlamixShell (--install: update the one-file binary)")

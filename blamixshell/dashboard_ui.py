@@ -12,18 +12,19 @@ import time
 from types import SimpleNamespace
 
 from PySide6.QtCore import QObject, QPointF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPainterPath, QPen
+from PySide6.QtGui import (QColor, QFontDatabase, QPainter, QPainterPath, QPen, QSyntaxHighlighter, QTextCharFormat,
+                           QTextCursor)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QMenu, QToolButton,
                                QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QSpinBox, QTimeEdit,
                                QProgressBar, QPushButton, QScrollArea, QTableWidget, QTableWidgetItem,
                                QTabWidget, QVBoxLayout, QWidget)
 
-from . import collect, cron, reconnect
+from . import collect, cron, loglines, reconnect
 from . import dashboard as d
 from .tablekeys import auto_key
 from . import firewall as fw
-from . import docker, report, security, sshkeys, storage, timers, units
+from . import docker, packages, report, security, sshkeys, storage, timers, units
 from .theme import C, blend, icon, style_window
 
 REFRESH_MS = 5000
@@ -957,6 +958,34 @@ class _GroupsDialog(QDialog):
         return add, remove
 
 
+class _LogHighlighter(QSyntaxHighlighter):
+    """Errors red, warnings amber, the "--" between context groups faint, and the filter text marked."""
+
+    def __init__(self, doc):
+        super().__init__(doc)
+        self.needle = ""
+
+    def highlightBlock(self, text: str) -> None:            # noqa: N802 (Qt's name)
+        if text == loglines.SEPARATOR:
+            f = QTextCharFormat()
+            f.setForeground(QColor(C["faint"]))
+            self.setFormat(0, len(text), f)
+            return
+        sev = loglines.severity(text)
+        if sev:
+            f = QTextCharFormat()
+            f.setForeground(QColor(C["danger"] if sev == "error" else C["warn"]))
+            self.setFormat(0, len(text), f)
+        if self.needle:
+            mark = QTextCharFormat()
+            mark.setBackground(QColor(blend(C["bg"], C["accent"], 0.45)))
+            mark.setForeground(QColor(C["text"]))
+            low, n, i = text.lower(), len(self.needle), 0
+            while (i := low.find(self.needle, i)) >= 0:
+                self.setFormat(i, n, mark)
+                i += n
+
+
 class DashboardWindow(QWidget):
     def __init__(self, pane, color: str = "", send_to_terminal=None, settings=None, parent=None):
         super().__init__(parent, Qt.Window)
@@ -1020,6 +1049,9 @@ class DashboardWindow(QWidget):
         head.addSpacing(8)
         head.addWidget(self.auto)
         head.addWidget(self.interval)
+        head.addWidget(_btn("bolt", "Alerts", self._show_alerts,
+                            "When this server crossed a limit (disk, memory, swap, load) or a service failed, "
+                            "and for how long (recorded while it is the active terminal)"))
         head.addWidget(_btn("file", "Report…", self._make_report,
                             "Collect a Markdown report of this server (overview, services, updates, ports, accounts, "
                             "cron, firewall) to save or paste into a ticket"))
@@ -1220,18 +1252,34 @@ class DashboardWindow(QWidget):
         self.log_lines.addItems(["200 lines", "1000 lines", "5000 lines"])
         self.log_follow = QCheckBox("Follow")
         self.log_follow.setToolTip("Reload every 5 seconds and keep the end in view")
-        lay.addLayout(_toolbar(self.log_unit, self.log_prio, self.log_lines, _btn("download", "Load",
-                               lambda: self.refresh(force=True)), self.log_follow, "stretch"))
+        top = _toolbar(self.log_unit, self.log_prio, self.log_lines, _btn("download", "Load",
+                       lambda: self.refresh(force=True)), self.log_follow, "stretch")
+        lay.addLayout(top)
         self._log_raw = ""
         self.log_find = QLineEdit(placeholderText="Filter the lines shown (text, any case)")
-        self.log_find.setMinimumWidth(260)
+        self.log_find.setMinimumWidth(230)
         self.log_find.textChanged.connect(lambda _t: self._apply_log_filter())
         self.log_count = QLabel("", objectName="Hint")
+        self.log_around = QComboBox()
+        for n in (0, 2, 5, 10, 25):
+            self.log_around.addItem("Matching lines only" if n == 0 else f"± {n} lines around", n)
+        self.log_around.setToolTip("With a filter: also show the lines just before and after each match (like grep -C)")
+        self.log_around.currentIndexChanged.connect(lambda _i: self._apply_log_filter())
+        self.log_only = QComboBox()
+        self.log_only.addItem("Every line", "")
+        self.log_only.addItem("Warnings and errors", "warn")
+        self.log_only.addItem("Errors only", "error")
+        self.log_only.setToolTip("Keep only the lines that look like warnings or errors (by their level or wording); "
+                                 "works with any log, also without journald")
+        self.log_only.currentIndexChanged.connect(lambda _i: self._apply_log_filter())
         self.log_views = QComboBox()
         self.log_views.setMinimumWidth(170)
         self.log_views.activated.connect(self._apply_log_view)
         self._fill_log_views()
-        lay.addLayout(_toolbar(self.log_find, self.log_count, "stretch", self.log_views,
+        top.insertWidget(top.count() - 1, self.log_only)       # before the stretch: the second row is full
+        lay.addLayout(_toolbar(self.log_find, self.log_around, self.log_count,
+                               _btn("search", "Next error", self._next_log_error,
+                                    "Jump to the next line that looks like an error"), "stretch", self.log_views,
                                _btn("plus", "Save view", self._save_log_view,
                                     "Remember this service, level, size and filter for this server"),
                                _btn("trash", "", self._delete_log_view, "Delete the selected saved view")))
@@ -1240,6 +1288,7 @@ class DashboardWindow(QWidget):
         mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
         mono.setPointSizeF(max(8.5, mono.pointSizeF() * 0.95))
         self.log_view.setFont(mono)
+        self._log_hl = _LogHighlighter(self.log_view.document())
         lay.addWidget(self.log_view, 1)
 
     def _build_ports(self) -> None:
@@ -1273,6 +1322,25 @@ class DashboardWindow(QWidget):
         lay.addWidget(self.upd_table, 1)
         self.upd_hint = QLabel("", objectName="Hint", wordWrap=True)
         lay.addWidget(self.upd_hint)
+
+        # find a package, then install or remove it
+        lay.addWidget(QLabel("<b>Find a package</b>"))
+        self.pkg_query = QLineEdit(placeholderText="Package name or a word, e.g. nginx, htop, python3")
+        self.pkg_query.setMinimumWidth(300)
+        self.pkg_query.returnPressed.connect(self._pkg_search)
+        self.pkg_count = QLabel("", objectName="Hint")
+        self.pkg_install = _btn("download", "Install…", lambda: self._pkg_change("install"),
+                                "Install the selected package (asks first)")
+        self.pkg_remove = _btn("trash", "Remove…", lambda: self._pkg_change("remove"),
+                               "Remove the selected package (shows what else goes with it, asks first)")
+        self._pkg_list: list = []
+        self._pkg_last = ""
+        lay.addLayout(_toolbar(self.pkg_query, _btn("search", "Search", self._pkg_search), self.pkg_count, "stretch",
+                               self.pkg_install, self.pkg_remove))
+        self.pkg_table = _table(["Package", "Installed", "Version", "Description"], sortable=True)
+        self.pkg_table.itemSelectionChanged.connect(self._update_pkg_buttons)
+        lay.addWidget(self.pkg_table, 1)
+        self._update_pkg_buttons()
 
     def _build_users(self) -> None:
         lay = self._page("Users")
@@ -1638,6 +1706,10 @@ class DashboardWindow(QWidget):
         self.ps_count.setText(f"{len(procs)} of {len(self._procs)}" if len(procs) != len(self._procs)
                               else f"{len(procs)} processes")
 
+    def _show_alerts(self) -> None:
+        from .alerts_ui import AlertsDialog
+        AlertsDialog(self, self.server.id).exec()
+
     def _show_logs(self, text: str) -> None:
         bar = self.log_view.verticalScrollBar()
         at_end = bar.value() >= bar.maximum() - 4
@@ -1649,9 +1721,29 @@ class DashboardWindow(QWidget):
     def _apply_log_filter(self) -> None:
         lines = self._log_raw.splitlines()
         needle = self.log_find.text().strip().lower()
-        shown = [l for l in lines if needle in l.lower()] if needle else lines
-        self.log_count.setText(f"{len(shown)} of {len(lines)} lines" if needle else "")
+        only = self.log_only.currentData() or ""
+        shown, hits = loglines.matching(lines, needle, int(self.log_around.currentData() or 0), only)
+        self.log_around.setEnabled(bool(needle or only))
+        self.log_count.setText(f"{hits} of {len(lines)} lines" if needle or only else "")
+        self._log_hl.needle = needle
         self.log_view.setPlainText("\n".join(shown) or ("(no lines match the filter)" if lines else "(no log lines)"))
+
+    def _next_log_error(self) -> None:
+        """Move to the next line that looks like an error (from the cursor, wrapping around once)."""
+        doc = self.log_view.document()
+        start = self.log_view.textCursor().blockNumber() + 1
+        count = doc.blockCount()
+        for k in range(count):
+            block = doc.findBlockByNumber((start + k) % count)
+            if loglines.severity(block.text()) == "error":
+                cur = QTextCursor(block)
+                cur.select(QTextCursor.LineUnderCursor)
+                self.log_view.setTextCursor(cur)
+                self.log_view.centerCursor()
+                self.log_count.setText(self.log_count.text().split("  ·  ")[0] +
+                                       f"  ·  error at line {block.blockNumber() + 1}")
+                return
+        self.status.setText("No error lines in what is shown.")
 
     def _log_view_list(self) -> list:
         return list((self.settings.get("log_views") or {}).get(self.server.id, []))
@@ -1678,7 +1770,8 @@ class DashboardWindow(QWidget):
         if not ok or not name:
             return
         view = {"name": name, "unit": unit, "prio": self.log_prio.currentText(),
-                "lines": self.log_lines.currentText(), "find": self.log_find.text()}
+                "lines": self.log_lines.currentText(), "find": self.log_find.text(),
+                "only": self.log_only.currentData() or "", "around": int(self.log_around.currentData() or 0)}
         views = [v for v in self._log_view_list() if v["name"] != name] + [view]
         self._store_log_views(views)
         self._fill_log_views(name)
@@ -1691,6 +1784,8 @@ class DashboardWindow(QWidget):
         self.log_prio.setCurrentIndex(max(0, self.log_prio.findText(v.get("prio", ""))))
         self.log_lines.setCurrentIndex(max(0, self.log_lines.findText(v.get("lines", ""))))
         self.log_find.setText(v.get("find", ""))
+        self.log_only.setCurrentIndex(max(0, self.log_only.findData(v.get("only", ""))))
+        self.log_around.setCurrentIndex(max(0, self.log_around.findData(int(v.get("around", 0)))))
         self.refresh(force=True)
 
     def _delete_log_view(self) -> None:
@@ -1853,6 +1948,95 @@ class DashboardWindow(QWidget):
         self._privileged(f"{'Force-kill' if force else 'End'} process {pid} ({name})",
                          d.kill_command(pid, force), then="processes", allow_plain=True)
 
+    # ---- packages: search, install, remove ----
+    def _pkg_allowed(self) -> bool:
+        return bool(self.settings.get("dashboard_install_updates"))
+
+    def _pkg_search(self) -> None:
+        q = self.pkg_query.text().strip()
+        mgr = getattr(self, "_update_mgr", "")
+        if not q:
+            return
+        if not packages.valid_query(q):
+            self.pkg_count.setText("Use letters, digits and . + _ - only.")
+            return
+        if mgr not in packages.MANAGERS:
+            self.pkg_count.setText("Open the Updates tab first (it finds the package manager)." if not mgr else
+                                   f"Searching isn't supported for {mgr}.")
+            return
+        self.pkg_count.setText("Searching …")
+        self._pkg_last = q
+        self._job("packages", lambda r: (q, packages.parse_search(
+            mgr, r.run(packages.search_script(mgr, q), timeout=90).out, q)))
+
+    def _show_packages(self, res) -> None:
+        q, found = res
+        self._pkg_list = found
+        t = self.pkg_table
+        with _Filling(t):
+            t.setRowCount(len(found))
+            for i, p in enumerate(found):
+                t.setItem(i, 0, _item(p.name, C["ok"] if p.installed else None, data=p.name))
+                t.setItem(i, 1, _item("installed" if p.installed else "–", C["ok"] if p.installed else C["muted"]))
+                t.setItem(i, 2, _item(p.version or "–", C["muted"]))
+                t.setItem(i, 3, _item(p.summary or "", C["muted"]))
+        have = sum(1 for p in found if p.installed)
+        more = " (the first ones only: be more specific)" if len(found) >= packages.MAX_RESULTS // 2 else ""
+        self.pkg_count.setText(f"No package matches “{q}” in the server's package lists." if not found else
+                               f"{len(found)} found, {have} installed{more}")
+        self._update_pkg_buttons()
+
+    def _selected_package(self):
+        name = self._selected(self.pkg_table)
+        return next((p for p in self._pkg_list if p.name == name), None) if name else None
+
+    def _update_pkg_buttons(self) -> None:
+        p = self._selected_package()
+        allowed = self._pkg_allowed()
+        for b in (self.pkg_install, self.pkg_remove):
+            b.setVisible(allowed)
+        self.pkg_install.setEnabled(bool(allowed and p and not p.installed))
+        self.pkg_remove.setEnabled(bool(allowed and p and p.installed and not packages.protected(p.name)))
+        self.pkg_remove.setToolTip(packages.why_protected(p.name) if p and p.installed and packages.protected(p.name)
+                                   else "Remove the selected package (shows what else goes with it, asks first)")
+
+    def _pkg_change(self, how: str) -> None:
+        p = self._selected_package()
+        mgr = getattr(self, "_update_mgr", "")
+        if not p or not self._pkg_allowed():
+            return
+        try:
+            cmd, show = (packages.install_command if how == "install" else packages.remove_command)(mgr, p.name)
+        except ValueError as e:
+            QMessageBox.information(self, "Packages", str(e))
+            return
+        if how == "remove":
+            preview = packages.removal_preview_command(mgr, p.name)
+            if preview:                                  # say what else would go, before asking
+                self.pkg_count.setText("Checking what the removal would take with it …")
+                self._pkg_pending = (p.name, cmd, show)
+                self._job("pkg_preview", lambda r: packages.parse_preview(r.run(preview, timeout=60).out, p.name))
+                return
+        self._pkg_run(how, p.name, cmd, show)
+
+    def _show_pkg_preview(self, others: list) -> None:
+        name, cmd, show = self._pkg_pending
+        self.pkg_count.setText("")
+        if others:
+            listed = ", ".join(others[:15]) + (f" and {len(others) - 15} more" if len(others) > 15 else "")
+            if any(packages.protected(o) for o in others):
+                QMessageBox.warning(self, "Remove package",
+                                    f"Removing {name} would also remove {listed}, including packages the system "
+                                    "needs. Not done: use the terminal if you really mean it.")
+                return
+            if QMessageBox.question(self, "Remove package", f"Removing {name} also removes:\n\n{listed}\n\n"
+                                    "Continue?") != QMessageBox.Yes:
+                return
+        self._pkg_run("remove", name, cmd, show)
+
+    def _pkg_run(self, how: str, name: str, cmd: str, show: str) -> None:
+        self._privileged(f"{how.capitalize()} {name}", cmd, then="updates", timeout=900, show=show)
+
     def _install_updates(self) -> None:
         cmd = d.install_command(self._update_mgr)
         if not cmd or not self.settings.get("dashboard_install_updates"):
@@ -1920,6 +2104,9 @@ class DashboardWindow(QWidget):
         self._loaded.discard(then)
         if self._tab_key() == then:
             self.refresh(force=True)
+        if then == "updates" and what.startswith(("Install ", "Remove ")) and self._pkg_last:
+            self.pkg_query.setText(self._pkg_last)
+            self._pkg_search()
 
     # ---- services: unit file and creating one ----
     def _view_unit(self) -> None:

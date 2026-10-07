@@ -227,6 +227,7 @@ echo @@load; cat /proc/loadavg 2>/dev/null
 echo @@nproc; nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null
 echo @@mem; grep -E '^(MemTotal|MemFree|MemAvailable|Buffers|Cached|SwapTotal|SwapFree):' /proc/meminfo 2>/dev/null
 echo @@df; df -Pk / 2>/dev/null
+echo @@failed; systemctl list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}' | head -n 20
 echo @@end
 """
 
@@ -244,6 +245,7 @@ class Health:
     mem_kb: tuple[int, int] | None = None    # (used, total)
     swap_kb: tuple[int, int] | None = None
     disk_kb: tuple[int, int] | None = None
+    failed: list[str] = field(default_factory=list)   # failed systemd units
 
 
 def parse_health(text: str, prev: tuple[int, int] | None = None) -> Health:
@@ -275,6 +277,7 @@ def parse_health(text: str, prev: tuple[int, int] | None = None) -> Health:
     if disks:
         h.disk = disks[0].percent
         h.disk_kb = (disks[0].used_kb, disks[0].used_kb + disks[0].avail_kb)
+    h.failed = [x.strip() for x in s.get("failed", "").splitlines() if x.strip() and not x.startswith(("●", "*"))]
     return h
 
 
@@ -953,10 +956,14 @@ def human_uptime(seconds: float) -> str:
 
 
 # ---------------------------------------------------------------- status-bar alerts
-def health_alerts(h: Health) -> dict[str, str]:
+def health_alerts(h: Health, services: bool = False) -> dict[str, str]:
     """What is wrong right now on the active server: {key: message}. Used to warn once when
-    something newly crosses a limit (disk and memory 90%, swap 60%, load 1.5 per CPU)."""
+    something newly crosses a limit (disk and memory 90%, swap 60%, load 1.5 per CPU), and with
+    `services` also each failed service (for the alerts history)."""
     out: dict[str, str] = {}
+    if services:
+        for unit in h.failed:
+            out["svc:" + unit] = f"{unit} failed"
     if h.disk is not None and h.disk >= 90:
         out["disk"] = f"disk {h.disk:.0f}% full"
     if h.mem is not None and h.mem >= 90:

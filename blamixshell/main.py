@@ -6,6 +6,8 @@ import sys
 
 
 def main() -> None:
+    from .handoff import parse_args
+    request = parse_args(sys.argv[1:])        # --connect <server or user@host:port> [--key FILE] [--jump SERVER]
     # Chromium flags must be set before QtWebEngine starts
     os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-logging --log-level=3")
     if sys.platform == "win32":
@@ -40,6 +42,13 @@ def main() -> None:
     if ico.exists():
         app.setWindowIcon(QIcon(str(ico)))
     app.setDesktopFileName("blamixshell")   # matches the Linux .desktop entry
+
+    from . import handoff
+    if request and not os.environ.get("BLAMIXSHELL_SELFTEST") and handoff.send(request):
+        sys.exit(0)                          # an open BlamixShell took it
+    pending = [request] if request else []
+    handler = {"fn": pending.append}         # until the window exists, requests wait here
+    listener = handoff.listen(lambda req: handler["fn"](req))  # noqa: F841  (kept alive for the app's lifetime)
 
     path = vault_path()
     # a vault moved to OneDrive / a USB stick that isn't there right now: never create
@@ -94,6 +103,10 @@ def main() -> None:
     win = MainWindow(holder["store"], Settings())
     win.show()
     win.restore_session()
+    handler["fn"] = win.handle_request
+    for req in pending:
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda r=req: win.handle_request(r))
     sys.exit(app.exec())
 
 

@@ -12,6 +12,11 @@ Legend: ✅ done · 🚧 in progress · 🗓 planned · 💡 later / maybe
 | ✅ | **Dashboard reconnects** | When the connection drops, or after a reboot you started from the dashboard, a banner counts down and reconnects by itself (growing delays, patient for 15 minutes after a reboot, none after a shutdown); the tabs reload when the server is back. Reconnect now: the button in the desktop dashboard, `R` in `dash`. |
 | ✅ | **Firewall actions for iptables and nftables** | Open or close a port, save the rules, start the firewall, with the same protection for the SSH port as firewalld / ufw. Buttons that can't be used say why (no sudo, firewall stopped, read-only manager). |
 | ✅ | **More security checks, with details** | Listening services on risky ports, sensitive file permissions, fail2ban, automatic updates, pending security updates, failed-login sources, recent logins. Double-click a row (desktop) or press Enter / `d` (terminal) for a window with the details and how to fix it. Double-click works the same on the other tables. |
+| ✅ | **Open a server from the command line** | `blamixshell gui --connect web-1` or `--connect user@host:port` (`--key`, `--jump`); also `BlamixShell.exe --connect …`. An open BlamixShell takes the request over a local socket (only your user can reach it) instead of opening a second window, after the vault is unlocked. Ready for BlamixFiles' "Open in BlamixShell". |
+| ✅ | **Packages** | *Find a package* on the Updates tab (apt, dnf, yum, zypper, pacman, apk; installed ones marked); install or remove with a confirmation (opt-in in Settings, like installing updates). A removal first lists what else it takes with it; the system's own packages and SSH can't be removed from here. |
+| ✅ | **Alerts history** | Disk, memory, swap and load limits and failed services, per server, with start, end and the worst value; right-click the health strip, *Alerts* in the dashboard, or the command palette. 30 days, on this computer only. |
+| ✅ | **Better logs** | Errors red, warnings amber, "errors only" / "warnings and errors" for any log (also without journald), lines around each match (like `grep -C`), *Next error*; saved views keep these. The terminal dashboard colors the same way. |
+| ✅ | **`report --json`** | The full report as JSON with a short summary, for scripts and monitoring. |
 | ✅ | **One-file CLI binaries and self-update** | Release assets `blamixshell-linux-x86_64`, `-aarch64` and `-musl-x86_64` (built for old glibc, so they run on CentOS 7; selftest in CI). `blamixshell update --install` replaces the running binary after checking its SHA-256. |
 | ✅ | **Command log** | Who ran what, where and when: one line per command (as shown on screen), plus dashboard actions and `exec`. Per server or for all. |
 | ✅ | **Session recordings** | ● on a terminal, or always per server: everything it shows, as clean text or raw, optionally time-stamped. Retention in days. |
@@ -75,7 +80,6 @@ Legend: ✅ done · 🚧 in progress · 🗓 planned · 💡 later / maybe
 | | Feature | What it means |
 |---|---|---|
 | 🗓 | **Local terminal tabs** | PowerShell, cmd, WSL or Git Bash in the same window (ConPTY on Windows), bash/zsh on macOS and Linux. The terminal layer is already in place (it runs SSM shells). |
-| 🗓 | **Open a server from the command line / from BlamixFiles** | `blamixshell gui --connect "<server>"` or `--connect user@host:port` (optional `--key`, `--jump`; never a password on the command line). If BlamixShell is already open, the new launch hands the request to it over a local socket instead of opening a second window; a server with the same host, port and user in the vault is reused, otherwise the New server dialog opens prefilled. Needed for BlamixFiles' planned "Open in BlamixShell" button (SFTP / SCP sites only). |
 
 ## Gaps vs. other tools
 

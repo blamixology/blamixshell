@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from . import cron, dashboard as d, docker, firewall as fw, report, security, storage, timers
+from . import cron, dashboard as d, docker, firewall as fw, loglines, report, security, storage, timers
 from . import system as sysinfo
 
 
@@ -167,8 +167,7 @@ def load_logs(ctx: Context) -> Table:
     text = d.logs(ctx.runner, "", "", 300, "")
     t = Table(["Log (last 300 lines)"])
     for line in text.splitlines():
-        low = line.lower()
-        t.add([line], "bad" if " error" in low or "fail" in low else "warn" if "warn" in low else "")
+        t.add([line], {"error": "bad", "warn": "warn"}.get(loglines.severity(line), ""))
     return t
 
 
@@ -514,7 +513,10 @@ def collect_report(ctx: Context) -> tuple[dict, dict]:
     return data, errs
 
 
-def build_report(label: str, address: str, ctx: Context) -> str:
+def build_report(label: str, address: str, ctx: Context, as_json: bool = False):
+    """The Markdown report, or with as_json the same parts as a dict (report.as_data)."""
     from datetime import datetime
     data, errs = collect_report(ctx)
+    if as_json:
+        return report.as_data(label, address, datetime.now(), data, errs)
     return report.build(label, address, datetime.now(), data, errs)

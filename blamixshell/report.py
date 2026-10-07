@@ -141,3 +141,61 @@ def build(label: str, address: str, when: datetime, data: dict, errors: dict | N
                                                                    for r in f.rules[:60]])]
     md.append("")
     return "\n".join(md).rstrip() + "\n"
+
+
+# ---------------------------------------------------------------- the same report as data (report --json)
+def _plain(x):
+    """Dataclasses, tuples and lists -> JSON-ready dicts and lists."""
+    import dataclasses
+    if dataclasses.is_dataclass(x) and not isinstance(x, type):
+        out = {f.name: _plain(getattr(x, f.name)) for f in dataclasses.fields(x)}
+        for name in dir(type(x)):                       # computed values too (a disk's percent, memory percent)
+            if not name.startswith("_") and isinstance(getattr(type(x), name), property):
+                try:
+                    out[name] = _plain(getattr(x, name))
+                except Exception:
+                    pass
+        return out
+    if isinstance(x, (list, tuple, set)):
+        return [_plain(v) for v in x]
+    if isinstance(x, dict):
+        return {str(k): _plain(v) for k, v in x.items()}
+    if isinstance(x, (str, int, float, bool)) or x is None:
+        return x
+    return str(x)
+
+
+def as_data(label: str, address: str, when: datetime, data: dict, errors: dict | None = None) -> dict:
+    """The report as a dict for scripts: every part as collected (None when it couldn't be read, with the reason in
+    "errors"), plus a short "summary" of what usually matters."""
+    errors = errors or {}
+    out: dict = {"server": label, "address": address, "created": when.isoformat(timespec="seconds"),
+                 "errors": dict(errors)}
+    ov = data.get("overview")
+    out["overview"] = _plain(ov) if ov is not None else None
+    sy = data.get("system")
+    out["system"] = _plain(sy) if sy is not None else None
+    sv = data.get("services")
+    out["services"] = None if sv is None else {"note": sv[1], "list": _plain(sv[0]),
+                                               "failed": [s.unit for s in sv[0] if s.failed]}
+    up = data.get("updates")
+    out["updates"] = None if up is None else {"manager": up[0], "packages": _plain(up[1])}
+    out["ports"] = _plain(data["ports"]) if data.get("ports") is not None else None
+    us = data.get("users")
+    out["users"] = None if us is None else {"accounts": _plain(us[0]), "sessions": _plain(us[1]),
+                                            "groups": _plain(us[2]) if len(us) > 2 else []}
+    out["cron"] = _plain(data["cron"]) if data.get("cron") is not None else None
+    f = data.get("firewall")
+    out["firewall"] = _plain(f) if f is not None else None
+
+    disks = [x.percent for x in (ov.disks if ov is not None else [])]
+    out["summary"] = {
+        "failed_services": len(out["services"]["failed"]) if sv is not None else None,
+        "pending_updates": len(up[1]) if up is not None else None,
+        "reboot_required": getattr(sy, "reboot_required", None) if sy is not None else None,
+        "fullest_disk_percent": round(max(disks)) if disks else None,
+        "memory_percent": round(ov.mem_percent) if ov is not None and ov.mem_total_kb else None,
+        "listening_ports": len(data["ports"]) if data.get("ports") is not None else None,
+        "firewall": (f"{f.manager} {f.state}".strip() if f is not None else None),
+    }
+    return out

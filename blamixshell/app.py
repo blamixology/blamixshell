@@ -36,9 +36,13 @@ class _HealthSignals(QObject):
 
 class _HealthLabel(QLabel):
     clicked = Signal()
+    history = Signal()
 
     def mousePressEvent(self, e):  # noqa: N802
-        self.clicked.emit()
+        if e.button() == Qt.RightButton:
+            self.history.emit()
+        else:
+            self.clicked.emit()
 
 
 class _UpdateSignals(QObject):
@@ -393,6 +397,7 @@ class MainWindow(QMainWindow):
         self.health_lbl.setCursor(Qt.PointingHandCursor)
         self.health_lbl.setToolTip("Click for the server dashboard")
         self.health_lbl.clicked.connect(lambda: self.open_dashboard())
+        self.health_lbl.history.connect(lambda: self.show_alerts())
         self.health_lbl.hide()
         sb.addPermanentWidget(self.health_lbl)
         sb.addPermanentWidget(self.status_right)
@@ -679,6 +684,11 @@ class MainWindow(QMainWindow):
             tip.append(f"/ {human_kb(h.disk_kb[0])} / {human_kb(h.disk_kb[1])} used")
         if h.loads:
             tip.append("Load " + " ".join(f"{x:.2f}" for x in h.loads) + " (1 / 5 / 15 min)")
+        try:                                  # the alerts history records always (it stays on this computer)
+            from . import alerts as al
+            al.shared().update(pane.server.id, pane.server.label, health_alerts(h, services=True))
+        except Exception:
+            pass
         alerts = health_alerts(h) if self.settings.get("health_alerts") else {}
         fresh = [m for k, m in alerts.items() if k not in self._alerted.get(id(pane), set())]
         self._alerted[id(pane)] = set(alerts)
@@ -689,7 +699,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"⚠ {pane.server.label}: " + ", ".join(fresh), 20000)
             if not self.isActiveWindow():
                 QApplication.alert(self, 4000)
-        tip.append("Click for the dashboard.")
+        tip.append("Click for the dashboard, right-click for the alerts history.")
         self.health_lbl.setToolTip("\n".join(tip))
         self.health_lbl.show()
 
@@ -1063,6 +1073,7 @@ class MainWindow(QMainWindow):
             ("Focus mode: only tabs and terminal", "Ctrl+Shift+H", self.toggle_focus_mode, "sidebar"),
             ("Toggle files panel", "Ctrl+Shift+S", lambda: (self.btn_sftp.toggle(), self.toggle_sftp()), "folder"),
             ("Server dashboard", "Ctrl+Shift+I", lambda: self.open_dashboard(), "gauge"),
+            ("Alerts history…", "", lambda: self.show_alerts(), "bolt"),
             ("Toggle broadcast", "Ctrl+Shift+B", lambda: (self.btn_bcast.toggle(), self.toggle_broadcast()), "broadcast"),
             ("Reconnect", "Ctrl+Shift+R", lambda: self.active_pane() and self.active_pane().reconnect(), "refresh"),
             ("Clear terminal", "", lambda: self.active_pane() and self.active_pane().view.bridge.command.emit("clear"), "terminal"),
@@ -1508,6 +1519,41 @@ class MainWindow(QMainWindow):
         m.addAction(icon("link"), "Made by Blamixology", lambda: open_url(links.COMPANY_URL))
         return m
 
+    def handle_request(self, req: dict) -> None:
+        """`blamixshell gui --connect …` from another launch (or this one's own command line)."""
+        if getattr(self, "_locked", False):           # after the vault is unlocked again, never before
+            self._pending_requests = getattr(self, "_pending_requests", []) + [req]
+            return
+        if self.isMinimized():
+            self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        from .handoff import resolve
+        kind, what, note = resolve(self.store, req)
+        if kind == "error":
+            QMessageBox.warning(self, "Open server", note)
+            return
+        if note:
+            self.statusBar().showMessage(note, 10000)
+        if kind == "open":
+            self.connect_server(what)
+            return
+        dlg = ServerDialog(self.store, what, self, new=True)
+        if dlg.exec() == QDialog.Accepted:
+            s = dlg.result_server()
+            self.store.upsert(s)
+            self.refresh_all()
+            self.connect_server(s.id)
+
+    def show_alerts(self, server: str = "") -> None:
+        """Disk / memory / swap / load limits crossed and failed services, per server, with how long they lasted."""
+        from .alerts_ui import AlertsDialog
+        if not server:
+            pane = self.active_pane()
+            server = pane.server.id if pane else ""
+        AlertsDialog(self, server).exec()
+
     def show_about(self) -> None:
         from .dialogs import AboutDialog
         AboutDialog(self).exec()
@@ -1635,8 +1681,14 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 return str(e)
         dlg = UnlockDialog(False, attempt)
-        if dlg.exec() == QDialog.Accepted:
+        self._locked = True
+        accepted = dlg.exec() == QDialog.Accepted
+        self._locked = False
+        if accepted:
             self.show()
+            for req in getattr(self, "_pending_requests", []):
+                QTimer.singleShot(0, lambda r=req: self.handle_request(r))
+            self._pending_requests = []
         else:
             self._force_quit = True
             self.close()

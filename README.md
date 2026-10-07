@@ -59,6 +59,7 @@ blamixshell show web-1 storage --json  # JSON for scripts
 blamixshell show web-1 services --check && echo healthy   # exit code 1 when a row is marked bad (failed service, disk ≥ 90 %, …)
 blamixshell show web-1 firewall --sudo # firewall, docker and security need root: ask for the sudo password
 blamixshell report web-1 -o web-1.md   # Markdown report: overview, failed services, updates, ports, accounts, cron, firewall
+blamixshell report web-1 --json        # the same as JSON, with a short summary (failed services, updates, fullest disk …)
 ```
 
 Tabs: overview, services, processes, logs, ports, updates, users, cron, firewall, docker, timers, storage, security. In `dash`: click a column header (or press `1`–`7`) to sort, `/` to filter, `[` and `]` for the next tab, `a` or Enter for the actions of the selected row (start/stop/restart a service, end a process, start/stop/remove a container, enable/disable a timer; each one asks first), `l` for its log, `d` (or Enter on a row without actions) for the details of a finding or row, `S` to give the sudo password, `p` to save a report, `r` to reload, `R` to reconnect after a dropped connection (it also reconnects by itself, and waits for a server you rebooted).
@@ -86,12 +87,12 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
 - **Server dashboard (agentless):** open it from the gauge button on a terminal, the toolbar, Ctrl+Shift+I, or right-click a server → Dashboard. It uses the connection you already have and standard commands, so nothing is installed on the server:
   - **Overview:** OS, kernel, uptime, live CPU / memory / load / swap with a short history, disk usage bars, failed services.
   - **Services:** systemd (any version, including CentOS 7), SysV init scripts (`service` / `chkconfig` / `update-rc.d`), OpenRC and supervisord. Filter, failed only, start / stop / restart / enable / disable (always confirmed, showing the exact command), status and logs per service. Without journald, logs come from `/var/log/messages` or `/var/log/syslog`.
-  - **Processes** (filter, sort by CPU or memory, end or force-kill), **Logs** (journal by service and priority, follow mode), **Ports** (listening TCP/UDP), **Updates** (pending packages for apt, dnf, yum, zypper, pacman, apk; the upgrade command is typed into your terminal for you to review, never run silently) and **Users** (login accounts, who is logged in).
+  - **Processes** (filter, sort by CPU or memory, end or force-kill), **Logs** (journal by service and priority, follow mode; errors in red and warnings in amber, "errors only" or "warnings and errors" for any log, a few lines around each match like `grep -C`, and *Next error*), **Ports** (listening TCP/UDP), **Updates** (pending packages for apt, dnf, yum, zypper, pacman, apk; the upgrade command is typed into your terminal for you to review, never run silently; *Find a package* searches the server's package lists, and with *Allow installing updates and packages* on in Settings installs or removes one after a confirmation that lists what else a removal takes with it; packages the system or your SSH access need are never removed from here) and **Users** (login accounts, who is logged in).
   - **More tabs (the More ▾ menu, grouped):** **Users** (add, delete, lock, groups, SSH keys), **System** (time zone, clock drift and NTP, reboot or shut down now or later, "reboot required", add or remove a swap file), **Storage** (filesystems with inode use, biggest folders), **Mounts** (`/etc/fstab` against what is mounted; mount, unmount, check the fstab), **Docker / Podman**, **Ports**, **Network** (interfaces, addresses, routes, DNS, connection checks from the server), **Firewall** (firewalld / ufw), **Security** (quick checks), **Cron** and **Timers** (forms, no cron syntax needed). The same tabs, sortable and filterable, work in the terminal: see `blamixshell dash` below.
   - Actions run as root only when needed: directly as root, with passwordless sudo, or with a sudo password you type for that dashboard only; it's sent over the SSH connection and never saved.
 - **Command log:** who ran what, where, and when: one line per command (time, your user, the server and login, the prompt with its folder, the command as shown on screen, so history recall and tab completion are included), plus the dashboard's actions and `blamixshell exec`. A file a day in `logs/commands`, tab-separated so it greps and imports cleanly. Turn it on for every server (**Settings → Logging**) or only some (the server's **Advanced** tab). Password prompts and full-screen programs (vim, htop) are skipped.
 - **Session recordings:** the **●** button on a terminal records everything it shows to `logs/sessions/<server>/<date-time>.log`, as clean text (default) or raw (replay with `cat` / `less -R`), optionally time-stamped per line. Servers can record every session automatically. Old logs can be deleted after N days. Logs are plain files, so whatever a command printed is in a recording.
-- **Health strip:** CPU, memory, root disk and load of the active terminal's server in the status bar, refreshed every few seconds (amber/red when high). Click it for the dashboard.
+- **Health strip:** CPU, memory, root disk and load of the active terminal's server in the status bar, refreshed every few seconds (amber/red when high). Click it for the dashboard; right-click it (or *Alerts* in the dashboard, or the command palette) for the **alerts history**: when a server crossed disk / memory / swap / load limits or a service failed, and for how long. Kept on this computer for 30 days.
 - **Colors for production:** give a server or a whole group a color (right-click a group → Color). Its tab, pane header and terminal background get tinted, so production looks different at a glance. The terminal tint can be turned off in Settings.
 - **Backups and sync:** one encrypted backup of the vault a day (the last 20 are kept), plus Back up now, Export, Import (adds servers, never overwrites), Restore a backup, all in Settings → Vault & backups. To use the same servers on several computers, move the vault into a synced folder (OneDrive, Dropbox, Syncthing); edits from both computers are merged, and changes show up as soon as you switch back to the window.
 - **AWS Systems Manager (SSM):** reach EC2 instances without an open SSH port or a bastion. It uses your AWS CLI v2 profiles and AWS's Session Manager plugin.
@@ -107,6 +108,11 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
 
 ```text
 blamixshell                          TUI (or the desktop app via `blamixshell gui`)
+blamixshell gui --connect <name|user@host:port> [--key FILE] [--jump SERVER]
+                                   open a server in the desktop app (in the window that is already
+                                   open, if any); a saved server is reused, a new address opens the
+                                   New server form filled in. Never a password on the command line.
+                                   Also: BlamixShell.exe --connect web-1
 blamixshell ls [query]               list servers  (e.g. `blamixshell ls tag:prod`)
 blamixshell connect <name|user@host:port> [-A] [--record] [-L ..] [-R ..] [-D ..]
                                    interactive shell; the server's saved tunnels start too
@@ -127,6 +133,8 @@ blamixshell rm <name>
 blamixshell import ssh-config|putty
 blamixshell passwd                   change the master password
 blamixshell where                    show where data is stored
+blamixshell report <name> [-o FILE] [--json]
+                                   Markdown report, or JSON for scripts
 ```
 
 TUI keys: `/` search · `⏎` connect · `a` add · `e` edit · `d` delete · `f` favorite · `x` run a command on the selected group · `q` quit. When you connect, the TUI steps aside and gives you the real shell; exit the shell to come back.

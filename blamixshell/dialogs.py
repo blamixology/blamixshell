@@ -361,11 +361,12 @@ class _Tester(QObject):
 
 
 class ServerDialog(_Base):
-    def __init__(self, store: Store, server: Server | None = None, parent=None, group: str = ""):
+    def __init__(self, store: Store, server: Server | None = None, parent=None, group: str = "", new: bool = False):
+        """`new`: `server` only fills in the form of a new server (blamixshell gui --connect)."""
         super().__init__(parent)
         self.store = store
         self.server = server.copy() if server else Server(group=group)
-        self.setWindowTitle("Edit server" if server else "New server")
+        self.setWindowTitle("Edit server" if server and not new else "New server")
         self.setMinimumWidth(720)
         s = self.server
 
@@ -904,9 +905,9 @@ class SettingsDialog(_Base):
         hrow.addWidget(self.hist, 1)
         hrow.addWidget(hist_clear)
         f.addRow("", hrow)
-        self.dash_install = QCheckBox("Allow installing updates from the server dashboard")
-        self.dash_install.setToolTip("Adds an “Install updates” button (with a confirmation) to the dashboard's "
-                                     "Updates tab. Off by default.")
+        self.dash_install = QCheckBox("Allow installing updates and packages from the server dashboard")
+        self.dash_install.setToolTip("Adds “Install updates”, and Install / Remove for packages you search for, to "
+                                     "the dashboard's Updates tab (each one asks first). Off by default.")
         self.dash_install.setChecked(settings.get("dashboard_install_updates", False))
         f.addRow("", self.dash_install)
         lt.addLayout(f)

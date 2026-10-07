@@ -89,3 +89,20 @@ def test_report_goes_to_the_screen_or_a_file(tmp_path=None):
     code, out = run_cli("report", "web-1", "-o", str(target), extra=extra)
     assert "Report saved" in out and target.read_text(encoding="utf-8").startswith("# Server report")
     assert collect is not None
+
+
+def test_report_as_json_for_scripts():
+    disks = [d.Disk("/", "ext4", 100, 93, 7), d.Disk("/data", "xfs", 100, 20, 80)]
+    extra = [mock.patch.object(d, "overview", lambda r: d.Overview(host="h", os="CentOS", disks=disks)),
+             mock.patch.object(d, "updates", lambda r: ("yum", [d.Update("openssl.x86_64", "1.0.2k")])),
+             mock.patch.object(d, "ports", lambda r: [d.Port("tcp", "*", "22", "sshd")]),
+             mock.patch.object(d, "users", lambda r: ([d.Account("bob", 1000, "/home/bob", "/bin/bash")], ["bob pts/0"], []))]
+    code, out = run_cli("report", "web-1", "--json", extra=extra)
+    data = json.loads(out)
+    assert code == 0 and data["server"] == "web-1" and data["overview"]["os"] == "CentOS"
+    assert data["services"]["failed"] == ["backup.service"] and data["updates"]["manager"] == "yum"
+    assert data["users"]["accounts"][0]["name"] == "bob" and data["ports"][0]["port"] == "22"
+    s = data["summary"]
+    assert s["failed_services"] == 1 and s["pending_updates"] == 1 and s["fullest_disk_percent"] == 93
+    assert s["listening_ports"] == 1 and data["overview"]["disks"][0]["percent"] == 93.0
+    assert data["cron"] == [] or data["cron"] is None or isinstance(data["cron"], list)
