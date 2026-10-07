@@ -7,3 +7,4 @@ dist/
 data/
 .venv-cli/
 *.egg-info/
+!packaging/cli.spec

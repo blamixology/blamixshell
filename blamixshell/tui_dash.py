@@ -7,6 +7,7 @@ Firewall, Docker, Timers, Storage, Security. Click a column header (or press 1-9
 """
 from __future__ import annotations
 
+import time
 from datetime import date
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import DataTable, Footer, Header, Input, OptionList, Static, TabbedContent, TabPane
 
-from . import collect
+from . import collect, reconnect
 from .tablekeys import auto_key
 from .tui import ConfirmScreen, PromptScreen
 
@@ -153,9 +154,11 @@ class DashboardScreen(Screen):
         Binding("r", "refresh", "Reload"),
         Binding("slash", "filter", "Filter"),
         Binding("a", "actions", "Actions"),
+        Binding("d", "details", "Details"),
         Binding("l", "logs", "Log"),
         Binding("p", "report", "Report"),
         Binding("S", "sudo", "Sudo"),
+        Binding("R", "reconnect", "Reconnect"),
         Binding("left_square_bracket", "tab(-1)", "◂ Tab", key_display="["),
         Binding("right_square_bracket", "tab(1)", "Tab ▸", key_display="]"),
         Binding("1", "sort(0)", "Sort 1", show=False), Binding("2", "sort(1)", "", show=False),
@@ -169,9 +172,14 @@ class DashboardScreen(Screen):
         self.server = server
         self.ctx = ctx
         self._loading: set[str] = set()
+        self._watch = reconnect.Watch(delays=ctx.retry_delays or reconnect.DELAYS)
+        self._retry_at = 0.0
+        self._reconnecting = False
+        self._banner_until = 0.0
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield Static("", id="conn")
         with TabbedContent(id="tabs"):
             for key, title, _fn in collect.TABS:
                 with TabPane(title, id=f"tab-{key}"):
@@ -182,6 +190,8 @@ class DashboardScreen(Screen):
         self.title = f"Dashboard: {self.server.label}"
         self.sub_title = self.server.address
         self.set_interval(5, self._tick)
+        self.set_interval(1, self._conn_tick)
+        self.query_one("#conn", Static).display = False
         self.load("overview")
 
     # ---- which tab
@@ -233,6 +243,95 @@ class DashboardScreen(Screen):
         self._loading.discard(key)
         from .ssh_core import friendly_error
         self.pane(key).message(Text(f"Could not load: {friendly_error(e)}", style="red"))
+        if self._watch.state == "up" and (reconnect.looks_dropped(e) or not self.ctx.alive()):
+            self._lost()
+
+    # ---- the connection: notice when it drops, say why, and come back by itself
+    def banner(self, text: str, style: str = "") -> None:
+        box = self.query_one("#conn", Static)
+        box.update(Text(text, style=style))
+        box.display = bool(text)
+
+    def _lost(self) -> None:
+        self._watch.lost()
+        self._retry_at = time.monotonic() + self._watch.next_delay()
+        self._show_state()
+
+    def _show_state(self) -> None:
+        w = self._watch
+        if w.state == "up":
+            return
+        left = max(0.0, self._retry_at - time.monotonic())
+        retrying = w.should_retry()
+        text = w.message(left if retrying and not self._reconnecting else None)
+        self.banner(("⟳ " if retrying else "✖ ") + text + ("" if retrying else "   (R: reconnect)"), "bold yellow")
+
+    def _conn_tick(self) -> None:
+        w = self._watch
+        if w.state == "up":
+            if time.monotonic() > self._banner_until and self._banner_until:
+                self._banner_until = 0.0
+                self.banner("")
+            elif not self.ctx_busy() and not self.ctx.alive():
+                self._lost()
+            return
+        if w.should_retry() and not self._reconnecting and time.monotonic() >= self._retry_at:
+            self._try_reconnect()
+        else:
+            self._show_state()
+
+    def _try_reconnect(self, interactive: bool = False) -> None:
+        if self._reconnecting:
+            return
+        self._reconnecting = True
+        self.banner("⟳ Reconnecting …", "bold yellow")
+
+        def work() -> None:
+            try:
+                self.ctx.reconnect(interactive)
+            except Exception as e:
+                self.app.call_from_thread(self._reconnect_failed, e)
+                return
+            self.app.call_from_thread(self._reconnected)
+        self.run_worker(work, thread=True, group="reconnect")
+
+    def _reconnect_failed(self, _e: Exception) -> None:
+        self._reconnecting = False
+        self._watch.tried()
+        self._retry_at = time.monotonic() + self._watch.next_delay()
+        self._show_state()
+
+    def _reconnected(self) -> None:
+        self._reconnecting = False
+        away = self._watch.recovered()
+        self.banner(f"✔ Back online after {reconnect.human(away or 0)}.", "bold green")
+        self._banner_until = time.monotonic() + 6
+        self._loading.clear()
+        for key, _t, _f in collect.TABS:
+            self.pane(key).loaded = False
+        self.load(self.active_key())
+
+    def action_reconnect(self) -> None:
+        """R: try again now. If it needs a password or a host-key answer, that is asked in the terminal."""
+        if self._watch.state == "up" and self.ctx.alive():
+            self.notify("The connection is up.", timeout=3)
+            return
+        if self._watch.state == "up":
+            self._lost()
+        self._watch.manual()
+        try:
+            with self.app.suspend():
+                try:
+                    self.ctx.reconnect(True)
+                except Exception as e:
+                    print(f"Could not reconnect: {e}")
+                    input("\nPress Enter to return to the dashboard…")
+                    self._reconnect_failed(e)
+                    return
+        except Exception:                                   # a terminal that can't be suspended: try without asking
+            self._try_reconnect(False)
+            return
+        self._reconnected()
 
     def _tick(self) -> None:
         key = self.active_key()
@@ -281,11 +380,25 @@ class DashboardScreen(Screen):
     # ---- actions on the selected row
     @on(DataTable.RowSelected)
     def _row(self, _ev: DataTable.RowSelected) -> None:
-        self.action_actions()
+        key = self.active_key()
+        if collect.actions_for(key, self.pane(key).selected_key(), self.ctx):
+            self.action_actions()
+        else:
+            self.action_details()                 # nothing to do with the row: explain it instead
+
+    def action_details(self) -> None:
+        """All there is to know about the selected row (for a security check: why, how to fix, the facts)."""
+        pane = self.pane()
+        i = pane.selected_index()
+        if pane.data is None or i is None:
+            self.notify("Select a row first.", timeout=3)
+            return
+        title = pane.data.rows[i][1] if pane.key == "security" else pane.data.rows[i][0] or pane.key.capitalize()
+        self.app.push_screen(TextScreen(title, pane.data.describe(i)))
 
     def action_actions(self) -> None:
         key = self.active_key()
-        acts = collect.actions_for(key, self.pane(key).selected_key())
+        acts = collect.actions_for(key, self.pane(key).selected_key(), self.ctx)
         if not acts:
             self.notify("Nothing to do with this row here." if key in ("services", "processes", "docker", "timers", "mounts")
                         else "This tab has no actions.", timeout=3)
@@ -333,13 +446,18 @@ class DashboardScreen(Screen):
         self.notify(f"Running: {act.label} …", timeout=3)
 
         def work() -> None:
+            if act.drops:
+                self._watch.expect(act.drops)                  # the connection is about to go away, on purpose
             try:
                 res = self.ctx.run(cmd, allow_plain=act.allow_plain)
             except collect.NeedsSudo:
                 self.app.call_from_thread(self.ask_sudo, lambda: self.run_action(act, key, cmd))
                 return
             except Exception as e:
-                self.app.call_from_thread(self.notify, f"{act.label}: {e}", severity="error")
+                if act.drops and reconnect.looks_dropped(e):
+                    self.app.call_from_thread(self.notify, f"{act.label}: the server is going down as asked.", timeout=6)
+                else:
+                    self.app.call_from_thread(self.notify, f"{act.label}: {e}", severity="error")
                 return
             self.app.call_from_thread(self._action_done, act, key, res)
         self.run_worker(work, thread=True, group="action")

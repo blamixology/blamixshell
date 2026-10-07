@@ -404,10 +404,12 @@ class BlamixShellTUI(App):
         from .cli import Connector
         from .ssh_core import friendly_error
         from .tui_dash import DashboardScreen
+        def opener(interactive: bool):
+            return Connector(self.store, interactive=interactive).open(s)
         opened: dict = {}
         with self.suspend():                  # prompts (password, host key, 2FA) happen in the plain terminal
             try:
-                opened["client"], opened["chain"] = Connector(self.store).open(s)
+                opened["client"], opened["chain"] = opener(True)
             except SystemExit:
                 pass
             except Exception as e:
@@ -415,12 +417,11 @@ class BlamixShellTUI(App):
                 input("\nPress Enter to return to BlamixShell…")
         if "client" not in opened:
             return
-        ctx = collect.Context(dash.Runner(opened["client"]), s.username)
+        ctx = collect.Context(dash.Runner(opened["client"]), s.username, ssh_port=s.port)
+        ctx.chain, ctx.opener = opened["chain"], opener
 
         def closed(_result) -> None:
-            opened["client"].close()
-            for cl in opened["chain"]:
-                cl.close()
+            ctx.close()
             self.rebuild(select_id=s.id)
         self.push_screen(DashboardScreen(s, ctx), closed)
 

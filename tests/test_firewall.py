@@ -71,9 +71,9 @@ def test_ufw_rules_have_numbers():
     assert f.rules[1].detail == "from 10.0.0.0/8 (IN)"
 
 
-def test_iptables_is_read_only_and_root_errors_are_detected():
+def test_iptables_can_be_edited_and_root_errors_are_detected():
     f = fw.parse(IPTABLES)
-    assert f.manager == "iptables" and not f.editable
+    assert f.manager == "iptables" and f.editable and not f.can_start
     assert [(r.scope, r.kind) for r in f.rules] == [("INPUT", "policy"), ("FORWARD", "policy"), ("INPUT", "rule")]
     denied = "@@manager\nufw\n@@state\nERROR: You need to be root to run this script\n@@rules\n"
     assert fw.parse(denied).needs_root and not fw.parse(denied).editable
@@ -94,7 +94,9 @@ def test_ports_and_commands():
     assert "--remove-service=http" in fw.remove_command("firewalld", http)
     assert fw.remove_command("firewalld", next(r for r in f.rules if r.kind == "interface")) is None
     assert fw.remove_command("ufw", fw.parse(UFW).rules[1]) == "ufw --force delete 2"
-    assert fw.remove_command("iptables", fw.parse(IPTABLES).rules[2]) is None
+    ipt = fw.parse(IPTABLES).rules
+    assert fw.remove_command("iptables", ipt[0]) is None                          # a default policy is not a rule
+    assert fw.remove_command("iptables", ipt[2]) == "iptables -D INPUT -p tcp -m tcp --dport 22 -j ACCEPT"
 
 
 def test_ssh_rules_are_protected():
@@ -104,3 +106,70 @@ def test_ssh_rules_are_protected():
     u = fw.parse(UFW)
     assert fw.protects_ssh(u.rules[0], 22) and not fw.protects_ssh(u.rules[1], 22)
     assert fw.protects_ssh(fw.Rule("public", "port", "64000-65000/tcp"), 64990)      # a custom ssh port in a range
+
+
+NFT = """@@manager
+nftables
+@@rules
+table inet filter { # handle 1
+\tchain input { # handle 1
+\t\ttype filter hook input priority filter; policy drop;
+\t\tct state established,related accept # handle 4
+\t\ttcp dport 22 accept # handle 6
+\t\ttcp dport { 80, 443 } accept # handle 7
+\t}
+\tchain forward { # handle 2
+\t\ttype filter hook forward priority filter; policy drop;
+\t}
+}
+"""
+
+
+def test_nftables_rules_have_handles_and_can_be_changed():
+    f = fw.parse(NFT)
+    assert f.manager == "nftables" and f.editable
+    rules = [r for r in f.rules if r.kind == "rule"]
+    assert [(r.scope, r.number) for r in rules] == [("inet filter input", 4), ("inet filter input", 6), ("inet filter input", 7)]
+    assert rules[2].value == "tcp dport { 80, 443 } accept"
+    assert fw.nft_input_chain(f.rules) == "inet filter input"
+    assert fw.add_port_command("nftables", "8080", "tcp", target="inet filter input") == \
+        "nft insert rule inet filter input tcp dport 8080 accept"
+    assert fw.add_port_command("nftables", "8000:8100", "udp", target="inet filter input").endswith("dport 8000-8100 accept")
+    assert fw.remove_command("nftables", rules[2]) == "nft delete rule inet filter input handle 7"
+    assert fw.remove_command("nftables", [r for r in f.rules if r.kind == "policy"][0]) is None
+    for bad in ("", "inet filter", "inet fil;ter input"):
+        try:
+            fw.add_port_command("nftables", "80", "tcp", target=bad)
+            raise AssertionError(bad)
+        except ValueError:
+            pass
+    assert fw.protects_ssh(rules[1], 22) and not fw.protects_ssh(rules[2], 22) and fw.protects_ssh(rules[2], 443)
+
+
+def test_iptables_rules_are_removed_safely_and_ssh_rules_are_protected():
+    f = fw.parse("@@manager\niptables\n@@rules\n-P INPUT DROP\n-A INPUT -p tcp -m tcp --dport 22 -j ACCEPT\n"
+                 "-A INPUT -p tcp -m comment --comment \"web; $(id)\" -m tcp --dport 80 -j ACCEPT\n")
+    assert fw.protects_ssh(f.rules[1], 22) and not fw.protects_ssh(f.rules[2], 22)
+    cmd = fw.remove_command("iptables", f.rules[2])
+    assert cmd == "iptables -D INPUT -p tcp -m comment --comment 'web; $(id)' -m tcp --dport 80 -j ACCEPT"
+    assert fw.add_port_command("iptables", "8000-8100", "udp") == "iptables -I INPUT -p udp --dport 8000:8100 -j ACCEPT"
+
+
+def test_start_save_and_the_reason_the_buttons_are_off():
+    assert fw.start_command("ufw", 64990) == "sh -c 'ufw allow 64990/tcp && ufw --force enable'"
+    assert fw.start_command("firewalld") == "systemctl enable --now firewalld" and fw.start_command("iptables") is None
+    assert "/etc/sysconfig/iptables" in fw.save_command("iptables") and "iptables-persistent" in fw.save_command("iptables")
+    assert "nft list ruleset" in fw.save_command("nftables") and "flush ruleset" in fw.save_command("nftables")
+    assert fw.save_command("ufw") is None and fw.action_label("nftables") == "Save rules" and fw.action_label("ufw") == "Reload rules"
+    off = fw.parse("@@manager\nfirewalld\n@@state\nnot running\n@@default\npublic\n@@zones\n")
+    assert not off.editable and off.can_start and "isn't running" in off.why_not_editable
+    assert "No firewall tool" in fw.parse("@@manager\nnone\n").why_not_editable
+    root = fw.parse("@@manager\nufw\n@@state\nERROR: You need to be root\n@@rules\n")
+    assert not root.editable and not root.can_start and "needs root" in root.why_not_editable
+    assert fw.parse_port_proto("8080/udp") == ("8080", "udp") and fw.parse_port_proto("443") == ("443", "tcp")
+    for bad in ("", "x", "80/icmp", "70000"):
+        try:
+            fw.parse_port_proto(bad)
+            raise AssertionError(bad)
+        except ValueError:
+            pass

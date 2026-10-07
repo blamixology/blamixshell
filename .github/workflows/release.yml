@@ -156,9 +156,65 @@ jobs:
             BlamixShell-*.tar.gz
             blamixshell-cli-*.tar.gz
 
+  # 3b) the one-file command-line binary (no Qt, no Python needed on the server). It is built so that it runs on
+  #     old servers too, started once on the oldest and a current system before it is uploaded, and a failure
+  #     here never blocks the release (the release job below goes on without it).
+  cli-linux:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: [test, test-live]
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stamp version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python3 packaging/stamp_version.py "${{ github.ref_name }}"
+      - name: Python built for glibc 2.17 (uv's managed CPython), so the binary runs on CentOS 7 and newer
+        run: |
+          python3 -m pip install --user uv
+          export PATH="$HOME/.local/bin:$PATH"
+          uv python install 3.12
+          echo "CLI_PYTHON=$(uv python find --managed-python 3.12)" >> "$GITHUB_ENV"
+      - name: Build the one-file binary (the script also runs its selftest)
+        run: PYTHON="$CLI_PYTHON" ONEFILE=1 OUTNAME=blamixshell-linux-x86_64 ./build_cli.sh
+      - name: It needs nothing newer than glibc 2.17
+        run: |
+          newest="$(objdump -T dist/blamixshell-linux-x86_64 | grep -o 'GLIBC_[0-9.]*' | sort -V | uniq | tail -1)"
+          echo "newest glibc symbol needed: $newest"
+          [ "$(printf '%s\n' "$newest" GLIBC_2.17 | sort -V | tail -1)" = "GLIBC_2.17" ]
+      - name: Run it on CentOS 7 and on Debian 12
+        run: |
+          docker run --rm -v "$PWD/dist:/d:ro" centos:7 /d/blamixshell-linux-x86_64 selftest
+          docker run --rm -v "$PWD/dist:/d:ro" debian:12-slim /d/blamixshell-linux-x86_64 selftest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BlamixShell-cli-linux-x86_64
+          path: dist/blamixshell-linux-x86_64
+
+  cli-musl:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: [test, test-live]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stamp version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python3 packaging/stamp_version.py "${{ github.ref_name }}"
+      - name: Build the one-file binary on Alpine (musl, for Alpine and other musl systems)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src -e ONEFILE=1 -e OUTNAME=blamixshell-linux-musl-x86_64 \
+            python:3.12-alpine sh -c "apk add --no-cache bash binutils gcc musl-dev zlib-dev linux-headers && ./build_cli.sh"
+      - name: Run it on a plain Alpine (no Python)
+        run: docker run --rm -v "$PWD/dist:/d:ro" alpine:3.20 /d/blamixshell-linux-musl-x86_64 selftest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BlamixShell-cli-linux-musl-x86_64
+          path: dist/blamixshell-linux-musl-x86_64
+
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [build, cli-linux, cli-musl]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

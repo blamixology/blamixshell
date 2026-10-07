@@ -47,7 +47,7 @@ No Qt needed; only `paramiko`, `cryptography` and `textual` are required.
 ./install_cli.sh          # installs `blamixshell` into ~/.local/bin (uses pipx if present)
 blamixshell                 # opens the TUI
 ```
-Or build a portable folder with no Python needed on the target: `./build_cli.sh`, which produces `dist/blamixshell-cli/blamixshell`. `ONEFILE=1 ./build_cli.sh` makes one single executable instead (`dist/blamixshell-<os>-<arch>`).
+Or download a ready one-file binary from the release page (`blamixshell-linux-x86_64`, `blamixshell-linux-aarch64`, or `blamixshell-linux-musl-x86_64` for Alpine; they run on old systems such as CentOS 7) and keep it current with `blamixshell update --install`. Or build a portable folder with no Python needed on the target: `./build_cli.sh`, which produces `dist/blamixshell-cli/blamixshell`. `ONEFILE=1 ./build_cli.sh` makes one single executable instead (`dist/blamixshell-<os>-<arch>`).
 
 **Server dashboard in the terminal** (the same tabs as the desktop dashboard, built from the same readers; works over SSH on a headless box):
 
@@ -61,7 +61,7 @@ blamixshell show web-1 firewall --sudo # firewall, docker and security need root
 blamixshell report web-1 -o web-1.md   # Markdown report: overview, failed services, updates, ports, accounts, cron, firewall
 ```
 
-Tabs: overview, services, processes, logs, ports, updates, users, cron, firewall, docker, timers, storage, security. In `dash`: click a column header (or press `1`–`7`) to sort, `/` to filter, `[` and `]` for the next tab, `a` or Enter for the actions of the selected row (start/stop/restart a service, end a process, start/stop/remove a container, enable/disable a timer; each one asks first), `l` for its log, `S` to give the sudo password, `p` to save a report, `r` to reload.
+Tabs: overview, services, processes, logs, ports, updates, users, cron, firewall, docker, timers, storage, security. In `dash`: click a column header (or press `1`–`7`) to sort, `/` to filter, `[` and `]` for the next tab, `a` or Enter for the actions of the selected row (start/stop/restart a service, end a process, start/stop/remove a container, enable/disable a timer; each one asks first), `l` for its log, `d` (or Enter on a row without actions) for the details of a finding or row, `S` to give the sudo password, `p` to save a report, `r` to reload, `R` to reconnect after a dropped connection (it also reconnects by itself, and waits for a server you rebooted).
 
 ### Prebuilt downloads
 Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml`) build Windows, macOS (Apple Silicon + Intel) and Linux packages plus the Linux CLI, then attach them to a GitHub Release.
@@ -150,7 +150,7 @@ TUI keys: `/` search · `⏎` connect · `a` add · `e` edit · `d` delete · `f
 
 ## Updates
 
-BlamixShell checks GitHub Releases for a newer version at most once a day (a single anonymous request to `api.github.com`; nothing about you or your servers is sent). You can switch this off, or run **Check now**, in **Settings → Updates**. From the CLI, run `blamixshell update`.
+BlamixShell checks GitHub Releases for a newer version at most once a day (a single anonymous request to `api.github.com`; nothing about you or your servers is sent). You can switch this off, or run **Check now**, in **Settings → Updates**. From the CLI, run `blamixshell update`; with the one-file binary, `blamixshell update --install` downloads the matching file from the release, checks its SHA-256 and replaces the running program (`-y` skips the question).
 
 **Offline computers:** copy the new `BlamixShell-x.y.z-x64.msi` (or the portable zip) over, then **Help → Install update from file…**. It shows the file's SHA-256 so you can compare it with the release page (paste it to have it checked).
 

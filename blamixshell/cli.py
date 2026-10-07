@@ -602,10 +602,13 @@ def cmd_dash(store: Store, a) -> int:
     except ImportError:
         die("The terminal dashboard needs the 'textual' package (pip install textual).")
     s, client, chain = _open_server(store, a.target, a.accept_new)
+    ctx = collect.Context(dash.Runner(client), s.username, ssh_port=s.port)
+    ctx.chain = chain
+    ctx.opener = lambda interactive: Connector(store, accept_new=a.accept_new, interactive=interactive).open(s)
     try:
-        run_dashboard(s, collect.Context(dash.Runner(client), s.username))
+        run_dashboard(s, ctx)
     finally:
-        _close_server(client, chain)
+        ctx.close()
     return 0
 
 
@@ -866,8 +869,45 @@ def cmd_gui(_store, _a) -> int:
     return 0
 
 
-def cmd_update() -> int:
+def cmd_selftest(_store=None, _a=None) -> int:
+    """For packaging checks (CI): can this build start the terminal dashboard? Uses no server and no vault."""
+    import asyncio
+    import types
+    try:
+        from . import collect, dashboard as dash
+        from .tui import BlamixShellTUI  # noqa: F401  (its widgets must be in the build too)
+        from .tui_dash import DashApp
+    except ImportError as e:
+        print(f"SELFTEST FAILED: {e}")
+        return 1
+
+    class Runner:                                       # a server that answers every command with nothing
+        client = None
+
+        def run(self, command, timeout=30, stdin=None):
+            return dash.Result(0, "", "")
+
+    async def go() -> bool:
+        app = DashApp(types.SimpleNamespace(label="selftest", address="localhost"), collect.Context(Runner()))
+        async with app.run_test(size=(120, 30)) as pilot:
+            for _ in range(60):
+                await pilot.pause(0.05)
+                if hasattr(app.screen, "pane") and app.screen.pane("overview").loaded:
+                    return True
+        return False
+    try:
+        ok = asyncio.run(go())
+    except Exception as e:
+        print(f"SELFTEST FAILED: {type(e).__name__}: {e}")
+        return 1
+    print("SELFTEST", "OK: terminal dashboard" if ok else "FAILED: the terminal dashboard did not load")
+    return 0 if ok else 1
+
+
+def cmd_update(a=None) -> int:
+    """Check GitHub for a newer version; with --install, replace the one-file binary with it."""
     from . import updater
+    install = bool(getattr(a, "install", False))
     try:
         rel = updater.check()
     except updater.UpdateError as e:
@@ -878,11 +918,34 @@ def cmd_update() -> int:
     print(c(f"BlamixShell {rel.version} is available", "1") + f" (you have {__version__})\n")
     if rel.notes:
         print(rel.notes[:1500] + "\n")
-    kind = updater.install_kind()
-    if kind == "source":
-        print("Update with:  pipx upgrade blamixshell   (or git pull in your checkout)")
-    else:
-        print(f"Download:  {rel.page}")
+    onefile = updater.is_onefile_binary()
+    if not install:
+        if onefile:
+            print("Install it now with:  blamixshell update --install")
+        elif updater.install_kind() == "source":
+            print("Update with:  pipx upgrade blamixshell   (or git pull in your checkout)")
+        else:
+            print(f"Download:  {rel.page}")
+        return 0
+    if not onefile:
+        die("--install replaces the one-file command-line binary (blamixshell-linux-<arch>). This copy was "
+            "installed another way: use pipx upgrade blamixshell, or the installer or archive from "
+            f"{rel.page}")
+    asset = updater.pick_cli_asset(rel)
+    if not asset:
+        die(f"This release has no file named {updater.cli_asset_name() or 'for this system'}. Download it from {rel.page}")
+    if not getattr(a, "yes", False) and not confirm(f"Replace {sys.executable} with BlamixShell {rel.version}?"):
+        return 1
+
+    def progress(done: int, total: int) -> None:
+        if total and sys.stdout.isatty():
+            print(f"\r  downloading {done * 100 // total:3d}%", end="", flush=True)
+    try:
+        target = updater.install_cli_binary(asset, progress=progress)
+    except updater.UpdateError as e:
+        print()
+        die(str(e))
+    print("\r" + c("✔ ", "32") + f"Updated to {rel.version}: {target}   (run blamixshell again)")
     return 0
 
 
@@ -968,7 +1031,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("tui", help="full-screen terminal UI")
     sub.add_parser("gui", help="launch the desktop app")
     sub.add_parser("where", help="show where data is stored")
-    sub.add_parser("update", help="check GitHub for a newer BlamixShell")
+    sub.add_parser("selftest", help=argparse.SUPPRESS)
+    sp = sub.add_parser("update", help="check GitHub for a newer BlamixShell (--install: update the one-file binary)")
+    sp.add_argument("--install", action="store_true", help="download the new one-file binary, verify it, replace this one")
+    sp.add_argument("-y", "--yes", action="store_true", help="don't ask before replacing")
     return p
 
 
@@ -1001,7 +1067,9 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"vault: {vault_path()}")
             return
         if a.cmd == "update":
-            sys.exit(cmd_update())
+            sys.exit(cmd_update(a))
+        if a.cmd == "selftest":
+            sys.exit(cmd_selftest())
         if a.cmd == "aws" and a.action != "import":
             sys.exit(cmd_aws(None, a))
         store = unlock()

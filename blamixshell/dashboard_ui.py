@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QCh
                                QProgressBar, QPushButton, QScrollArea, QTableWidget, QTableWidgetItem,
                                QTabWidget, QVBoxLayout, QWidget)
 
-from . import collect, cron
+from . import collect, cron, reconnect
 from . import dashboard as d
 from .tablekeys import auto_key
 from . import firewall as fw
@@ -1026,11 +1026,27 @@ class DashboardWindow(QWidget):
         head.addWidget(_btn("refresh", "Refresh", lambda: self.refresh(force=True)))
         root.addLayout(head)
 
+        self.banner_row = QWidget()
+        brl = QHBoxLayout(self.banner_row)
+        brl.setContentsMargins(0, 0, 0, 0)
+        brl.setSpacing(8)
         self.banner = QLabel()
         self.banner.setWordWrap(True)
-        self.banner.setStyleSheet(f"background:{blend(C['surface'], C['warn'], 0.18)}; border-radius:8px; padding:8px 12px;")
-        self.banner.hide()
-        root.addWidget(self.banner)
+        brl.addWidget(self.banner, 1)
+        self.btn_reconnect = QPushButton("Reconnect now")
+        self.btn_reconnect.clicked.connect(self._reconnect_clicked)
+        brl.addWidget(self.btn_reconnect)
+        self.auto_reconnect = QCheckBox("Reconnect automatically")
+        self.auto_reconnect.setChecked(True)
+        brl.addWidget(self.auto_reconnect)
+        self.banner_row.hide()
+        root.addWidget(self.banner_row)
+        self._watch = reconnect.Watch()
+        self._retry_at = 0.0
+        self._pending_drops = ""
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setInterval(1000)
+        self._reconnect_timer.timeout.connect(self._reconnect_tick)
 
         self.tabs = QTabWidget()
         self.tabs.currentChanged.connect(lambda _i: self.refresh())
@@ -1049,6 +1065,7 @@ class DashboardWindow(QWidget):
         self._build_timers()
         self._build_security()
         self._build_collect_tabs()
+        self._wire_details()
         self._group_tabs()
 
         self.status = QLabel("", objectName="Hint")
@@ -1303,16 +1320,64 @@ class DashboardWindow(QWidget):
         except RuntimeError:
             return
         if st == "connected":
-            self.banner.hide()
+            away = self._watch.recovered()
+            self._reconnect_timer.stop()
+            if away is None:
+                self.banner_row.hide()
+            else:
+                self._banner(f"Back online after {reconnect.human(away)}.", ok=True)
+                QTimer.singleShot(6000, self._hide_ok_banner)
+                self._loaded.clear()
             self.refresh(force=True)
         elif st == "connecting":
-            self._banner("Connecting…")
+            self._banner("Connecting…", buttons=not self._watch.state == "up")
         else:
-            self._banner("Not connected: reconnect the terminal (press R in it) to update the dashboard.")
+            if self._watch.state == "up":
+                self._watch.lost()
+                self._retry_at = time.monotonic() + self._watch.next_delay()
+            if not self._reconnect_timer.isActive():
+                self._reconnect_timer.start()
+            self._reconnect_tick(show_only=True)
 
-    def _banner(self, text: str) -> None:
+    def _hide_ok_banner(self) -> None:
+        if self._watch.state == "up" and not self._closed:
+            self.banner_row.hide()
+
+    def _banner(self, text: str, ok: bool = False, buttons: bool = False) -> None:
+        tint = C["ok"] if ok else C["warn"]
+        self.banner.setStyleSheet(f"background:{blend(C['surface'], tint, 0.18)}; border-radius:8px; padding:8px 12px;")
         self.banner.setText(text)
-        self.banner.show()
+        self.btn_reconnect.setVisible(buttons)
+        self.auto_reconnect.setVisible(buttons)
+        self.banner_row.show()
+
+    def _reconnect_tick(self, show_only: bool = False) -> None:
+        """While the connection is gone: say what is happening and try again when it is time."""
+        w = self._watch
+        if w.state == "up":
+            self._reconnect_timer.stop()
+            return
+        left = self._retry_at - time.monotonic()
+        auto = self.auto_reconnect.isChecked() and w.should_retry()
+        if auto and left <= 0 and not show_only:
+            self._try_reconnect()
+            return
+        self._banner(w.message(left if auto else None), buttons=True)
+
+    def _try_reconnect(self) -> None:
+        w = self._watch
+        w.tried()
+        self._retry_at = time.monotonic() + w.next_delay()
+        try:
+            self.pane.reconnect()
+        except RuntimeError:                           # the terminal was closed
+            self._reconnect_timer.stop()
+
+    def _reconnect_clicked(self) -> None:
+        self._watch.manual()
+        if self._watch.state != "up" and not self._reconnect_timer.isActive():
+            self._reconnect_timer.start()
+        self._try_reconnect()
 
     def _job(self, key: str, fn) -> None:
         if key in self._busy:
@@ -1396,6 +1461,14 @@ class DashboardWindow(QWidget):
         self._busy.discard(key)
         if self._closed:
             return
+        if key == "action" and self._pending_drops:
+            kind, self._pending_drops = self._pending_drops, ""
+            if err or getattr(res, "ok", False):
+                self._watch.expect(kind)                    # a reboot / shutdown we asked for: the drop is expected
+            if err and reconnect.looks_dropped(err):
+                self.status.setText(f"The server is going down as asked ({kind}).")
+                self.status.setProperty("error", False)
+                return
         if err:
             self.status.setText(f"{key}: {err}")
             self.status.setProperty("error", True)
@@ -1787,7 +1860,7 @@ class DashboardWindow(QWidget):
         self._privileged("Install all updates", cmd, then="updates", timeout=1800)
 
     def _privileged(self, what: str, command: str, then: str, allow_plain: bool = False,
-                    timeout: float = 30, show: str = "", plain_only: bool = False) -> None:
+                    timeout: float = 30, show: str = "", plain_only: bool = False, drops: str = "") -> None:
         """Confirm, then run as root (directly, or via sudo when needed). `show` is what the
         confirmation and the command log display instead of a long / encoded command;
         `plain_only` never falls back to sudo (the plain attempt's error is shown)."""
@@ -1813,6 +1886,7 @@ class DashboardWindow(QWidget):
                 return "need-password"
             return d.run_privileged(r, command, self._root, self._sudo_pw, timeout)
         self._pending_action = (what, command, then, allow_plain, timeout, show)
+        self._pending_drops = drops
         self._job("action", work)
 
     def _show_action(self, res) -> None:
@@ -2163,6 +2237,7 @@ class DashboardWindow(QWidget):
             lay.addWidget(note)
             st = SimpleNamespace(table=table, filter=flt, count=count, note=note, data=None, menu=menu, button=btn)
             flt.textChanged.connect(lambda _t, k=key: self._ct_fill(k))
+            table.doubleClicked.connect(lambda _i, k=key: self._ct_details(k))
             self._ct[key] = st
 
     def _ct_load(self, key: str) -> None:
@@ -2207,6 +2282,9 @@ class DashboardWindow(QWidget):
                 color = self._ct_colors.get(data.styles[i])
                 for c, cell in enumerate(data.rows[i]):
                     t.setItem(r, c, _item(cell, color, data=data.keys[i] if c == 0 and data.keys[i] is not None else None))
+                first = t.item(r, 0)
+                if first is not None:
+                    first.setData(Qt.UserRole + 2, i)                  # which row of the data this is (the view may be sorted)
         self._reselect(t, keep)
         st.count.setText(f"{len(idx)} of {len(data.rows)}" if len(idx) != len(data.rows) else f"{len(idx)} rows")
         st.note.setText(data.note or self.CT_HINTS[key])
@@ -2239,11 +2317,47 @@ class DashboardWindow(QWidget):
             self._job("ctview", work)
             return
         self._privileged(act.label.rstrip("…"), cmd, then=key, allow_plain=act.allow_plain, timeout=120,
-                         show=cmd if len(cmd) < 150 else act.label)
+                         show=cmd if len(cmd) < 150 else act.label, drops=act.drops)
 
     def _show_ctview(self, res) -> None:
         title, text = res
         _ViewDialog(title, text, self).exec()
+
+    # ---- double-click: the details of a row ----
+    def _cells_text(self, table: QTableWidget, row: int) -> str:
+        lines = []
+        for c in range(table.columnCount()):
+            head = table.horizontalHeaderItem(c)
+            item = table.item(row, c)
+            lines.append(f"{(head.text() if head and head.text() else 'Item')}: {item.text() if item else ''}")
+        return "\n".join(lines)
+
+    def _row_details(self, table: QTableWidget, title: str) -> None:
+        rows = table.selectionModel().selectedRows()
+        if rows:
+            _ViewDialog(title, self._cells_text(table, rows[0].row()), self).exec()
+
+    def _sec_details(self) -> None:
+        rows = self.sec_table.selectionModel().selectedRows()
+        if rows and rows[0].row() < len(self._sec_findings):
+            f = self._sec_findings[rows[0].row()]
+            _ViewDialog(f.title, f.text(), self).exec()
+
+    def _ct_details(self, key: str) -> None:
+        st = self._ct[key]
+        rows = st.table.selectionModel().selectedRows()
+        if not rows or st.data is None:
+            return
+        first = st.table.item(rows[0].row(), 0)
+        orig = first.data(Qt.UserRole + 2) if first else None
+        if orig is not None:
+            _ViewDialog(self.CT_TITLES[key], st.data.describe(int(orig)), self).exec()
+
+    def _wire_details(self) -> None:
+        for table, title in ((self.ps_table, "Process"), (self.port_table, "Listening port"),
+                             (self.upd_table, "Pending update"), (self.usr_table, "Account"),
+                             (self.fw_table, "Firewall rule"), (self.tm_table, "Timer")):
+            table.doubleClicked.connect(lambda _i, t=table, ti=title: self._row_details(t, ti))
 
     # ---- security ----
     def _build_security(self) -> None:
@@ -2255,9 +2369,12 @@ class DashboardWindow(QWidget):
         lay.addLayout(_toolbar(self.sec_lbl, "stretch", self.sec_root,
                                _btn("refresh", "", lambda: self.refresh(force=True), "Check again")))
         self.sec_table = _table(["", "Check", "Result", "Advice"], stretch=3)
+        self.sec_table.doubleClicked.connect(lambda _i: self._sec_details())
+        self._sec_findings: list = []
         lay.addWidget(self.sec_table, 1)
-        lay.addWidget(QLabel("Quick checks from read-only commands: a starting point, not a full audit.",
-                             objectName="Hint"))
+        lay.addWidget(QLabel("Quick checks from read-only commands: a starting point, not a full audit. "
+                             "Double-click a row for why it matters, how to fix it and the facts behind it.",
+                             objectName="Hint", wordWrap=True))
 
     def _sec_load(self, privileged: bool) -> None:
         def work(r: d.Runner):
@@ -2278,6 +2395,7 @@ class DashboardWindow(QWidget):
                 self._sec_load(True)
             return
         found = security.parse(out)
+        self._sec_findings = found
         t = self.sec_table
         t.setRowCount(len(found))
         colors = {security.OK: C["ok"], security.WARN: C["warn"], security.BAD: C["danger"],
@@ -2426,7 +2544,9 @@ class DashboardWindow(QWidget):
             "add": _btn("plus", "Add rule", self._fw_add, "Open a port or allow a service"),
             "remove": _btn("trash", "Remove", self._fw_remove, "Remove the selected rule"),
             "reload": _btn("refresh", "Reload rules", self._fw_reload, "Apply the saved rules again"),
+            "start": _btn("bolt", "Start firewall", self._fw_start, "Turn the firewall on (SSH is allowed first)"),
         }
+        self.fw_buttons["start"].hide()
         lay.addLayout(_toolbar(self.fw_lbl, "stretch", *self.fw_buttons.values(),
                                _btn("refresh", "", lambda: self.refresh(force=True), "Read the rules again")))
         self.fw_table = _table(["Where", "Type", "Rule", "Detail"], stretch=3)
@@ -2477,15 +2597,14 @@ class DashboardWindow(QWidget):
             state = {"running": "● running", "active": "● active", "inactive": "○ not running"}.get(f.state, f.state or "?")
             self.fw_lbl.setText(f"<b>{names[f.manager]}</b>  ·  {state}"
                                 + (f"  ·  default zone {f.default_zone}" if f.default_zone else ""))
-            if f.needs_root:
-                hint = "Reading these rules needs root: connect as root, or use an account with sudo."
-            elif f.manager not in fw.EDITABLE:
-                hint = "Read-only here: change iptables / nftables rules in the terminal."
-            elif not f.editable:
-                hint = "The firewall isn't running, so there is nothing to change. Start it on the server first."
+            if f.why_not_editable:
+                hint = f.why_not_editable
+            elif f.manager in ("iptables", "nftables"):
+                hint = (f"Rules are changed in the running {f.manager} at once. “Save rules” makes them survive a reboot. "
+                        "Rules for the SSH port can't be removed from here (they would cut this connection).")
             else:
                 hint = ("Changes are saved permanently and applied at once. Rules for the SSH port can't be "
-                        "removed from here (they would cut this connection).")
+                        "removed from here (they would cut this connection). Double-click a rule for details.")
         self.fw_hint.setText(hint)
         self._update_fw_buttons()
 
@@ -2496,11 +2615,27 @@ class DashboardWindow(QWidget):
         return self._fw_rows[rows[0].row()]
 
     def _update_fw_buttons(self) -> None:
-        ok = self._fw.editable
+        f = self._fw
+        ok = f.editable
         r = self._selected_fw_rule()
-        self.fw_buttons["add"].setEnabled(ok)
-        self.fw_buttons["reload"].setEnabled(ok)
-        self.fw_buttons["remove"].setEnabled(bool(ok and r and fw.remove_command(self._fw.manager, r)))
+        why = f.why_not_editable or "Not available here."
+        b = self.fw_buttons
+        b["add"].setEnabled(ok)
+        b["add"].setToolTip("Open a port" + (" or allow a service" if f.manager == "firewalld" else "") if ok else why)
+        persist = fw.reload_command(f.manager) or fw.save_command(f.manager)
+        b["reload"].setText(" " + fw.action_label(f.manager))
+        b["reload"].setEnabled(bool(ok and persist))
+        b["reload"].setToolTip(("Make the rules survive a reboot (iptables-save / nft list ruleset)"
+                                if f.manager in ("iptables", "nftables") else "Apply the saved rules again")
+                               if ok and persist else why)
+        cmd = fw.remove_command(f.manager, r) if r else None
+        protected = bool(r and fw.protects_ssh(r, int(getattr(self.server, "port", 22) or 22)))
+        b["remove"].setEnabled(bool(ok and cmd and not protected))
+        b["remove"].setToolTip("Remove the selected rule" if ok and cmd and not protected else why if not ok else
+                               "Select a rule first" if r is None else
+                               "This rule keeps your SSH connection open, so it can't be removed from here" if protected else
+                               "This kind of rule can't be removed from here")
+        b["start"].setVisible(f.can_start)
 
     def _fw_add(self) -> None:
         zones = sorted({r.scope for r in self._fw.rules if r.scope} | ({self._fw.default_zone} - {""}))
@@ -2518,8 +2653,12 @@ class DashboardWindow(QWidget):
         if not port:
             QMessageBox.warning(self, "Add rule", "Enter a port (80) or a range (8000-8100), from 1 to 65535.")
             return
-        self._privileged(f"Open port {port}/{proto}", fw.add_port_command(self._fw.manager, port, proto, zone),
-                         then="firewall")
+        try:
+            cmd = fw.add_port_command(self._fw.manager, port, proto, zone, fw.nft_input_chain(self._fw.rules))
+        except ValueError as e:
+            QMessageBox.warning(self, "Add rule", str(e))
+            return
+        self._privileged(f"Open port {port}/{proto}", cmd, then="firewall")
 
     def _fw_remove(self) -> None:
         r = self._selected_fw_rule()
@@ -2533,9 +2672,14 @@ class DashboardWindow(QWidget):
         self._privileged(f"Remove rule {r.value}", cmd, then="firewall")
 
     def _fw_reload(self) -> None:
-        cmd = fw.reload_command(self._fw.manager)
+        cmd = fw.reload_command(self._fw.manager) or fw.save_command(self._fw.manager)
         if cmd:
-            self._privileged("Reload firewall", cmd, then="firewall")
+            self._privileged(fw.action_label(self._fw.manager), cmd, then="firewall")
+
+    def _fw_start(self) -> None:
+        cmd = fw.start_command(self._fw.manager, int(getattr(self.server, "port", 22) or 22))
+        if cmd:
+            self._privileged("Start firewall", cmd, then="firewall")
 
     # ---- cron ----
     def _build_cron(self) -> None:

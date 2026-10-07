@@ -15,7 +15,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -148,6 +150,84 @@ def download(asset: Asset, dest_dir: Path, progress=lambda done, total: None) ->
         dest.unlink(missing_ok=True)
         raise UpdateError("Downloaded file is incomplete; the update was not installed.")
     return dest
+
+
+# ---------------------------------------------------------------- the one-file command-line binary
+def _machine() -> str:
+    m = platform.machine().lower()
+    return {"amd64": "x86_64", "x64": "x86_64", "arm64": "aarch64"}.get(m, m)
+
+
+def _is_musl() -> bool:
+    for folder in ("/lib", "/usr/lib"):
+        try:
+            if any(Path(folder).glob("ld-musl-*")):
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def cli_asset_name() -> str:
+    """The release file for this system's one-file binary ("" when there isn't one)."""
+    m = _machine()
+    if sys.platform.startswith("linux"):
+        return f"blamixshell-linux-{'musl-' if _is_musl() else ''}{m}"
+    if sys.platform == "darwin":
+        return f"blamixshell-macos-{'arm64' if m in ('arm64', 'aarch64') else m}"
+    return ""
+
+
+def is_onefile_binary() -> bool:
+    """Running as the single-file command-line program (not the folder build, the desktop app or pip)?"""
+    if not getattr(sys, "frozen", False):
+        return False
+    unpacked = getattr(sys, "_MEIPASS", "")
+    return bool(unpacked) and Path(unpacked).resolve().parent != Path(sys.executable).resolve().parent
+
+
+def pick_cli_asset(rel: Release) -> Asset | None:
+    want = cli_asset_name().lower()
+    return next((a for a in rel.assets if a.name.lower() == want), None) if want else None
+
+
+def check_binary_file(path: Path) -> str:
+    """"" when `path` looks like a program this system can run (an ELF or Mach-O file), else why not."""
+    try:
+        head = Path(path).read_bytes()[:4]
+    except OSError as e:
+        return str(e)
+    if sys.platform.startswith("linux"):
+        ok = head == b"\x7fELF"
+    else:
+        ok = head in (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xfe\xed\xfa\xcf")
+    return "" if ok else "The downloaded file isn't a program for this system, so it was not installed."
+
+
+def install_cli_binary(asset: Asset, target: Path | None = None, progress=lambda done, total: None) -> Path:
+    """Download `asset`, check its SHA-256, and swap it in for the running program (`target`). The new file is
+    staged next to it so the swap is one atomic rename; nothing changes if any step fails."""
+    target = Path(target or sys.executable).resolve()
+    if not asset.sha256:
+        raise UpdateError("This release doesn't publish a checksum for the file, so it won't be installed "
+                          "automatically. Download it from the release page and compare its SHA-256 yourself.")
+    try:
+        staging = Path(tempfile.mkdtemp(prefix=".blamixshell-update-", dir=target.parent))
+    except OSError as e:
+        raise UpdateError(f"Can't write next to {target}: {e}. Run the update with enough rights (sudo), "
+                          "or download the file by hand.") from None
+    try:
+        got = download(asset, staging, progress)
+        problem = check_binary_file(got)
+        if problem:
+            raise UpdateError(problem)
+        got.chmod(0o755)
+        os.replace(got, target)
+    except OSError as e:
+        raise UpdateError(f"Could not replace {target}: {e}") from None
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return target
 
 
 # ---------------------------------------------------------------- admin policy (managed / offline)

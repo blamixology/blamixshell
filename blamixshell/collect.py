@@ -26,19 +26,62 @@ class Table:
     styles: list[str] = field(default_factory=list)     # per row: "" | "ok" | "warn" | "bad" | "dim"
     keys: list = field(default_factory=list)            # per row: what actions need (a unit, a PID, ...)
     note: str = ""
+    details: list = field(default_factory=list)         # per row: the longer explanation ("" = just the cells)
 
-    def add(self, row: list, style: str = "", key=None) -> None:
+    def add(self, row: list, style: str = "", key=None, details: str = "") -> None:
         self.rows.append([str(c) for c in row])
         self.styles.append(style)
         self.keys.append(key)
+        self.details.append(details)
+
+    def describe(self, i: int) -> str:
+        """Everything known about row `i`: its own explanation, or its cells as "column: value" lines."""
+        if 0 <= i < len(self.details) and self.details[i]:
+            return self.details[i]
+        if not 0 <= i < len(self.rows):
+            return ""
+        return "\n".join(f"{(c or 'Item')}: {v}" for c, v in zip(self.columns, self.rows[i]))
 
 
 class Context:
-    def __init__(self, runner: d.Runner, username: str = "", root: bool = False):
+    def __init__(self, runner: d.Runner, username: str = "", root: bool = False, ssh_port: int = 22):
         self.runner = runner
         self.username = username
         self.root = root
+        self.ssh_port = ssh_port             # the port this connection uses: its firewall rule is never removed
+        self.firewall: fw.Firewall | None = None     # what load_firewall last saw (the actions need it)
         self.sudo_pw: str | None = None
+        self.opener: Callable[[bool], tuple] | None = None     # opener(interactive) -> (client, chain): the way back in
+        self.chain: list = []                        # jump-host connections to close with the client
+        self.retry_delays: tuple = ()                # (tests) seconds between reconnect attempts; () = the usual ones
+
+    def alive(self) -> bool:
+        """Is the SSH connection still up? (Unknown counts as up: a failed command will tell.)"""
+        client = getattr(self.runner, "client", None)
+        get = getattr(client, "get_transport", None)
+        if get is None:
+            return True
+        transport = get()
+        return bool(transport and transport.is_active())
+
+    def reconnect(self, interactive: bool = False) -> None:
+        """Open the connection again (raises when it can't); interactive may ask for a password in the terminal."""
+        if self.opener is None:
+            raise RuntimeError("This dashboard has no way to reconnect.")
+        client, chain = self.opener(interactive)
+        self.close()
+        self.runner = d.Runner(client)
+        self.chain = list(chain)
+
+    def close(self) -> None:
+        client = getattr(self.runner, "client", None)
+        for c in [client, *self.chain]:
+            try:
+                if c is not None:
+                    c.close()
+            except Exception:
+                pass
+        self.chain = []
 
     def _need_pw(self) -> bool:
         return not self.root and self.sudo_pw is None and d.needs_password(self.runner, self.root)
@@ -176,14 +219,21 @@ def load_cron(ctx: Context) -> Table:
 def load_firewall(ctx: Context) -> Table:
     out = ctx.read(fw.READ_SCRIPT, needs_root=fw.needs_root, timeout=40)
     f = fw.parse(out)
+    ctx.firewall = f
     t = Table(["Where", "Type", "Rule", "Detail"])
     state = {"running": "running", "active": "active", "inactive": "not running"}.get(f.state, f.state or "?")
     t.note = ("No firewall tool found (firewalld, ufw, iptables, nftables)." if f.manager == "none" else
               f"{f.manager}: {state}" + (f", default zone {f.default_zone}" if f.default_zone else "")
-              + (" · needs root to read the rules (press S for sudo)" if f.needs_root else ""))
+              + (" · needs root to read the rules (press S for sudo)" if f.needs_root else "")
+              + (f" · {f.why_not_editable}" if f.why_not_editable and not f.needs_root else ""))
     for r in f.rules:
+        protected = fw.protects_ssh(r, ctx.ssh_port)
         t.add([r.scope or "–", r.kind, r.value, r.detail or "–"],
-              "ok" if r.kind in ("allow", "service", "port") else "bad" if r.kind in ("deny", "reject") else "")
+              "ok" if r.kind in ("allow", "service", "port") else "bad" if r.kind in ("deny", "reject") else "",
+              key=("fw", f.manager, r.kind, r.value, r.scope, r.number, protected),
+              details=f"{f.manager}: {r.kind}\n{r.scope + ': ' if r.scope else ''}{r.value}"
+                      + (f"\n{r.detail}" if r.detail else "")
+                      + ("\n\nThis rule keeps your SSH connection open, so it can't be removed from here." if protected else ""))
     return t
 
 
@@ -234,7 +284,7 @@ def load_security(ctx: Context) -> Table:
     style = {security.OK: "ok", security.WARN: "warn", security.BAD: "bad", security.UNKNOWN: "dim"}
     sign = {security.OK: "ok", security.WARN: "warn", security.BAD: "BAD", security.UNKNOWN: "?"}
     for x in found:
-        t.add([sign[x.level], x.title, x.result, x.advice or "–"], style[x.level])
+        t.add([sign[x.level], x.title, x.result, x.advice or "–"], style[x.level], details=x.text())
     if security.needs_root(found) and not ctx.root:
         t.note = "Some checks need root (press S to give the sudo password and run them again)."
     return t
@@ -325,6 +375,7 @@ class Action:
     command: str = ""
     allow_plain: bool = False        # try it as yourself first (your own processes need no sudo)
     danger: bool = False
+    drops: str = ""                  # "reboot" / "shutdown": the SSH connection is expected to go away
     prompt: str = ""                 # ask for a value first (shown as the question) ...
     placeholder: str = ""
     make: Callable[[str], str] | None = None      # ... and build the command from it (ValueError: wrong value)
@@ -335,9 +386,34 @@ class Action:
         return self.make(value) if self.make else self.command
 
 
-def actions_for(tab: str, key) -> list[Action]:
-    """The things the selected row can be given (each is confirmed before it runs)."""
+def _open_port_command(f: fw.Firewall, text: str) -> str:
+    port, proto = fw.parse_port_proto(text)
+    return fw.add_port_command(f.manager, fw.normalize_port(port, f.manager), proto, f.default_zone,
+                               fw.nft_input_chain(f.rules))
+
+
+def actions_for(tab: str, key, ctx: Context | None = None) -> list[Action]:
+    """The things the selected row can be given (each is confirmed before it runs). `ctx` is needed for
+    the firewall tab, whose actions depend on which firewall the server runs."""
     out: list[Action] = []
+    if tab == "firewall":
+        f = getattr(ctx, "firewall", None)
+        if f is None:
+            return out
+        if f.can_start:
+            out.append(Action("Start the firewall (allows SSH first)", fw.start_command(f.manager, ctx.ssh_port)))
+        if f.editable:
+            out.append(Action("Open a port…", prompt="Port and protocol (like 8080/tcp or 8000-8100/udp)",
+                              placeholder="8080/tcp", make=lambda v, f=f: _open_port_command(f, v)))
+            if key and key[0] == "fw" and not key[6]:
+                _k, manager, kind, value, scope, number, _p = key
+                cmd = fw.remove_command(manager, fw.Rule(scope, kind, value, "", number))
+                if cmd:
+                    out.append(Action(f"Remove the rule {value}", cmd, danger=True))
+            cmd = fw.reload_command(f.manager) or fw.save_command(f.manager)
+            if cmd:
+                out.append(Action(fw.action_label(f.manager), cmd))
+        return out
     if tab == "services" and key:
         init, unit = key
         for a in d.supported_actions(init):
@@ -361,10 +437,10 @@ def actions_for(tab: str, key) -> list[Action]:
         out.append(Action(f"Remove {name}" + (" (running: forced)" if run else ""),
                           docker.action_command(engine, "remove", cid, force=run), allow_plain=True, danger=True))
     elif tab == "system":
-        out += [Action("Reboot now", sysinfo.reboot_command(), danger=True),
+        out += [Action("Reboot now", sysinfo.reboot_command(), danger=True, drops="reboot"),
                 Action("Reboot in a while…", prompt="Reboot in how many minutes?", placeholder="5",
                        make=lambda v: sysinfo.reboot_command(sysinfo.minutes_from(v)), danger=True),
-                Action("Shut down now", sysinfo.shutdown_command(), danger=True),
+                Action("Shut down now", sysinfo.shutdown_command(), danger=True, drops="shutdown"),
                 Action("Shut down in a while…", prompt="Shut down in how many minutes?", placeholder="5",
                        make=lambda v: sysinfo.shutdown_command(sysinfo.minutes_from(v)), danger=True),
                 Action("Cancel a scheduled reboot or shutdown", sysinfo.cancel_shutdown_command()),

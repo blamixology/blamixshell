@@ -36,10 +36,12 @@ async def until(pilot, cond, tries=100):
     return False
 
 
-def run_dashboard_test(scenario, replies=None):
+def run_dashboard_test(scenario, replies=None, setup=None):
     from textual.widgets import DataTable
     runner = FakeRunner(replies)
     ctx = collect.Context(runner, username="deploy", root=True)           # root: no sudo prompts in this test
+    if setup:
+        setup(ctx)
     ov = d.Overview(host="web-1", os="CentOS 7", kernel="3.10", cpus=2, cpu_percent=10, load=(0.1, 0.1, 0.1),
                     mem_total_kb=1000, mem_avail_kb=500)
 
