@@ -8,6 +8,7 @@ _Generated automatically from the commit history between release tags. Don't edi
 - Add gui --connect (hands off to the open window), package search/install/remove, alerts history, log highlighting with context and errors-only, report --json (e9f06c2)
 
 ### Fixes
+- Gui --connect hand-off on Linux (don't treat an already-flushed write as a failure; read the reply until a full line) (53d5fa5)
 - A shutdown no longer reports 'gave up' on the first tick (zero patience); silence a swap-script escape warning (8175424)
 
 ### Improvements
