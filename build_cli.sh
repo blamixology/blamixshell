@@ -8,6 +8,16 @@ cd "$(dirname "$0")"
 PY=${PYTHON:-python3}
 [ -x .venv-cli/bin/python ] || "$PY" -m venv .venv-cli
 .venv-cli/bin/pip install --upgrade pip
+if [ -n "$MANYLINUX" ]; then
+  # for old servers (CentOS 7 = glibc 2.17): only wheels built for that platform tag, e.g. manylinux2014_x86_64.
+  # Without this pip takes the newest wheel the build machine can run (cryptography's needs a newer glibc).
+  pyver=$(.venv-cli/bin/python -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
+  rm -rf .wheels-cli
+  .venv-cli/bin/pip download -q --only-binary=:all: --platform "$MANYLINUX" --python-version "$pyver" \
+    --implementation cp -d .wheels-cli -r requirements-cli.txt
+  .venv-cli/bin/pip install --no-index --find-links .wheels-cli -r requirements-cli.txt
+  rm -rf .wheels-cli
+fi
 .venv-cli/bin/pip install -r requirements-cli.txt pyinstaller
 cat > .cli_entry.py <<'PY'
 from blamixshell.cli import main

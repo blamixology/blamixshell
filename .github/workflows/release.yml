@@ -180,7 +180,7 @@ jobs:
           uv python install 3.12
           echo "CLI_PYTHON=$(uv python find --managed-python 3.12)" >> "$GITHUB_ENV"
       - name: Build the one-file binary (the script also runs its selftest)
-        run: PYTHON="$CLI_PYTHON" ONEFILE=1 OUTNAME=blamixshell-linux-x86_64 ./build_cli.sh
+        run: PYTHON="$CLI_PYTHON" MANYLINUX=manylinux2014_x86_64 ONEFILE=1 OUTNAME=blamixshell-linux-x86_64 ./build_cli.sh
       - name: It needs nothing newer than glibc 2.17
         run: |
           newest="$(objdump -T dist/blamixshell-linux-x86_64 | grep -o 'GLIBC_[0-9.]*' | sort -V | uniq | tail -1)"
