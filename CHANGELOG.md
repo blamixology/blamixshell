@@ -5,6 +5,7 @@ _Generated automatically from the commit history between release tags. Don't edi
 ## [1.18.1](https://github.com/blamixology/blamixshell/releases/tag/v1.18.1) - 2026-10-08
 
 ### Fixes
+- Tests: one Qt application for the whole run, kept alive and cleaned up at the end (fixes the crash at exit with PySide6 6.12) (3ea5959)
 - The open window's local server and its connections are owned and cleaned up by Qt (no crash at exit); socket test runs both sides in their own processes (376ac03)
 
 ## [1.18.0](https://github.com/blamixology/blamixshell/releases/tag/v1.18.0) - 2026-10-08
