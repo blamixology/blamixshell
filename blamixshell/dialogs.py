@@ -32,11 +32,15 @@ class _Base(QDialog):
 
 # ======================================================================= unlock
 class UnlockDialog(_Base):
-    def __init__(self, create: bool, attempt, parent=None):
-        """attempt(password) -> str error or '' on success."""
+    def __init__(self, create: bool, attempt, parent=None, vault_path=None, note: str = ""):
+        """attempt(password) -> str error or '' on success. With `vault_path` on Windows: "remember on this Windows
+        account", and an "Unlock with Windows" button when it is remembered."""
         super().__init__(parent)
         self.create = create
         self._attempt = attempt
+        from . import oskey
+        self._oskey = oskey if vault_path is not None and oskey.available() else None
+        self._vault_path = vault_path
         self.setWindowTitle("BlamixShell")
         self.setFixedWidth(420)
         lay = QVBoxLayout(self)
@@ -63,17 +67,32 @@ class UnlockDialog(_Base):
         self.pw2 = QLineEdit(echoMode=QLineEdit.Password, placeholderText="Confirm password")
         self.pw2.setVisible(create)
         lay.addWidget(self.pw2)
+        self.remember = QCheckBox("Remember on this Windows account")
+        self.remember.setToolTip("Keeps the master password encrypted by Windows for your account (DPAPI, like a "
+                                 "browser's saved passwords): BlamixShell then opens without asking on this PC. "
+                                 "Useless on another PC or Windows account. Turn it off in Settings → Vault.")
+        self.remember.setVisible(self._oskey is not None)
+        if self._oskey is not None:
+            self.remember.setChecked(self._oskey.remembered(self._vault_path))
+        lay.addWidget(self.remember)
         self.err = QLabel()
         self.err.setStyleSheet(f"color:{C['danger']};")
         self.err.setWordWrap(True)
         self.err.hide()
         lay.addWidget(self.err)
+        if note:
+            self._fail(note)
 
         self.btn = QPushButton("Create vault" if create else "Unlock", objectName="Primary")
         self.btn.setDefault(True)
         self.btn.clicked.connect(self._go)
         lay.addSpacing(6)
         lay.addWidget(self.btn)
+        self.win_btn = QPushButton(icon("lock"), " Unlock with Windows")
+        self.win_btn.setToolTip("Use the master password this Windows account keeps for this vault")
+        self.win_btn.clicked.connect(self._go_windows)
+        self.win_btn.setVisible(bool(self._oskey and not create and self._oskey.remembered(self._vault_path)))
+        lay.addWidget(self.win_btn)
         self.pw.returnPressed.connect(self._go if not create else self.pw2.setFocus)
         self.pw2.returnPressed.connect(self._go)
 
@@ -95,7 +114,32 @@ class UnlockDialog(_Base):
             self.pw.selectAll()
             self.pw.setFocus()
         else:
+            self._keep_remembered(p)
             self.accept()
+
+    def _keep_remembered(self, password: str) -> None:
+        if self._oskey is None:
+            return
+        try:
+            if self.remember.isChecked():
+                self._oskey.remember(password, self._vault_path)
+            else:
+                self._oskey.forget()
+        except OSError:
+            pass                                    # unlocking worked; remembering is only a convenience
+
+    def _go_windows(self) -> None:
+        pw = self._oskey.recall(self._vault_path) if self._oskey else None
+        if pw is None:
+            self.win_btn.hide()
+            return self._fail("Windows doesn't have the master password for this vault any more. Enter it once.")
+        err = self._attempt(pw)
+        if err:
+            self._oskey.forget()
+            self.win_btn.hide()
+            return self._fail("The remembered password no longer opens this vault (was the master password "
+                              "changed?). Enter it once.")
+        self.accept()
 
     def _fail(self, msg: str) -> None:
         self.err.setText(msg)
@@ -1029,6 +1073,15 @@ class SettingsDialog(_Base):
             b.clicked.connect(fn)
             grid.addWidget(b, i // 2, i % 2)
         lv.addLayout(grid)
+        from . import oskey
+        self.win_unlock = QCheckBox("Unlock with my Windows account (no master password on this PC)")
+        self.win_unlock.setToolTip("The master password is kept encrypted by Windows for your account (DPAPI), in "
+                                   "the local data folder, never in the vault. Anything running as you on this PC "
+                                   "could read it, so leave it off on shared or untrusted PCs.")
+        self.win_unlock.setVisible(oskey.available())
+        self.win_unlock.setChecked(oskey.available() and oskey.remembered(self.store.vault.path))
+        self.win_unlock.toggled.connect(self._toggle_win_unlock)
+        lv.addWidget(self.win_unlock)
         lv.addWidget(QLabel("Same servers on several computers: move the vault into a synced folder "
                              "(OneDrive, Dropbox, Syncthing), then on the other computer choose "
                              "“Use another vault file”. Changes from both sides are merged. "
@@ -1285,7 +1338,38 @@ class SettingsDialog(_Base):
             QMessageBox.warning(self, "Not changed", "Passwords must match and be at least 8 characters.")
             return
         self.store.change_password(a.text())
+        from . import oskey
+        if oskey.available() and oskey.remembered(self.store.vault.path):
+            try:
+                oskey.remember(a.text(), self.store.vault.path)     # Windows unlock keeps working
+            except OSError:
+                oskey.forget()
         QMessageBox.information(self, "Done", "Master password changed.")
+
+    def _toggle_win_unlock(self, on: bool) -> None:
+        from . import oskey
+        from .vault import Vault, WrongPassword
+        if not on:
+            oskey.forget()
+            return
+        pw, ok = QInputDialog.getText(self, "Unlock with Windows", "Your master password, once, to keep it for "
+                                      "this Windows account:", QLineEdit.Password)
+        try:
+            if not ok:
+                raise WrongPassword()
+            Vault.open(self.store.vault.path, pw)
+            oskey.remember(pw, self.store.vault.path)
+        except WrongPassword:
+            if ok:
+                QMessageBox.warning(self, "Unlock with Windows", "That isn't the master password.")
+            self.win_unlock.blockSignals(True)
+            self.win_unlock.setChecked(False)
+            self.win_unlock.blockSignals(False)
+        except Exception as e:
+            QMessageBox.warning(self, "Unlock with Windows", f"Couldn't keep it: {e}")
+            self.win_unlock.blockSignals(True)
+            self.win_unlock.setChecked(False)
+            self.win_unlock.blockSignals(False)
 
 
 # ======================================================================= snippets

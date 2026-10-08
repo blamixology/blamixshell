@@ -96,9 +96,18 @@ def main() -> None:
     if os.environ.get("BLAMIXSHELL_SELFTEST"):
         sys.exit(_selftest(app))
 
-    dlg = UnlockDialog(create, attempt)
-    if dlg.exec() != QDialog.Accepted:
-        sys.exit(0)
+    # unlock with the Windows account, when it was asked for (Settings → Vault, or the unlock window)
+    from . import oskey
+    note = ""
+    remembered = None if create else oskey.recall(path)
+    if remembered is not None and attempt(remembered):
+        oskey.forget()
+        note = ("Windows unlock didn't work this time (was the master password changed?). Enter it once; tick "
+                "“Remember” to keep it again.")
+    if create or remembered is None or note:
+        dlg = UnlockDialog(create, attempt, vault_path=path, note=note)
+        if dlg.exec() != QDialog.Accepted:
+            sys.exit(0)
 
     win = MainWindow(holder["store"], Settings())
     win.show()

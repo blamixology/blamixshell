@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from . import cron, dashboard as d, docker, firewall as fw, loglines, report, security, storage, timers
+from . import compose, cron, dashboard as d, docker, firewall as fw, loglines, report, security, storage, timers
 from . import system as sysinfo
 
 
@@ -50,6 +50,7 @@ class Context:
         self.root = root
         self.ssh_port = ssh_port             # the port this connection uses: its firewall rule is never removed
         self.firewall: fw.Firewall | None = None     # what load_firewall last saw (the actions need it)
+        self.docker: docker.Containers | None = None  # what the Docker tabs last saw (engine-wide actions)
         self.sudo_pw: str | None = None
         self.opener: Callable[[bool], tuple] | None = None     # opener(interactive) -> (client, chain): the way back in
         self.chain: list = []                        # jump-host connections to close with the client
@@ -236,9 +237,15 @@ def load_firewall(ctx: Context) -> Table:
     return t
 
 
-def load_docker(ctx: Context) -> Table:
+def _docker(ctx: Context) -> docker.Containers:
     out = ctx.read(docker.READ_SCRIPT, needs_root=lambda o: docker.parse(o).needs_access, timeout=60)
     c = docker.parse(out)
+    ctx.docker = c
+    return c
+
+
+def load_docker(ctx: Context) -> Table:
+    c = _docker(ctx)
     t = Table(["State", "Name", "Image", "Status", "Ports", "CPU", "Memory"])
     if c.engine == "none":
         t.note = "No Docker or Podman found."
@@ -251,6 +258,59 @@ def load_docker(ctx: Context) -> Table:
         t.add([x.state, x.name, x.image, x.status, x.ports or "–", x.cpu or "–", x.mem or "–"],
               "ok" if x.state == "running" else "warn" if x.state in ("paused", "restarting") else "dim",
               key=(c.engine, x.id, x.name, x.state))
+    return t
+
+
+def load_compose(ctx: Context) -> Table:
+    """One row per project, then one per service (indented)."""
+    c = _docker(ctx)
+    t = Table(["Project / service", "State", "Image", "Folder"])
+    found = compose.projects(c.items)
+    if c.engine == "none":
+        t.note = "No Docker or Podman found."
+    elif c.needs_access:
+        t.note = "This account can't talk to the daemon: use root, the docker group, or sudo (press S)."
+    elif not found:
+        t.note = "No compose projects: none of the containers was started by docker compose / docker-compose."
+    elif not c.compose:
+        t.note = "No compose command on the server (docker compose, docker-compose, podman-compose): view only."
+    else:
+        t.note = f"Using “{c.compose}”, in each project's own folder. a: actions (up, update, down, edit files …), l: log"
+    for p in found:
+        key = ("compose", c.compose, p.name, p.folder, tuple(p.files), "")
+        t.add([p.name, p.state, "", p.folder or "?"],
+              "ok" if p.state == "running" else "warn" if p.running else "dim", key=key,
+              details=f"Project {p.name}\nFolder: {p.folder or '?'}\nFiles: {', '.join(p.files) or '?'}\n"
+                      f"Services: {', '.join(s.name for s in p.services)}")
+        for s in p.services:
+            st = s.state
+            t.add([f"  {s.name}", st, s.image, ", ".join(x.name for x in s.containers)],
+                  "ok" if st.startswith("running") else "warn" if "running" in st else "dim", key=key[:5] + (s.name,))
+    return t
+
+
+def load_images(ctx: Context) -> Table:
+    """Images, volumes and networks in one list (the Kind column says which)."""
+    c = _docker(ctx)
+    t = Table(["Kind", "Name", "Size / driver", "Created / scope", "Used by"])
+    if c.engine == "none":
+        t.note = "No Docker or Podman found."
+        return t
+    if c.needs_access:
+        t.note = "This account can't talk to the daemon: use root, the docker group, or sudo (press S)."
+        return t
+    dangling = sum(1 for i in c.images if i.dangling)
+    t.note = (f"{len(c.images)} images" + (f" ({dangling} dangling)" if dangling else "")
+              + f", {len(c.volumes)} volume{'s' if len(c.volumes) != 1 else ''}, {len(c.networks)} network"
+              + f"{'s' if len(c.networks) != 1 else ''}. a: details, layers, pull, remove, clean up")
+    for i in c.images:
+        t.add(["image", f"{i.repository}:{i.tag}" if not i.dangling else f"<none> {i.id}", i.size, i.created,
+               ", ".join(i.used_by) or "–"], "dim" if i.dangling else "ok" if i.used_by else "",
+              key=("image", c.engine, i.ref, tuple(i.used_by), i.dangling))
+    for v in c.volumes:
+        t.add(["volume", v.name, v.driver, "", "–"], "", key=("volume", c.engine, v.name))
+    for n in c.networks:
+        t.add(["network", n.name, n.driver, n.scope, ""], "dim" if n.builtin else "", key=("network", c.engine, n.name))
     return t
 
 
@@ -360,7 +420,8 @@ TABS: list[tuple[str, str, object]] = [
     ("overview", "Overview", load_overview), ("services", "Services", load_services),
     ("processes", "Processes", load_processes), ("logs", "Logs", load_logs), ("ports", "Ports", load_ports),
     ("updates", "Updates", load_updates), ("users", "Users", load_users), ("cron", "Cron", load_cron),
-    ("firewall", "Firewall", load_firewall), ("docker", "Docker", load_docker), ("timers", "Timers", load_timers),
+    ("firewall", "Firewall", load_firewall), ("docker", "Docker", load_docker), ("compose", "Compose", load_compose),
+    ("images", "Images", load_images), ("timers", "Timers", load_timers),
     ("storage", "Storage", load_storage), ("mounts", "Mounts", load_mounts), ("system", "System", load_system),
     ("network", "Network", load_network), ("security", "Security", load_security),
 ]
@@ -379,7 +440,11 @@ class Action:
     placeholder: str = ""
     make: Callable[[str], str] | None = None      # ... and build the command from it (ValueError: wrong value)
     readonly: bool = False           # only looks: run it as yourself and show the output, no confirmation
-    picker: str = ""                 # the desktop shows its own chooser instead of the prompt ("timezone")
+    picker: str = ""                 # a chooser instead of the prompt ("timezone"; "compose-edit": edit the files)
+    timeout: float = 60              # how long it may take (pulling images takes a while)
+    root_if_refused: bool = False    # readonly: run it again with sudo when the daemon refuses this account
+    shape: Callable[[str], str] | None = None     # readonly: turns the output into something readable
+    target: object = None            # what the chooser works on (picker)
 
     def command_for(self, value: str = "") -> str:
         """The command to run (a ValueError says what is wrong with `value`)."""
@@ -436,6 +501,20 @@ def actions_for(tab: str, key, ctx: Context | None = None) -> list[Action]:
             out.append(Action(f"Restart {name}", docker.action_command(engine, "restart", cid), allow_plain=True))
         out.append(Action(f"Remove {name}" + (" (running: forced)" if run else ""),
                           docker.action_command(engine, "remove", cid, force=run), allow_plain=True, danger=True))
+        out.append(Action(f"Details of {name} (why it stopped, OOM, health, limits, mounts …)",
+                          docker.inspect_command(engine, "container", cid), readonly=True, root_if_refused=True,
+                          shape=docker.summarize_inspect))
+        if state == "running":
+            out.append(Action(f"Processes in {name}", docker.top_command(engine, cid), readonly=True,
+                              root_if_refused=True))
+    if tab in ("docker", "images"):
+        seen = getattr(ctx, "docker", None)            # what the tab last loaded (also when no row is selected)
+        engine = seen.engine if seen is not None else (key[1] if tab == "images" else key[0]) if key else ""
+        out += _engine_actions(engine)
+    if tab == "images" and key:
+        out = _image_actions(key) + out
+    if tab == "compose" and key:
+        out += _compose_actions(key)
     elif tab == "system":
         out += [Action("Reboot now", sysinfo.reboot_command(), danger=True, drops="reboot"),
                 Action("Reboot in a while…", prompt="Reboot in how many minutes?", placeholder="5",
@@ -476,6 +555,85 @@ def actions_for(tab: str, key, ctx: Context | None = None) -> list[Action]:
     return out
 
 
+def _engine_actions(engine: str) -> list[Action]:
+    """Disk use, events, engine info and the clean-ups: they don't depend on the selected row."""
+    if engine not in ("docker", "podman"):
+        return []
+    out = [Action("Disk use (images, containers, volumes, build cache)", docker.disk_usage_command(engine),
+                  readonly=True, root_if_refused=True, timeout=120),
+           Action("Events of the last hour (died, OOM, restarts, pulls)", docker.events_command(engine),
+                  readonly=True, root_if_refused=True),
+           Action("Engine info", docker.info_command(engine), readonly=True, root_if_refused=True)]
+    for what, (_cmd, label) in docker.PRUNE.items():
+        if what != "build-cache" or engine == "docker":
+            out.append(Action(f"Clean up: {label[0].lower() + label[1:]}", docker.prune_command(engine, what),
+                              allow_plain=True, danger=True, timeout=600))
+    return out
+
+
+def _image_actions(key) -> list[Action]:
+    kind, engine = key[0], key[1]
+    if kind == "image":
+        _k, _e, ref, used_by, dangling = key
+        out = [Action(f"Details of {ref}", docker.inspect_command(engine, "image", ref), readonly=True,
+                      root_if_refused=True, shape=docker.summarize_inspect),
+               Action(f"Layers of {ref}", docker.history_command(engine, ref), readonly=True, root_if_refused=True)]
+        if not dangling:
+            out.append(Action(f"Pull {ref} again (newer version of the tag)", docker.pull_command(engine, ref),
+                              allow_plain=True, timeout=900))
+        if not used_by:
+            out.append(Action(f"Remove the image {ref}", docker.remove_image_command(engine, ref), allow_plain=True,
+                              danger=True))
+        return out
+    name = key[2]
+    out = [Action(f"Details of the {kind} {name}", docker.inspect_command(engine, kind, name), readonly=True,
+                  root_if_refused=True, shape=docker.summarize_inspect)]
+    if kind == "volume":
+        out.append(Action(f"Remove the volume {name} (its data is deleted)", docker.remove_volume_command(engine, name),
+                          allow_plain=True, danger=True))
+    elif name not in docker.BUILTIN_NETWORKS:
+        out.append(Action(f"Remove the network {name}", docker.remove_network_command(engine, name),
+                          allow_plain=True, danger=True))
+    return out
+
+
+def compose_project(key) -> compose.Project:
+    _k, _tool, name, folder, files, _service = key
+    return compose.Project(name, folder, list(files))
+
+
+_COMPOSE_LABELS = {"up": "Up {n}: start it, creating what is missing", "stop": "Stop {n}",
+                   "start": "Start {n} (its stopped containers)", "restart": "Restart {n}",
+                   "pull": "Pull newer images for {n}", "update": "Update {n}: pull newer images, re-create what changed",
+                   "down": "Down {n}: remove its containers and networks (volumes are kept)"}
+
+
+def _compose_actions(key) -> list[Action]:
+    tool, service = key[1], key[5]
+    p = compose_project(key)
+    if not tool or not p.manageable:
+        return []
+    try:
+        if service:
+            return [Action(f"Restart {p.name} / {service}", compose.action_command(tool, p, "restart", service),
+                           allow_plain=True, timeout=300),
+                    Action(f"Re-create {p.name} / {service}", compose.recreate_command(tool, p, service),
+                           allow_plain=True, timeout=900),
+                    Action(f"Log of {p.name} / {service}", compose.logs_command(tool, p, service), readonly=True,
+                           root_if_refused=True)]
+        out = [Action(label.format(n=p.name), compose.action_command(tool, p, a), allow_plain=True,
+                      danger=a == "down", timeout=1800 if a in ("up", "update", "pull") else 300)
+               for a, label in _COMPOSE_LABELS.items()]
+        out += [Action(f"Status of {p.name} (compose ps)", compose.ps_command(tool, p), readonly=True,
+                       root_if_refused=True),
+                Action(f"Check the configuration of {p.name}", compose.config_command(tool, p), readonly=True,
+                       root_if_refused=True),
+                Action(f"Edit the compose files of {p.name}…", picker="compose-edit", target=key)]
+        return out
+    except ValueError:
+        return []
+
+
 def log_command(tab: str, key) -> str | None:
     """A command showing the log of the selected row (a service's journal, a container's output)."""
     if tab == "services" and key:
@@ -483,6 +641,11 @@ def log_command(tab: str, key) -> str | None:
         return d.logs_command(unit, "", 300, init)
     if tab == "docker" and key:
         return docker.logs_command(key[0], key[1], 300)
+    if tab == "compose" and key and key[1]:
+        try:
+            return compose.logs_command(key[1], compose_project(key), key[5])
+        except ValueError:
+            return None
     return None
 
 

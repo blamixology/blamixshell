@@ -68,6 +68,15 @@ def unlock(create_if_missing: bool = True) -> Store:
                 print("Passwords don't match.")
                 continue
             return Store(Vault.create(path, pw), {})
+    from . import oskey
+    pw = oskey.recall(path)                          # "unlock with my Windows account" (set in the desktop app)
+    if pw is not None:
+        try:
+            v, data = Vault.open(path, pw)
+            return Store(v, data)
+        except WrongPassword:
+            oskey.forget()
+            print("Windows unlock didn't work (was the master password changed?).")
     for _attempt in range(3):
         pw = getpass.getpass("Master password: ")
         try:
@@ -852,6 +861,12 @@ def cmd_passwd(store: Store, _a) -> int:
     if len(pw) < 8 or pw != getpass.getpass("Confirm: "):
         die("Passwords must match and be at least 8 characters")
     store.vault.change_password(pw, store.to_dict())
+    from . import oskey
+    if oskey.remembered(store.vault.path):
+        try:
+            oskey.remember(pw, store.vault.path)    # Windows unlock keeps working
+        except OSError:
+            oskey.forget()
     print(c("✔ ", "32") + "Master password changed")
     return 0
 
@@ -1003,7 +1018,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("target")
     sp.add_argument("--accept-new", action="store_true", help="trust an unknown host key (never a changed one)")
     sp = sub.add_parser("show", help="print one dashboard tab: overview, services, processes, ports, updates, "
-                                     "users, cron, firewall, docker, timers, storage, security")
+                                     "users, cron, firewall, docker, compose, images, timers, storage, mounts, system, network, security")
     sp.add_argument("target")
     sp.add_argument("tab", help="a tab name (a unique start is enough: serv, proc, fire …)")
     sp.add_argument("-f", "--filter", help="only rows containing this text")

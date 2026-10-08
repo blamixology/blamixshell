@@ -113,7 +113,9 @@ def test_actions_are_built_per_row():
     k = collect.actions_for("processes", (123, "node app.js"))
     assert [x.command for x in k] == ["kill -TERM 123", "kill -KILL 123"] and k[1].danger and k[0].allow_plain
     run = collect.actions_for("docker", ("docker", "abc", "web", "running"))
-    assert [x.label.split()[0] for x in run] == ["Stop", "Restart", "Remove"] and "rm -f abc" in run[2].command
+    assert [x.label.split()[0] for x in run][:3] == ["Stop", "Restart", "Remove"] and "rm -f abc" in run[2].command
+    assert [x.label.split()[0] for x in run][3:5] == ["Details", "Processes"] and run[3].readonly
+    assert any(x.label.startswith("Clean up") for x in run)                         # engine-wide ones follow
     assert [x.label.split()[0] for x in collect.actions_for("docker", ("docker", "abc", "db", "paused"))][0] == "Resume"
     assert collect.actions_for("docker", ("docker", "abc", "x", "exited"))[0].label.startswith("Start")
     tm = collect.actions_for("timers", ("a.timer", "a.service", True))

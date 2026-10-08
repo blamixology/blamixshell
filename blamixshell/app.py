@@ -1680,7 +1680,7 @@ class MainWindow(QMainWindow):
                 return "Wrong master password."
             except Exception as e:
                 return str(e)
-        dlg = UnlockDialog(False, attempt)
+        dlg = UnlockDialog(False, attempt, vault_path=path)   # after a manual lock: asks (one click with Windows)
         self._locked = True
         accepted = dlg.exec() == QDialog.Accepted
         self._locked = False

@@ -148,6 +148,38 @@ class TextScreen(ModalScreen):
             yield Static(Text(self.text.rstrip() or "(empty)"))
 
 
+class EditScreen(ModalScreen):
+    """Edit a text (a compose file): ctrl+s saves, escape cancels. Dismisses with the new text, or None."""
+    DEFAULT_CSS = """
+    EditScreen { align: center middle; }
+    EditScreen > Vertical { width: 94%; height: 92%; border: round $accent; background: $panel; padding: 0 1; }
+    EditScreen TextArea { height: 1fr; }
+    EditScreen Checkbox { height: auto; }
+    """
+    BINDINGS = [Binding("ctrl+s", "save", "Save"), Binding("escape", "dismiss(None)", "Cancel")]
+
+    def __init__(self, title: str, text: str, note: str = "", apply_label: str = ""):
+        super().__init__()
+        self.title_text, self.text, self.note, self.apply_label = title, text, note, apply_label
+
+    def compose(self) -> ComposeResult:
+        from textual.widgets import Checkbox, TextArea
+        with Vertical():
+            yield Static(Text(self.title_text, style="bold"))
+            if self.note:
+                yield Static(Text(self.note, style="dim"))
+            yield TextArea(self.text, id="editor", show_line_numbers=True, tab_behavior="indent")
+            if self.apply_label:
+                yield Checkbox(self.apply_label, value=True, id="apply")
+            yield Static(Text("ctrl+s save   ·   escape cancel", style="dim"))
+
+    def action_save(self) -> None:
+        from textual.widgets import Checkbox, TextArea
+        text = self.query_one("#editor", TextArea).text
+        apply = bool(self.apply_label) and self.query_one("#apply", Checkbox).value
+        self.dismiss((text, apply) if text != self.text else None)
+
+
 class DashboardScreen(Screen):
     BINDINGS = [
         Binding("escape", "back", "Back"),
@@ -400,7 +432,8 @@ class DashboardScreen(Screen):
         key = self.active_key()
         acts = collect.actions_for(key, self.pane(key).selected_key(), self.ctx)
         if not acts:
-            self.notify("Nothing to do with this row here." if key in ("services", "processes", "docker", "timers", "mounts")
+            self.notify("Nothing to do with this row here." if key in ("services", "processes", "docker", "compose",
+                                                                       "images", "timers", "mounts")
                         else "This tab has no actions.", timeout=3)
             return
 
@@ -408,6 +441,9 @@ class DashboardScreen(Screen):
             if i is None:
                 return
             act = acts[i]
+            if act.picker == "compose-edit":
+                self.edit_compose(act.target)
+                return
             if act.prompt:                       # asks for a value first (minutes, a time zone, a size, a host …)
                 self.app.push_screen(PromptScreen(act.label.rstrip("…"), act.prompt, act.placeholder),
                                      lambda value: value and self.do_action(act, key, value))
@@ -434,12 +470,85 @@ class DashboardScreen(Screen):
 
         def work() -> None:
             try:
-                res = self.ctx.runner.run(cmd, timeout=60)
-                text = (res.out + ("\n" + res.err if res.err.strip() else "")).strip()
+                if act.root_if_refused:                        # docker without the docker group: with sudo
+                    from .docker import _NEEDS_ACCESS
+                    text = self.ctx.read(cmd, needs_root=lambda o: bool(_NEEDS_ACCESS.search(o)),
+                                         timeout=act.timeout).strip()
+                else:
+                    res = self.ctx.runner.run(cmd, timeout=act.timeout)
+                    text = (res.out + ("\n" + res.err if res.err.strip() else "")).strip()
+                if act.shape:
+                    text = act.shape(text)
+            except collect.NeedsSudo:
+                self.app.call_from_thread(self.ask_sudo, lambda: self.show_output(act, cmd))
+                return
             except Exception as e:
                 text = f"Could not run it: {e}"
             self.app.call_from_thread(self.app.push_screen, TextScreen(act.label.rstrip("…"), text))
         self.run_worker(work, thread=True, group="readonly")
+
+    # ---- compose files: read them, edit one, save it only if compose accepts it
+    def edit_compose(self, key) -> None:
+        from . import compose
+        p = collect.compose_project(key)
+        try:
+            cmd = compose.read_files_command(p)
+        except ValueError as e:
+            self.notify(str(e), severity="error")
+            return
+        from .docker import _NEEDS_ACCESS
+
+        def work() -> None:
+            try:
+                out = self.ctx.read(cmd, needs_root=lambda o: "denied" in o.lower() or bool(_NEEDS_ACCESS.search(o)))
+            except collect.NeedsSudo:
+                self.app.call_from_thread(self.ask_sudo, lambda: self.edit_compose(key))
+                return
+            except Exception as e:
+                self.app.call_from_thread(self.notify, f"Could not read the files: {e}", severity="error")
+                return
+            self.app.call_from_thread(self._compose_files_read, key, compose.parse_files(out))
+        self.run_worker(work, thread=True, group="readonly")
+
+    def _compose_files_read(self, key, files: dict) -> None:
+        if not files:
+            self.notify("Couldn't read the compose files.", severity="error")
+            return
+        paths = list(files)
+        if len(paths) == 1:
+            self._compose_edit_one(key, paths[0], files[paths[0]])
+        else:
+            self.app.push_screen(ChoiceScreen(paths), lambda i: i is not None and self._compose_edit_one(
+                key, paths[i], files[paths[i]]))
+
+    def _compose_edit_one(self, key, path: str, text: str) -> None:
+        from . import compose
+        p = collect.compose_project(key)
+        tool = key[1]
+
+        def done(result) -> None:
+            if not result:
+                return
+            new, apply = result
+            try:
+                steps = [compose.save_file_command(tool, p, path, new)]
+                if apply:
+                    steps.append(compose.action_command(tool, p, "up"))
+            except ValueError as e:
+                self.notify(str(e), severity="error")
+                return
+            import shlex
+            act = collect.Action(f"Save {path.rsplit('/', 1)[-1]}" + (" and apply" if apply else ""),
+                                 "sh -c " + shlex.quote(" && ".join(steps)), allow_plain=True, timeout=1800)
+            self.app.push_screen(
+                ConfirmScreen(f"{act.label}\n\non {self.server.label}, in {p.folder}\n\nChecked with compose first; "
+                              f"the previous version is kept as {path.rsplit('/', 1)[-1]}.bak-<time>"
+                              + ("; then up -d." if apply else "."), yes="Save"),
+                lambda ok: ok and self.run_action(act, "compose"))
+        self.app.push_screen(EditScreen(
+            f"{p.name}: {path}", text,
+            "Saved only if compose accepts it (with the project's other files and its .env).",
+            "Apply after saving (up -d: re-creates the services whose settings changed)"), done)
 
     def run_action(self, act: collect.Action, key: str, cmd: str | None = None) -> None:
         cmd = cmd or act.command
@@ -449,7 +558,7 @@ class DashboardScreen(Screen):
             if act.drops:
                 self._watch.expect(act.drops)                  # the connection is about to go away, on purpose
             try:
-                res = self.ctx.run(cmd, allow_plain=act.allow_plain)
+                res = self.ctx.run(cmd, allow_plain=act.allow_plain, timeout=act.timeout)
             except collect.NeedsSudo:
                 self.app.call_from_thread(self.ask_sudo, lambda: self.run_action(act, key, cmd))
                 return
@@ -481,7 +590,7 @@ class DashboardScreen(Screen):
         if not cmd:
             self.notify("Select a service or a container on its tab first.", timeout=3)
             return
-        title = f"Log: {sel[1] if key == 'services' else sel[2]}"
+        title = f"Log: {sel[1] if key == 'services' else sel[2] + (' / ' + sel[5] if sel[5] else '') if key == 'compose' else sel[2]}"
 
         def work() -> None:
             try:
