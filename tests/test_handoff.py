@@ -3,7 +3,6 @@ BlamixShell that is already open."""
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -61,28 +60,32 @@ def test_new_addresses_prefill_the_new_server_dialog():
     assert handoff.resolve(st, handoff.request(""))[0] == "error"
 
 
+SEND = ("from PySide6.QtCore import QCoreApplication; app = QCoreApplication([]); from blamixshell import handoff; "
+        "print('SENT', handoff.send(handoff.request('web-1'), timeout_ms=1500))")
+
+
 def test_a_running_window_takes_the_request():
-    from PySide6.QtCore import QCoreApplication
-    app = QCoreApplication.instance() or QCoreApplication([])
-    home = tempfile.mkdtemp()
-    with mock.patch.dict(os.environ, {"BLAMIXSHELL_HOME": home}):
-        got = []
-        server = handoff.listen(got.append)
-        assert server is not None
-        assert handoff.listen(lambda r: None) is None          # a second launch never takes the name away
-        import subprocess
-        other = subprocess.Popen(                               # a second launch: `blamixshell gui --connect web-1`
-            [sys.executable, "-c", "from PySide6.QtCore import QCoreApplication; app = QCoreApplication([]); "
-             "from blamixshell import handoff; print('SENT', handoff.send(handoff.request('web-1')))"],
-            stdout=subprocess.PIPE, text=True, cwd=str(Path(__file__).parent.parent),
-            env=dict(os.environ, BLAMIXSHELL_HOME=home, QT_QPA_PLATFORM="offscreen"))
-        end = time.time() + 20
-        while other.poll() is None and time.time() < end:
-            app.processEvents()
-            time.sleep(0.01)
-        assert "SENT True" in other.stdout.read() and got == [handoff.request("web-1")]
-        server.close()
-        assert not handoff.send(handoff.request("web-1"), timeout_ms=300)   # nobody open: start normally
+    """Both sides in their own processes, like two real launches (and no Qt socket in the test process)."""
+    import json
+    import subprocess
+    root = str(Path(__file__).parent.parent)
+    env = dict(os.environ, BLAMIXSHELL_HOME=tempfile.mkdtemp(), QT_QPA_PLATFORM="offscreen",
+               PYTHONPATH=root + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    window = subprocess.Popen([sys.executable, str(Path(__file__).parent / "handoff_window.py")],
+                              stdout=subprocess.PIPE, text=True, cwd=root, env=env)
+    try:
+        assert window.stdout.readline().strip() == "READY"      # listening, and a second listen was refused
+        sent = subprocess.run([sys.executable, "-c", SEND], capture_output=True, text=True, cwd=root, env=env,
+                              timeout=30)
+        assert "SENT True" in sent.stdout, sent.stdout + sent.stderr
+        out, _ = window.communicate(timeout=30)
+        assert out.splitlines() == ["GOT " + json.dumps(handoff.request("web-1"), sort_keys=True)]
+    finally:
+        if window.poll() is None:
+            window.kill()
+    nobody = subprocess.run([sys.executable, "-c", SEND.replace("1500", "300")], capture_output=True, text=True,
+                            cwd=root, env=env, timeout=30)
+    assert "SENT False" in nobody.stdout                        # nobody open: start normally
 
 
 def test_the_window_opens_a_saved_server_or_asks_and_waits_while_locked():

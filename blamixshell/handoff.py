@@ -140,48 +140,80 @@ def send(req: dict, timeout_ms: int = 1500) -> bool:
 def listen(on_request):
     """Start taking requests from later launches; on_request(dict) runs in the GUI thread. Returns the server (keep
     a reference) or None if it couldn't listen."""
-    from PySide6.QtNetwork import QLocalServer, QLocalSocket
+    from PySide6.QtNetwork import QLocalSocket
     name = socket_name()
     probe = QLocalSocket()
     probe.connectToServer(name)
     if probe.waitForConnected(500):                         # another BlamixShell is open and keeps the name
-        probe.disconnectFromServer()                        # (Windows would let both listen on one pipe name)
+        probe.abort()                                       # (Windows would let both listen on one pipe name)
+        probe.deleteLater()
         return None
-    server = QLocalServer()
-    server.setSocketOptions(QLocalServer.UserAccessOption)
-    if not server.listen(name):
-        QLocalServer.removeServer(name)                     # left over from a crash
-        if not server.listen(name):
-            return None
+    probe.abort()
+    probe.deleteLater()
+    listener = _listener_class()(name, on_request)
+    if not listener.ok:
+        listener.deleteLater()
+        return None
+    return listener
 
-    def accept():
-        while server.hasPendingConnections():
-            conn = server.nextPendingConnection()
-            buf = bytearray()
 
-            def read(conn=conn, buf=buf):
-                buf.extend(bytes(conn.readAll()))
-                if b"\n" not in buf:
-                    if len(buf) > 65536:
-                        conn.disconnectFromServer()
-                    return
-                line = bytes(buf).split(b"\n", 1)[0]
-                try:
-                    req = json.loads(line.decode("utf-8"))
-                    if not isinstance(req, dict) or req.get("action") != "connect":
-                        raise ValueError
-                except ValueError:
-                    conn.write(b"bad\n")
-                    conn.flush()
+def _listener_class():
+    from PySide6.QtCore import QCoreApplication, QObject
+    from PySide6.QtNetwork import QLocalServer
+
+    class Listener(QObject):
+        """The local server and the connections it accepted. Qt owns all of them (the listener is a child of the
+        application), so nothing is deleted by Python's garbage collector while Qt still uses it."""
+
+        def __init__(self, name: str, on_request):
+            super().__init__(QCoreApplication.instance())
+            self.on_request = on_request
+            self.buffers: dict = {}                         # connection -> bytes read so far
+            self.server = QLocalServer(self)
+            self.server.setSocketOptions(QLocalServer.UserAccessOption)
+            self.ok = self.server.listen(name)
+            if not self.ok:
+                QLocalServer.removeServer(name)             # left over from a crash
+                self.ok = self.server.listen(name)
+            self.server.newConnection.connect(self._accept)
+
+        def _accept(self) -> None:
+            while self.server.hasPendingConnections():
+                conn = self.server.nextPendingConnection()
+                self.buffers[conn] = bytearray()
+                conn.readyRead.connect(lambda c=conn: self._read(c))
+                conn.disconnected.connect(lambda c=conn: self._drop(c))
+                if conn.bytesAvailable():
+                    self._read(conn)
+
+        def _drop(self, conn) -> None:
+            if self.buffers.pop(conn, None) is not None:
+                conn.deleteLater()
+
+        def _read(self, conn) -> None:
+            buf = self.buffers.get(conn)
+            if buf is None:
+                return
+            buf.extend(bytes(conn.readAll()))
+            if b"\n" not in buf:
+                if len(buf) > 65536:
                     conn.disconnectFromServer()
-                    return
-                conn.write(b"ok\n")
-                conn.flush()
-                conn.disconnectFromServer()
-                on_request(req)
-            conn.readyRead.connect(read)
-            conn.disconnected.connect(conn.deleteLater)
-            if conn.bytesAvailable():
-                read()
-    server.newConnection.connect(accept)
-    return server
+                return
+            line = bytes(buf).split(b"\n", 1)[0]
+            try:
+                req = json.loads(line.decode("utf-8"))
+                if not isinstance(req, dict) or req.get("action") != "connect":
+                    raise ValueError
+            except ValueError:
+                req = None
+            conn.write(b"ok\n" if req else b"bad\n")
+            conn.flush()
+            conn.disconnectFromServer()
+            if req:
+                self.on_request(req)
+
+        def close(self) -> None:
+            self.server.close()
+            for conn in list(self.buffers):
+                self._drop(conn)
+    return Listener
