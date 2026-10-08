@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.18.3](https://github.com/blamixology/blamixshell/releases/tag/v1.18.3) - 2026-10-08
+
+### Improvements
+- Docker tab: Compose projects (up, stop, restart, update, down, logs, status, check config, per-service actions) and checked editing of compose files with backups (7242c76)
+
 ## [1.18.2](https://github.com/blamixology/blamixshell/releases/tag/v1.18.2) - 2026-10-08
 
 ### Improvements
