@@ -56,9 +56,19 @@ jobs:
       - name: Start a throwaway sshd on 127.0.0.1:2222
         run: |
           bash .github/apt-install.sh openssh-server libegl1 libxkbcommon0 libgl1
+          # a new random password and key passphrase on every run (masked in the log, never in the repository)
+          pw="$(openssl rand -hex 16)"
+          kp="$(openssl rand -hex 8)"
+          echo "::add-mask::$pw"
+          echo "::add-mask::$kp"
           sudo useradd -m -s /bin/bash tester
-          echo 'tester:Secret123!' | sudo chpasswd
-          ssh-keygen -t ed25519 -N pp -f "$RUNNER_TEMP/id_ed25519" -q
+          printf 'tester:%s\n' "$pw" | sudo chpasswd
+          ssh-keygen -t ed25519 -N "$kp" -f "$RUNNER_TEMP/id_ed25519" -q
+          {
+            echo "BLAMIXSHELL_TEST_SSH=127.0.0.1:2222:tester:$pw"
+            echo "BLAMIXSHELL_TEST_SSH_KBD=127.0.0.1:2223:tester:$pw"
+            echo "BLAMIXSHELL_TEST_KEY=$RUNNER_TEMP/id_ed25519:$kp"
+          } >> "$GITHUB_ENV"
           sudo install -d -m 700 -o tester /home/tester/.ssh
           sudo install -m 600 -o tester "$RUNNER_TEMP/id_ed25519.pub" /home/tester/.ssh/authorized_keys
           printf 'Port 2222\nListenAddress 127.0.0.1\nPasswordAuthentication yes\nKbdInteractiveAuthentication no\nUsePAM yes\nSubsystem sftp /usr/lib/openssh/sftp-server\nPidFile /tmp/sshd-test.pid\n' > "$RUNNER_TEMP/sshd_config"
@@ -73,10 +83,7 @@ jobs:
       - run: pip install -r requirements.txt textual pytest pexpect
       - run: pytest -q tests -rs
         env:
-          QT_QPA_PLATFORM: offscreen
-          BLAMIXSHELL_TEST_SSH: "127.0.0.1:2222:tester:Secret123!"
-          BLAMIXSHELL_TEST_SSH_KBD: "127.0.0.1:2223:tester:Secret123!"
-          BLAMIXSHELL_TEST_KEY: "${{ runner.temp }}/id_ed25519:pp"
+          QT_QPA_PLATFORM: offscreen          # the BLAMIXSHELL_TEST_* logins come from the step above
 
   # 3) only if every test passed: build the apps (each build also runs a self-test)
   build:

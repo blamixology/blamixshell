@@ -126,6 +126,11 @@ QTreeWidget#ServerTree::item:selected:active, QTreeWidget#ServerTree::item:selec
   background: transparent; border: none; }}
 QTreeWidget#ServerTree::branch, QTreeWidget#ServerTree::branch:selected, QTreeWidget#ServerTree::branch:hover {{
   background: transparent; border: none; }}
+/* file browser: one rounded highlight per row is painted by the tree itself (not one per column) */
+QTreeWidget#FileTree {{ outline: 0; }}
+QTreeWidget#FileTree::item, QTreeWidget#FileTree::item:selected, QTreeWidget#FileTree::item:hover,
+QTreeWidget#FileTree::item:selected:active, QTreeWidget#FileTree::item:selected:!active {{
+  background: transparent; border: none; color: {C['text']}; }}
 QHeaderView::section {{ background: transparent; color: {C['faint']}; border: none;
   border-bottom: 1px solid {C['border']}; padding: 6px 8px; font-size: 8.5pt; }}
 

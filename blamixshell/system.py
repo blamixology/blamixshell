@@ -122,8 +122,57 @@ def timezone_command(zone: str) -> str:
         raise ValueError("A time zone looks like Europe/Bucharest or UTC.")
     q = shlex.quote(zone)
     z = shlex.quote(f"/usr/share/zoneinfo/{zone}")
+    # without timedatectl (CentOS 6, containers, Alpine): the /etc/localtime link, plus the files some systems read
+    # the name from (Debian's /etc/timezone, the old Red Hat /etc/sysconfig/clock)
+    fallback = (f"ln -sf {z} /etc/localtime && {{ [ ! -f /etc/timezone ] || echo {q} > /etc/timezone; }} && "
+                f"{{ [ ! -f /etc/sysconfig/clock ] || sed -i 's|^ZONE=.*|ZONE=\"'{zone}'\"|' /etc/sysconfig/clock; }}")
     return "sh -c " + shlex.quote(f"[ -e {z} ] || {{ echo 'Unknown time zone' >&2; exit 1; }}; "
-                                  f"timedatectl set-timezone {q} 2>/dev/null || ln -sf {z} /etc/localtime")
+                                  f"timedatectl set-timezone {q} 2>/dev/null || {{ {fallback}; }}")
+
+
+# The zones this server knows (its own tz database, so only names it can really use are offered)
+ZONES_SCRIPT = r"""
+zones() {
+  timedatectl list-timezones 2>/dev/null | grep . && return
+  cd /usr/share/zoneinfo 2>/dev/null || return
+  find . -type f -o -type l 2>/dev/null | sed 's|^\./||' | grep -v -E '^(posix|right|SystemV)/|\.|^(Factory|posixrules|localtime|leapseconds|leap-seconds.*|tzdata.zi|zone.*\.tab|iso3166.tab|[+]VERSION)$'
+}
+# each zone with its offset and abbreviation right now, as the server computes them
+zones | while IFS= read -r z; do printf '%s|%s\n' "$z" "$(TZ="$z" date '+%z %Z' 2>/dev/null)"; done
+"""
+
+_OLD_STYLE = ("US/", "Canada/", "Mexico/", "Brazil/", "Chile/", "Etc/")
+
+
+@dataclass
+class Zone:
+    name: str
+    offset: str = ""        # "+03:00"
+    abbr: str = ""          # "EEST" ("" when the zone only has a number, like +04)
+
+    @property
+    def label(self) -> str:
+        if not self.offset:
+            return self.name
+        return f"{self.name}   UTC{self.offset}" + (f" {self.abbr}" if self.abbr else "")
+
+
+def parse_zones(text: str) -> list[Zone]:
+    """Sorted: the usual Region/City names first, then UTC, then old aliases (US/Eastern, Etc/GMT+2, EST, ...)."""
+    found: dict[str, Zone] = {}
+    for line in text.splitlines():
+        name, _, rest = line.strip().partition("|")
+        if not name or not valid_zone(name):
+            continue
+        p = rest.split()
+        off = p[0] if p and re.fullmatch(r"[+-]\d{4}", p[0]) else ""
+        abbr = p[1] if len(p) > 1 and p[1].isalpha() else ""
+        found[name] = Zone(name, f"{off[:3]}:{off[3:]}" if off else "", abbr)
+
+    def order(z: Zone):
+        rank = 1 if z.name in ("UTC", "Etc/UTC") else 0 if "/" in z.name and not z.name.startswith(_OLD_STYLE) else 2
+        return rank, z.name.lower()
+    return sorted(found.values(), key=order)
 
 
 def ntp_command(on: bool) -> str:

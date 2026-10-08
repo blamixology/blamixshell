@@ -298,7 +298,7 @@ def load_system(ctx: Context) -> Table:
     t.add(["Host", i.hostname or "–", i.os or ""], "")
     t.add(["Kernel", i.kernel or "–", f"up {d.human_uptime(i.uptime_s)}" if i.uptime_s else ""], "")
     tz = " ".join(x for x in (i.tz_name, f"({i.tz_abbr} {i.tz_offset})" if i.tz_abbr else "") if x)
-    t.add(["Time zone", tz or "–", ""], "")
+    t.add(["Time zone", tz or "–", "double-click to change"], "", key=("tz", i.tz_name))
     drift = i.drift_s((t0 + t1) / 2)
     t.add(["Server time", i.local_time or "–",
            ("" if drift is None else f"{'ahead of' if drift >= 0 else 'behind'} this computer by {abs(drift):.0f} s")],
@@ -379,6 +379,7 @@ class Action:
     placeholder: str = ""
     make: Callable[[str], str] | None = None      # ... and build the command from it (ValueError: wrong value)
     readonly: bool = False           # only looks: run it as yourself and show the output, no confirmation
+    picker: str = ""                 # the desktop shows its own chooser instead of the prompt ("timezone")
 
     def command_for(self, value: str = "") -> str:
         """The command to run (a ValueError says what is wrong with `value`)."""
@@ -444,7 +445,7 @@ def actions_for(tab: str, key, ctx: Context | None = None) -> list[Action]:
                        make=lambda v: sysinfo.shutdown_command(sysinfo.minutes_from(v)), danger=True),
                 Action("Cancel a scheduled reboot or shutdown", sysinfo.cancel_shutdown_command()),
                 Action("Set the time zone…", prompt="Time zone (like Europe/Bucharest or UTC)", placeholder="Europe/Bucharest",
-                       make=sysinfo.timezone_command),
+                       make=sysinfo.timezone_command, picker="timezone"),
                 Action("Turn clock sync (NTP) on", sysinfo.ntp_command(True)),
                 Action("Turn clock sync (NTP) off", sysinfo.ntp_command(False)),
                 Action("Add a swap file…", prompt="Size of the swap file (like 2G or 512M)", placeholder="2G",

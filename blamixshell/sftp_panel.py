@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PySide6.QtCore import QFileSystemWatcher, QObject, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QColor, QCursor, QDesktopServices
 from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout, QHeaderView,
                                QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox,
                                QProgressBar, QToolButton, QTreeWidget, QTreeWidgetItem,
@@ -57,8 +57,29 @@ class RemoteTree(QTreeWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("FileTree")      # the stylesheet leaves the row background to drawRow below
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.DropOnly)
+        self.setMouseTracking(True)
+
+    def drawRow(self, painter, option, index):  # noqa: N802
+        """One rounded highlight for the whole row (the stylesheet would round every column on its own)."""
+        selected = self.selectionModel().isSelected(index)
+        under = self.indexAt(self.viewport().mapFromGlobal(QCursor.pos()))
+        hovered = under.isValid() and under.row() == index.row() and under.parent() == index.parent()
+        if selected or hovered:
+            painter.save()
+            painter.setRenderHint(painter.RenderHint.Antialiasing)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(C["surface2"] if selected else C["hover"]))
+            r = option.rect
+            painter.drawRoundedRect(r.adjusted(2, 1, -2, -1), 8, 8)
+            painter.restore()
+        super().drawRow(painter, option, index)
+
+    def leaveEvent(self, e):  # noqa: N802
+        super().leaveEvent(e)
+        self.viewport().update()            # no row stays lit after the mouse left
 
     def dragEnterEvent(self, e):  # noqa: N802
         if e.mimeData().hasUrls():

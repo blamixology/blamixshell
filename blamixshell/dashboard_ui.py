@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QCh
                                QTabWidget, QVBoxLayout, QWidget)
 
 from . import collect, cron, loglines, reconnect
+from . import system as sysinfo
 from . import dashboard as d
 from .tablekeys import auto_key
 from . import firewall as fw
@@ -984,6 +985,111 @@ class _LogHighlighter(QSyntaxHighlighter):
             while (i := low.find(self.needle, i)) >= 0:
                 self.setFormat(i, n, mark)
                 i += n
+
+
+class _TimezoneDialog(QDialog):
+    """Pick the server's time zone from the zones it knows, with each one's offset right now."""
+
+    def __init__(self, server: str, current: str, now: str, zones: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Time zone")
+        self.resize(560, 560)
+        self.zones = zones
+        self.current = current
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(f"<b>Time zone of {server}</b>"))
+        lay.addWidget(QLabel(f"Now: <b>{current or 'unknown'}</b>" + (f"  ·  server time {now}" if now else ""),
+                             objectName="Muted"))
+        self.find = QLineEdit(placeholderText="Search: a city, a region, or an offset like +03 or -05:30")
+        self.find.textChanged.connect(self._fill)
+        lay.addWidget(self.find)
+        self.list = QListWidget()
+        self.list.itemDoubleClicked.connect(lambda _i: self._ok())
+        self.list.currentItemChanged.connect(lambda *_: self._changed())
+        lay.addWidget(self.list, 1)
+        self.typed = None
+        if not zones:                    # no tz database listed (minimal containers): type it, the server checks it
+            lay.addWidget(QLabel("The server didn't list its time zones (is the tzdata package installed?). "
+                                 "Type a name like Europe/Bucharest; the server checks that it knows it.",
+                                 objectName="Hint", wordWrap=True))
+            self.list.hide()
+            self.find.setPlaceholderText("Europe/Bucharest")
+            self.find.textChanged.connect(lambda _t: self._changed())
+        self.hint = QLabel("", objectName="Hint", wordWrap=True)
+        lay.addWidget(self.hint)
+        bar = QHBoxLayout()
+        utc = QPushButton("UTC")
+        utc.setToolTip("Use UTC (common for servers: logs and cron jobs don't shift with summer time)")
+        utc.clicked.connect(lambda: self._pick("UTC"))
+        bar.addWidget(utc)
+        bar.addStretch(1)
+        self.ok = QPushButton("Set time zone")
+        self.ok.setDefault(True)
+        self.ok.clicked.connect(self._ok)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        bar.addWidget(self.ok)
+        bar.addWidget(cancel)
+        lay.addLayout(bar)
+        self._fill()
+        self._pick(current, select_only=True)
+        self.find.setFocus()
+
+    def _fill(self) -> None:
+        if not self.zones:
+            return
+        q = self.find.text().strip().lower().replace("utc", "").replace(" ", "")
+        keep = self.list.currentItem().data(Qt.UserRole) if self.list.currentItem() else self.current
+        self.list.clear()
+        for z in self.zones:
+            text = z.label
+            hay = (z.name.lower().replace("_", " ") + " " + z.name.lower() + " " + z.offset + " " + z.abbr.lower()
+                   + " " + z.offset.replace(":00", ""))
+            if q and q not in hay.replace(" ", "") and q not in hay:
+                continue
+            it = QListWidgetItem(text)
+            it.setData(Qt.UserRole, z.name)
+            if z.name == self.current:
+                it.setText(text + "   (now)")
+                it.setForeground(QColor(C["accent"]))
+            self.list.addItem(it)
+            if z.name == keep:
+                self.list.setCurrentItem(it)
+        if self.list.currentItem() is None and self.list.count():
+            self.list.setCurrentRow(0)
+        self._changed()
+
+    def _pick(self, name: str, select_only: bool = False) -> None:
+        if not self.zones:
+            self.find.setText(name)
+            return
+        if not select_only:
+            self.find.clear()
+        for i in range(self.list.count()):
+            if self.list.item(i).data(Qt.UserRole) == name:
+                self.list.setCurrentRow(i)
+                self.list.scrollToItem(self.list.item(i), QAbstractItemView.PositionAtCenter)
+                return
+
+    def value(self) -> str:
+        if not self.zones:
+            return self.find.text().strip()
+        it = self.list.currentItem()
+        return it.data(Qt.UserRole) if it else ""
+
+    def _changed(self) -> None:
+        v = self.value()
+        same = bool(v) and v == self.current
+        self.ok.setEnabled(bool(v) and not same and sysinfo.valid_zone(v))
+        if self.zones:
+            self.hint.setText("That's the time zone it has now." if same else
+                              f"{self.list.count()} zones" + (" match" if self.find.text().strip() else "")
+                              + ". Changes the clock the server shows, its logs and when cron jobs run; the time "
+                              "itself (UTC) doesn't change.")
+
+    def _ok(self) -> None:
+        if self.ok.isEnabled():
+            self.accept()
 
 
 class DashboardWindow(QWidget):
@@ -2416,7 +2522,9 @@ class DashboardWindow(QWidget):
             menu = QMenu(btn)
             menu.aboutToShow.connect(lambda k=key: self._ct_fill_menu(k))
             btn.setMenu(menu)
-            lay.addLayout(_toolbar(flt, count, "stretch", btn,
+            extra = [_btn("edit", "Time zone…", self._tz_change, "Change the server's time zone")] \
+                if key == "system" else []
+            lay.addLayout(_toolbar(flt, count, "stretch", *extra, btn,
                                    _btn("refresh", "", lambda _=False, k=key: self.refresh(force=True), "Reload")))
             table = _table([""], sortable=True)
             lay.addWidget(table, 1)
@@ -2486,6 +2594,9 @@ class DashboardWindow(QWidget):
             st.menu.addAction("Nothing to do with this row").setEnabled(False)
 
     def _collect_action(self, act: collect.Action, key: str) -> None:
+        if act.picker == "timezone":
+            self._tz_change()
+            return
         value = ""
         if act.prompt:
             value, ok = QInputDialog.getText(self, act.label.rstrip("…"), act.prompt, text=act.placeholder)
@@ -2537,8 +2648,48 @@ class DashboardWindow(QWidget):
             return
         first = st.table.item(rows[0].row(), 0)
         orig = first.data(Qt.UserRole + 2) if first else None
+        if key == "system" and isinstance(self._ct_selected(key), tuple) and self._ct_selected(key)[:1] == ("tz",):
+            self._tz_change()
+            return
         if orig is not None:
             _ViewDialog(self.CT_TITLES[key], st.data.describe(int(orig)), self).exec()
+
+    # ---- the time zone: a chooser with the zones the server knows ----
+    def _tz_current(self) -> tuple[str, str]:
+        """(zone name, server time) from the System tab, as last loaded."""
+        data = self._ct["system"].data
+        name = now = ""
+        if data is not None:
+            for row, k in zip(data.rows, data.keys):
+                if isinstance(k, (list, tuple)) and k[:1] == ("tz",):
+                    name = k[1] or ""
+                if row and row[0] == "Server time":
+                    now = row[1] if row[1] != "–" else ""
+        return name, now
+
+    def _tz_change(self) -> None:
+        zones = getattr(self, "_tz_zones", None)
+        if zones is not None:
+            self._show_tzzones(zones)
+            return
+        self.status.setText("Reading the server's time zones …")
+        self._job("tzzones", lambda r: sysinfo.parse_zones(r.run(sysinfo.ZONES_SCRIPT, timeout=60).out))
+
+    def _show_tzzones(self, zones: list) -> None:
+        self._tz_zones = zones
+        if self.status.text().startswith("Reading the server's time zones"):
+            self.status.setText("")
+        current, now = self._tz_current()
+        dlg = _TimezoneDialog(self.server.label, current, now, zones, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        zone = dlg.value()
+        try:
+            cmd = sysinfo.timezone_command(zone)
+        except ValueError as e:
+            QMessageBox.warning(self, "Time zone", str(e))
+            return
+        self._privileged(f"Set the time zone to {zone}", cmd, then="system", show=f"timedatectl set-timezone {zone}")
 
     def _wire_details(self) -> None:
         for table, title in ((self.ps_table, "Process"), (self.port_table, "Listening port"),
