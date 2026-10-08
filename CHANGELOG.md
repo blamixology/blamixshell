@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.18.4](https://github.com/blamixology/blamixshell/releases/tag/v1.18.4) - 2026-10-09
+
+### Improvements
+- Terminal dashboard: Compose and Images tabs, container details, processes, disk use, events and clean-up; unlock with the Windows account (DPAPI, opt-in) (1c2e0cc)
+
 ## [1.18.3](https://github.com/blamixology/blamixshell/releases/tag/v1.18.3) - 2026-10-08
 
 ### Improvements
