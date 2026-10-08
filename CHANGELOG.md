@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.18.2](https://github.com/blamixology/blamixshell/releases/tag/v1.18.2) - 2026-10-08
+
+### Improvements
+- Docker tab: images, volumes and networks; container details (why it stopped, OOM, health, limits, mounts, secrets hidden), processes, shell, layers, pull, disk use, events, engine info and clean-up (e0094d5)
+
 ## [1.18.1](https://github.com/blamixology/blamixshell/releases/tag/v1.18.1) - 2026-10-08
 
 ### Fixes
