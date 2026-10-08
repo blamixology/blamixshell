@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.18.0](https://github.com/blamixology/blamixshell/releases/tag/v1.18.0) - 2026-10-08
+
+### Improvements
+- System tab: time zone picker with the server's own zones and their offsets (button, double-click, Actions); file browser: one highlight per row instead of one per column (7c0a2e1)
+
 ## [1.17.1](https://github.com/blamixology/blamixshell/releases/tag/v1.17.1) - 2026-10-08
 
 ### Fixes
