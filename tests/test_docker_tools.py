@@ -109,7 +109,7 @@ def test_the_docker_tab():
     jobs = []
     w._job = lambda key, fn: jobs.append(key)
     w._show_docker((FULL, False))
-    assert w.dk_tabs.tabText(1) == "Images (4), 1 dangling" and w.dk_tabs.tabText(3) == "Networks (3)"
+    assert w.dk_tabs.tabText(2) == "Images (4), 1 dangling" and w.dk_tabs.tabText(4) == "Networks (3)"
     w.dk_table.selectRow(0)                                                        # web, running
     b = w.dk_buttons
     assert b["details"].isEnabled() and b["top"].isEnabled() and b["shell"].isEnabled()

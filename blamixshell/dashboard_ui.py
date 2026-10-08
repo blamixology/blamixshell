@@ -25,7 +25,7 @@ from . import system as sysinfo
 from . import dashboard as d
 from .tablekeys import auto_key
 from . import firewall as fw
-from . import docker, packages, report, security, sshkeys, storage, timers, units
+from . import compose, docker, packages, report, security, sshkeys, storage, timers, units
 from .theme import C, blend, icon, style_window
 
 REFRESH_MS = 5000
@@ -1090,6 +1090,48 @@ class _TimezoneDialog(QDialog):
     def _ok(self) -> None:
         if self.ok.isEnabled():
             self.accept()
+
+
+class _ComposeFileDialog(QDialog):
+    """A project's compose files, one tab each; saved only after compose accepts the new version."""
+
+    def __init__(self, project: str, files: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Compose files: {project}")
+        self.resize(820, 600)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Saving checks the file with compose first (with the project's other files and its .env); "
+                             "the previous version is kept next to it as <file>.bak-<time>.", objectName="Hint",
+                             wordWrap=True))
+        self.tabs = QTabWidget()
+        self.edits: dict = {}
+        self.original = dict(files)
+        mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        for path, text in files.items():
+            ed = QPlainTextEdit(text)
+            ed.setFont(mono)
+            ed.setLineWrapMode(QPlainTextEdit.NoWrap)
+            ed.setTabChangesFocus(False)
+            self.edits[path] = ed
+            self.tabs.addTab(ed, path.rsplit("/", 1)[-1])
+            self.tabs.setTabToolTip(self.tabs.count() - 1, path)
+        lay.addWidget(self.tabs, 1)
+        self.apply = QCheckBox("Apply after saving (up -d: re-creates the services whose settings changed)")
+        self.apply.setChecked(True)
+        lay.addWidget(self.apply)
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Close)
+        bb.accepted.connect(self._save)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def changed(self) -> dict:
+        return {p: e.toPlainText() for p, e in self.edits.items() if e.toPlainText() != self.original[p]}
+
+    def _save(self) -> None:
+        if not self.changed():
+            QMessageBox.information(self, "Compose files", "Nothing changed.")
+            return
+        self.accept()
 
 
 class DashboardWindow(QWidget):
@@ -2334,6 +2376,45 @@ class DashboardWindow(QWidget):
         pl.addWidget(self.dk_table, 1)
         self.dk_tabs.addTab(page, "Containers")
 
+        # compose projects
+        page = QWidget()
+        pl = QVBoxLayout(page)
+        pl.setContentsMargins(0, 8, 0, 0)
+        self._dk_projects: list = []
+        self.dk_cmp_buttons = {
+            "up": _btn("bolt", "Up", lambda: self._cmp_action("up"), "Start the project (creates what is missing)"),
+            "stop": _btn("x", "Stop", lambda: self._cmp_action("stop")),
+            "restart": _btn("refresh", "Restart", lambda: self._cmp_action("restart")),
+            "update": _btn("download", "Update", lambda: self._cmp_action("update"),
+                           "Pull newer images and re-create the services that changed (pull, then up -d)"),
+            "down": _btn("trash", "Down", lambda: self._cmp_action("down"),
+                         "Remove the project's containers and networks (volumes and their data are kept)"),
+            "logs": _btn("file", "Logs", lambda: self._cmp_view("logs"), "The last 300 log lines of every service"),
+            "ps": _btn("search", "Status", lambda: self._cmp_view("ps"), "compose ps: every container of the project"),
+            "config": _btn("code", "Check config", lambda: self._cmp_view("config"),
+                           "The configuration as compose reads it (variables filled in, files merged), or its errors"),
+            "files": _btn("edit", "Files…", self._cmp_files, "View or edit the compose files (checked before saving)"),
+        }
+        pl.addLayout(_toolbar("stretch", *self.dk_cmp_buttons.values()))
+        self.dk_cmp_table = _table(["Project", "State", "Services", "Folder", "Compose files"], stretch=4)
+        self.dk_cmp_table.itemSelectionChanged.connect(self._cmp_selected_changed)
+        self.dk_cmp_table.doubleClicked.connect(lambda _i: self._cmp_view("ps"))
+        pl.addWidget(self.dk_cmp_table, 2)
+        self.dk_svc_buttons = {
+            "logs": _btn("file", "Logs", lambda: self._cmp_view("logs", service=True), "This service's log"),
+            "restart": _btn("refresh", "Restart", lambda: self._cmp_action("restart", service=True)),
+            "recreate": _btn("bolt", "Re-create", self._cmp_recreate,
+                             "Re-create this service's containers (after its image or settings changed)"),
+        }
+        pl.addLayout(_toolbar(QLabel("<b>Services</b>"), "stretch", *self.dk_svc_buttons.values()))
+        self.dk_svc_table = _table(["Service", "State", "Containers", "Image"], stretch=3)
+        self.dk_svc_table.itemSelectionChanged.connect(self._update_dk_buttons)
+        self.dk_svc_table.doubleClicked.connect(lambda _i: self._cmp_view("logs", service=True))
+        pl.addWidget(self.dk_svc_table, 1)
+        self.dk_cmp_note = QLabel("", objectName="Hint", wordWrap=True)
+        pl.addWidget(self.dk_cmp_note)
+        self.dk_tabs.addTab(page, "Compose")
+
         # images
         page = QWidget()
         pl = QVBoxLayout(page)
@@ -2472,6 +2553,13 @@ class DashboardWindow(QWidget):
             self.dk_img_buttons["remove"].setToolTip("Delete the image (not while a container uses it)")
         for b in self.dk_vol_buttons.values():
             b.setEnabled(self._dk_selected("vol") is not None)
+        p = self._cmp_selected()
+        ok = p is not None and p.manageable and bool(self._dk.compose)
+        for k, b in self.dk_cmp_buttons.items():
+            b.setEnabled(ok)
+        svc = self._cmp_service()
+        for b in self.dk_svc_buttons.values():
+            b.setEnabled(ok and svc is not None)
         net = self._dk_selected("net")
         self.dk_net_buttons["details"].setEnabled(net is not None)
         self.dk_net_buttons["remove"].setEnabled(net is not None and not net.builtin)
@@ -2571,10 +2659,149 @@ class DashboardWindow(QWidget):
                 t.setItem(i, 2, _item(n.scope, C["muted"]))
                 t.setItem(i, 3, _item(n.id, C["muted"]))
         dangling = sum(1 for i in c.images if i.dangling)
+        self._cmp_fill(c)
         self.dk_tabs.setTabText(0, f"Containers ({len(c.items)})")
-        self.dk_tabs.setTabText(1, f"Images ({len(c.images)})" + (f", {dangling} dangling" if dangling else ""))
-        self.dk_tabs.setTabText(2, f"Volumes ({len(c.volumes)})")
-        self.dk_tabs.setTabText(3, f"Networks ({len(c.networks)})")
+        self.dk_tabs.setTabText(1, f"Compose ({len(self._dk_projects)})")
+        self.dk_tabs.setTabText(2, f"Images ({len(c.images)})" + (f", {dangling} dangling" if dangling else ""))
+        self.dk_tabs.setTabText(3, f"Volumes ({len(c.volumes)})")
+        self.dk_tabs.setTabText(4, f"Networks ({len(c.networks)})")
+
+    # ---- compose projects ----
+    def _cmp_fill(self, c) -> None:
+        keep = self._selected(self.dk_cmp_table)
+        self._dk_projects = compose.projects(c.items)
+        t = self.dk_cmp_table
+        with _Filling(t):
+            t.setRowCount(len(self._dk_projects))
+            for i, p in enumerate(self._dk_projects):
+                color = C["ok"] if p.state == "running" else C["warn"] if p.running else C["muted"]
+                t.setItem(i, 0, _item(p.name, None, data=p.name))
+                t.setItem(i, 1, _item("● " + p.state, color))
+                t.setItem(i, 2, _item(", ".join(s.name for s in p.services), C["muted"]))
+                t.setItem(i, 3, _item(p.folder or "?", C["muted"]))
+                t.setItem(i, 4, _item(", ".join(f.rsplit("/", 1)[-1] for f in p.files) or "?", C["muted"]))
+        self._reselect(t, keep)
+        if c.engine == "none":
+            note = ""
+        elif not self._dk_projects:
+            note = "No compose projects: none of the containers was started by docker compose / docker-compose."
+        elif not c.compose:
+            note = ("Projects are shown from their containers, but no compose command was found on the server "
+                    "(docker compose, docker-compose, podman-compose), so they can't be managed from here.")
+        else:
+            note = (f"Using “{c.compose}”. Commands run in the project's folder with its own compose files and .env, "
+                    "like you would by hand. Projects that are fully down aren't listed (compose keeps no record of "
+                    "them besides their containers).")
+        self.dk_cmp_note.setText(note)
+        self._cmp_selected_changed()
+
+    def _cmp_selected(self):
+        name = self._selected(self.dk_cmp_table)
+        return next((p for p in self._dk_projects if p.name == name), None) if name else None
+
+    def _cmp_service(self):
+        p = self._cmp_selected()
+        name = self._selected(self.dk_svc_table)
+        return next((s for s in p.services if s.name == name), None) if p and name else None
+
+    def _cmp_selected_changed(self) -> None:
+        p = self._cmp_selected()
+        keep = self._selected(self.dk_svc_table)
+        t = self.dk_svc_table
+        services = p.services if p else []
+        with _Filling(t):
+            t.setRowCount(len(services))
+            for i, s in enumerate(services):
+                st = s.state
+                t.setItem(i, 0, _item(s.name, None, data=s.name))
+                t.setItem(i, 1, _item("● " + st, C["ok"] if st.startswith("running") else
+                                      C["warn"] if "running" in st else C["muted"]))
+                t.setItem(i, 2, _item(", ".join(c.name for c in s.containers), C["muted"]))
+                t.setItem(i, 3, _item(s.image, C["muted"]))
+        self._reselect(t, keep)
+        self._update_dk_buttons()
+
+    def _cmp_action(self, action: str, service: bool = False) -> None:
+        p = self._cmp_selected()
+        svc = self._cmp_service() if service else None
+        if p is None or (service and svc is None):
+            return
+        try:
+            cmd = compose.action_command(self._dk.compose, p, action, svc.name if svc else "")
+        except ValueError as e:
+            self.status.setText(str(e))
+            return
+        what = compose.ACTIONS[action][1]
+        target = f"{p.name} / {svc.name}" if svc else p.name
+        self._privileged(f"{action.capitalize()} {target}", cmd, then="docker", allow_plain=True,
+                         timeout=1800 if action in ("update", "pull", "up") else 300,
+                         show=f"{self._dk.compose} {compose.ACTIONS[action][0].replace('{base}', '…')}"
+                              + (f" {svc.name}" if svc else "") + f"   ({what}, in {p.folder})")
+
+    def _cmp_recreate(self) -> None:
+        p, svc = self._cmp_selected(), self._cmp_service()
+        if p and svc:
+            self._privileged(f"Re-create {p.name} / {svc.name}", compose.recreate_command(self._dk.compose, p, svc.name),
+                             then="docker", allow_plain=True, timeout=900,
+                             show=f"{self._dk.compose} up -d --force-recreate {svc.name}   (in {p.folder})")
+
+    def _cmp_view(self, what: str, service: bool = False) -> None:
+        p = self._cmp_selected()
+        svc = self._cmp_service() if service else None
+        if p is None or not self._dk.compose or (service and svc is None):
+            return
+        try:
+            cmd = {"logs": lambda: compose.logs_command(self._dk.compose, p, svc.name if svc else ""),
+                   "ps": lambda: compose.ps_command(self._dk.compose, p),
+                   "config": lambda: compose.config_command(self._dk.compose, p)}[what]()
+        except ValueError as e:
+            self.status.setText(str(e))
+            return
+        title = {"logs": "Logs", "ps": "Status", "config": "Configuration"}[what]
+        self._dk_view(f"{title}: {p.name}" + (f" / {svc.name}" if svc else ""), cmd, timeout=120)
+
+    def _cmp_files(self) -> None:
+        p = self._cmp_selected()
+        if p is None:
+            return
+        try:
+            cmd = compose.read_files_command(p)
+        except ValueError as e:
+            self.status.setText(str(e))
+            return
+        sudo = self._dk_sudo
+
+        def work(r: d.Runner):
+            if sudo and not self._root:
+                return p.name, d.run_privileged(r, cmd, self._root, self._sudo_pw, 30).out
+            return p.name, r.run(cmd, timeout=30).out
+        self._job("cmpfiles", work)
+
+    def _show_cmpfiles(self, res) -> None:
+        name, text = res
+        p = next((x for x in self._dk_projects if x.name == name), None)
+        files = compose.parse_files(text)
+        if p is None or not files:
+            QMessageBox.warning(self, "Compose files", text.strip()[:800] or "Couldn't read the compose files.")
+            return
+        dlg = _ComposeFileDialog(p.name, files, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        changed = dlg.changed()
+        try:
+            steps = [compose.save_file_command(self._dk.compose, p, path, text) for path, text in changed.items()]
+            if dlg.apply.isChecked():
+                steps.append(compose.action_command(self._dk.compose, p, "up"))
+        except ValueError as e:
+            QMessageBox.warning(self, "Compose files", str(e))
+            return
+        names = ", ".join(path.rsplit("/", 1)[-1] for path in changed)
+        self._privileged(f"Save {names}" + (" and apply" if dlg.apply.isChecked() else ""),
+                         "sh -c " + shlex.quote(" && ".join(steps)),          # one command: sudo covers every step
+                         then="docker", allow_plain=True, timeout=1800,
+                         show=f"check with compose, keep a .bak copy, save {names}"
+                              + (f", then {self._dk.compose} up -d" if dlg.apply.isChecked() else "")
+                              + f"   (in {p.folder})")
 
     def _dk_selected(self, which: str):
         table, items, key = {"img": (self.dk_img_table, self._dk.images, "id"),

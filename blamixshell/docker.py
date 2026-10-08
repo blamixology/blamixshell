@@ -16,6 +16,10 @@ for e in docker podman; do
     echo @@images; $e images --format '{{json .}}' 2>&1
     echo @@volumes; $e volume ls --format '{{json .}}' 2>&1
     echo @@networks; $e network ls --format '{{json .}}' 2>&1
+    echo @@compose
+    if $e compose version >/dev/null 2>&1; then echo "$e compose"
+    elif command -v $e-compose >/dev/null 2>&1; then echo "$e-compose"
+    fi
     exit 0
   fi
 done
@@ -36,6 +40,16 @@ class Container:
     ports: str = ""
     cpu: str = ""
     mem: str = ""
+    labels: dict = field(default_factory=dict)
+
+    @property
+    def project(self) -> str:
+        """The compose project it belongs to ("" when it wasn't started by compose)."""
+        return self.labels.get("com.docker.compose.project", "")
+
+    @property
+    def service(self) -> str:
+        return self.labels.get("com.docker.compose.service", "")
 
     @property
     def running(self) -> bool:
@@ -92,6 +106,7 @@ class Containers:
     items: list[Container] | None = None
     needs_access: bool = False
     error: str = ""
+    compose: str = ""                         # the compose command on the server: "docker compose", "docker-compose" …
     images: list[Image] = field(default_factory=list)
     volumes: list[Volume] = field(default_factory=list)
     networks: list[Network] = field(default_factory=list)
@@ -151,15 +166,36 @@ def parse(text: str) -> Containers:
         result.items.append(Container(
             cid, name, row.get("Image", ""), status, state_of(status, row.get("State", "")),
             row.get("Ports", "") if isinstance(row.get("Ports", ""), str) else "",
-            st.get("CPUPerc", ""), (st.get("MemUsage", "") or "").split(" / ")[0]))
+            st.get("CPUPerc", ""), (st.get("MemUsage", "") or "").split(" / ")[0], parse_labels(row.get("Labels"))))
     rank = {"running": 0, "restarting": 1, "paused": 2}
     result.items.sort(key=lambda c: (rank.get(c.state, 3), c.name))
     result.images = _parse_images(s.get("images", ""), result.items)
+    tool = s.get("compose", "").strip()
+    result.compose = tool if tool in COMPOSE_TOOLS else ""
     result.volumes = [Volume(r.get("Name", ""), r.get("Driver", ""), r.get("Mountpoint", ""))
                       for r in _json_lines(s.get("volumes", "")) if r.get("Name")]
     result.networks = [Network((r.get("ID") or r.get("Id") or "")[:12], r.get("Name", ""), r.get("Driver", ""),
                                r.get("Scope", "")) for r in _json_lines(s.get("networks", "")) if r.get("Name")]
     return result
+
+
+COMPOSE_TOOLS = ("docker compose", "docker-compose", "podman compose", "podman-compose")
+
+
+def parse_labels(value) -> dict:
+    """docker gives "a=1,b=2" (and a value may itself hold commas: compose's list of files), podman a dict."""
+    if isinstance(value, dict):
+        return {str(k): str(v) for k, v in value.items()}
+    out: dict[str, str] = {}
+    last = None
+    for part in str(value or "").split(","):
+        key, sep, val = part.partition("=")
+        if sep and key and " " not in key:
+            out[key] = val
+            last = key
+        elif last is not None:                    # "/srv/app/a.yml,/srv/app/b.yml": the comma was in the value
+            out[last] += "," + part
+    return out
 
 
 def _parse_images(text: str, containers: list[Container]) -> list[Image]:
