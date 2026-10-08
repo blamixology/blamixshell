@@ -2288,19 +2288,102 @@ class DashboardWindow(QWidget):
         self._dk = docker.Containers()
         self._dk_sudo = False
         self.dk_lbl = QLabel("")
+        self.dk_clean = QToolButton()
+        self.dk_clean.setText("Clean up  ▾")
+        self.dk_clean.setPopupMode(QToolButton.InstantPopup)
+        self.dk_clean.setStyleSheet(f"QToolButton {{ border:1px solid {C['border']}; padding:6px 12px; }}")
+        self.dk_clean.setToolTip("Free disk space: stopped containers, unused images, volumes, networks, build cache "
+                                 "(each one asks first)")
+        clean_menu = QMenu(self.dk_clean)
+        clean_menu.aboutToShow.connect(lambda: self._dk_fill_clean(clean_menu))
+        self.dk_clean.setMenu(clean_menu)
+        self.dk_tools = [
+            _btn("gauge", "Disk use", lambda: self._dk_engine_view("Disk use", docker.disk_usage_command),
+                 "What images, containers, volumes and the build cache take, and what could be freed"),
+            _btn("bolt", "Events", lambda: self._dk_engine_view("Events (last hour)", docker.events_command),
+                 "What happened in the last hour: containers that died or were OOM-killed, restarts, pulls"),
+            _btn("help", "Engine info", lambda: self._dk_engine_view("Engine info", docker.info_command),
+                 "Version, storage driver, root folder, warnings"),
+            self.dk_clean]
+        lay.addLayout(_toolbar(self.dk_lbl, "stretch", *self.dk_tools,
+                               _btn("refresh", "", lambda: self.refresh(force=True), "Reload the lists")))
+        self.dk_tabs = QTabWidget()
+        lay.addWidget(self.dk_tabs, 1)
+
+        # containers
+        page = QWidget()
+        pl = QVBoxLayout(page)
+        pl.setContentsMargins(0, 8, 0, 0)
         self.dk_buttons = {
             "start": _btn("bolt", "Start", lambda: self._dk_action("start")),
             "stop": _btn("x", "Stop", lambda: self._dk_action("stop")),
             "restart": _btn("refresh", "Restart", lambda: self._dk_action("restart")),
             "logs": _btn("file", "Logs", self._dk_logs, "The last 300 log lines of the selected container"),
+            "details": _btn("search", "Details", self._dk_details,
+                            "Why it stopped (exit code, out of memory), restarts, health, limits, ports, mounts, "
+                            "environment (secrets hidden) and the full inspect output. Also: double-click"),
+            "top": _btn("gauge", "Processes", self._dk_top, "The processes running inside the selected container"),
+            "shell": _btn("terminal", "Shell", self._dk_shell,
+                          "Types a command into this server's terminal that opens a shell inside the container"),
             "remove": _btn("trash", "Remove", self._dk_remove, "Delete the selected container"),
         }
-        lay.addLayout(_toolbar(self.dk_lbl, "stretch", *self.dk_buttons.values(),
-                               _btn("refresh", "", lambda: self.refresh(force=True), "Reload the list")))
+        pl.addLayout(_toolbar("stretch", *self.dk_buttons.values()))
         self.dk_table = _table(["State", "Name", "Image", "Status", "Ports", "CPU", "Memory"], stretch=4)
         self.dk_table.itemSelectionChanged.connect(self._update_dk_buttons)
-        self.dk_table.doubleClicked.connect(lambda _i: self._dk_logs())
-        lay.addWidget(self.dk_table, 1)
+        self.dk_table.doubleClicked.connect(lambda _i: self._dk_details())
+        pl.addWidget(self.dk_table, 1)
+        self.dk_tabs.addTab(page, "Containers")
+
+        # images
+        page = QWidget()
+        pl = QVBoxLayout(page)
+        pl.setContentsMargins(0, 8, 0, 0)
+        self.dk_img_buttons = {
+            "details": _btn("search", "Details", lambda: self._dk_inspect("image"), "The image's inspect output"),
+            "history": _btn("code", "Layers", self._dk_history, "How the image was built, layer by layer, with sizes"),
+            "pull": _btn("download", "Pull again", self._dk_pull,
+                         "Download this tag again (gets a newer version if there is one; running containers keep "
+                         "the old one until they are re-created)"),
+            "remove": _btn("trash", "Remove", self._dk_remove_image, "Delete the image (not while a container uses it)"),
+        }
+        pl.addLayout(_toolbar("stretch", *self.dk_img_buttons.values()))
+        self.dk_img_table = _table(["Repository", "Tag", "ID", "Size", "Created", "Used by"], stretch=5, sortable=True)
+        self.dk_img_table.itemSelectionChanged.connect(self._update_dk_buttons)
+        self.dk_img_table.doubleClicked.connect(lambda _i: self._dk_inspect("image"))
+        pl.addWidget(self.dk_img_table, 1)
+        self.dk_tabs.addTab(page, "Images")
+
+        # volumes
+        page = QWidget()
+        pl = QVBoxLayout(page)
+        pl.setContentsMargins(0, 8, 0, 0)
+        self.dk_vol_buttons = {
+            "details": _btn("search", "Details", lambda: self._dk_inspect("volume"), "Where its data is, labels"),
+            "remove": _btn("trash", "Remove", self._dk_remove_volume, "Delete the volume and its data"),
+        }
+        pl.addLayout(_toolbar("stretch", *self.dk_vol_buttons.values()))
+        self.dk_vol_table = _table(["Volume", "Driver", "Mount point"], stretch=2, sortable=True)
+        self.dk_vol_table.itemSelectionChanged.connect(self._update_dk_buttons)
+        self.dk_vol_table.doubleClicked.connect(lambda _i: self._dk_inspect("volume"))
+        pl.addWidget(self.dk_vol_table, 1)
+        self.dk_tabs.addTab(page, "Volumes")
+
+        # networks
+        page = QWidget()
+        pl = QVBoxLayout(page)
+        pl.setContentsMargins(0, 8, 0, 0)
+        self.dk_net_buttons = {
+            "details": _btn("search", "Details", lambda: self._dk_inspect("network"),
+                            "Subnet, gateway and the containers attached to it"),
+            "remove": _btn("trash", "Remove", self._dk_remove_network, "Delete the network"),
+        }
+        pl.addLayout(_toolbar("stretch", *self.dk_net_buttons.values()))
+        self.dk_net_table = _table(["Network", "Driver", "Scope", "ID"], stretch=0, sortable=True)
+        self.dk_net_table.itemSelectionChanged.connect(self._update_dk_buttons)
+        self.dk_net_table.doubleClicked.connect(lambda _i: self._dk_inspect("network"))
+        pl.addWidget(self.dk_net_table, 1)
+        self.dk_tabs.addTab(page, "Networks")
+
         self.dk_hint = QLabel("", objectName="Hint", wordWrap=True)
         lay.addWidget(self.dk_hint)
         self._update_dk_buttons()
@@ -2342,13 +2425,16 @@ class DashboardWindow(QWidget):
             t.setItem(i, 4, _item(x.ports or "–", C["muted"]))
             t.setItem(i, 5, _item(x.cpu or "–", None, True))
             t.setItem(i, 6, _item(x.mem or "–", None, True))
+        self._dk_fill_others(c)
         if c.engine == "none":
             self.dk_lbl.setText("No Docker or Podman found")
             self.dk_hint.setText("Looked for the docker and podman commands.")
         elif c.needs_access:
             self.dk_lbl.setText(f"<b>{c.engine}</b>  ·  no access")
             self.dk_hint.setText("This account can't talk to the daemon. Use root, add it to the docker group, or "
-                                 "use an account with sudo.")
+                                 "use an account with sudo." + (f"  ({c.error})" if c.error else "")
+                                 + (" The daemon may not be running: sudo systemctl start docker."
+                                    if "daemon running" in c.error.lower() else ""))
         else:
             run = sum(1 for x in c.items if x.state == "running")
             self.dk_lbl.setText(f"<b>{c.engine}</b>  ·  {run} running, {len(c.items) - run} not running")
@@ -2367,9 +2453,30 @@ class DashboardWindow(QWidget):
             on = x is not None
             if k == "start":
                 on = on and not x.running or (on and x.state == "paused")
-            elif k in ("stop", "restart"):
+            elif k in ("stop", "restart", "top"):
                 on = on and x.running
+            elif k == "shell":
+                on = on and x.state == "running" and bool(self.send_to_terminal)
             b.setEnabled(bool(on))
+        engine_ok = self._dk.engine in ("docker", "podman") and not self._dk.needs_access
+        for b in self.dk_tools:
+            b.setEnabled(engine_ok)
+        img = self._dk_selected_image()
+        for k, b in self.dk_img_buttons.items():
+            b.setEnabled(img is not None and not (k == "pull" and img.dangling))
+        if img is not None and img.used_by:
+            self.dk_img_buttons["remove"].setEnabled(False)
+            self.dk_img_buttons["remove"].setToolTip(f"Used by {', '.join(img.used_by[:5])}: remove those containers "
+                                                     "first")
+        else:
+            self.dk_img_buttons["remove"].setToolTip("Delete the image (not while a container uses it)")
+        for b in self.dk_vol_buttons.values():
+            b.setEnabled(self._dk_selected("vol") is not None)
+        net = self._dk_selected("net")
+        self.dk_net_buttons["details"].setEnabled(net is not None)
+        self.dk_net_buttons["remove"].setEnabled(net is not None and not net.builtin)
+        self.dk_net_buttons["remove"].setToolTip("The engine's own network can't be removed." if net is not None and
+                                                 net.builtin else "Delete the network")
         if x is not None and x.state == "paused":
             self.dk_buttons["start"].setText(" Resume")
         else:
@@ -2394,19 +2501,152 @@ class DashboardWindow(QWidget):
 
     def _dk_logs(self) -> None:
         x = self._selected_container()
-        if not x:
-            return
-        cmd, sudo = docker.logs_command(self._dk.engine, x.id), self._dk_sudo
+        if x:
+            self._dk_view(f"Logs: {x.name}", docker.logs_command(self._dk.engine, x.id))
+
+    def _dk_view(self, title: str, cmd: str, summarize: bool = False, timeout: float = 60) -> None:
+        """Run a read-only command (as yourself, or with sudo when the lists needed it) and show what it printed."""
+        sudo = self._dk_sudo
 
         def work(r: d.Runner):
             if sudo and not self._root:
-                return x.name, d.run_privileged(r, f"sh -c {shlex.quote(cmd)}", self._root, self._sudo_pw, 30).out
-            return x.name, r.run(cmd, timeout=30).out
-        self._job("dklogs", work)
+                res = d.run_privileged(r, f"sh -c {shlex.quote(cmd)}", self._root, self._sudo_pw, timeout)
+            else:
+                res = r.run(cmd, timeout=timeout)
+            text = (res.out + ("\n" + res.err if res.err.strip() else "")).strip()
+            return title, (docker.summarize_inspect(text) if summarize else text) or "(no output)"
+        self._job("dkview", work)
 
-    def _show_dklogs(self, res) -> None:
-        name, text = res
-        _ViewDialog(f"Logs: {name}", text, self).exec()
+    def _show_dkview(self, res) -> None:
+        title, text = res
+        _ViewDialog(title, text, self).exec()
+
+    def _dk_engine_view(self, title: str, make) -> None:
+        if self._dk.engine in ("docker", "podman"):
+            self._dk_view(title, make(self._dk.engine), timeout=120)
+
+    def _dk_details(self) -> None:
+        x = self._selected_container()
+        if x:
+            self._dk_view(f"Container: {x.name}", docker.inspect_command(self._dk.engine, "container", x.id), True)
+
+    def _dk_top(self) -> None:
+        x = self._selected_container()
+        if x:
+            self._dk_view(f"Processes in {x.name}", docker.top_command(self._dk.engine, x.id))
+
+    def _dk_shell(self) -> None:
+        x = self._selected_container()
+        if not x or not self.send_to_terminal:
+            return
+        self.send_to_terminal(docker.shell_command(self._dk.engine, x.name or x.id, sudo=self._dk_sudo and not self._root))
+        self.status.setText(f"Typed into the terminal: press Enter there for a shell inside {x.name} (exit leaves it).")
+
+    # ---- images, volumes, networks ----
+    def _dk_fill_others(self, c) -> None:
+        t = self.dk_img_table
+        with _Filling(t):
+            t.setRowCount(len(c.images))
+            for i, img in enumerate(c.images):
+                faint = C["muted"] if img.dangling else None
+                t.setItem(i, 0, _item(img.repository, faint, data=img.id))
+                t.setItem(i, 1, _item(img.tag, C["muted"]))
+                t.setItem(i, 2, _item(img.id, C["muted"]))
+                t.setItem(i, 3, _item(img.size, None, True))
+                t.setItem(i, 4, _item(img.created, C["muted"]))
+                t.setItem(i, 5, _item(", ".join(img.used_by) or "–", C["ok"] if img.used_by else C["muted"]))
+        t = self.dk_vol_table
+        with _Filling(t):
+            t.setRowCount(len(c.volumes))
+            for i, v in enumerate(c.volumes):
+                t.setItem(i, 0, _item(v.name, None, data=v.name))
+                t.setItem(i, 1, _item(v.driver, C["muted"]))
+                t.setItem(i, 2, _item(v.mountpoint or "–", C["muted"]))
+        t = self.dk_net_table
+        with _Filling(t):
+            t.setRowCount(len(c.networks))
+            for i, n in enumerate(c.networks):
+                t.setItem(i, 0, _item(n.name, C["muted"] if n.builtin else None, data=n.name))
+                t.setItem(i, 1, _item(n.driver, C["muted"]))
+                t.setItem(i, 2, _item(n.scope, C["muted"]))
+                t.setItem(i, 3, _item(n.id, C["muted"]))
+        dangling = sum(1 for i in c.images if i.dangling)
+        self.dk_tabs.setTabText(0, f"Containers ({len(c.items)})")
+        self.dk_tabs.setTabText(1, f"Images ({len(c.images)})" + (f", {dangling} dangling" if dangling else ""))
+        self.dk_tabs.setTabText(2, f"Volumes ({len(c.volumes)})")
+        self.dk_tabs.setTabText(3, f"Networks ({len(c.networks)})")
+
+    def _dk_selected(self, which: str):
+        table, items, key = {"img": (self.dk_img_table, self._dk.images, "id"),
+                             "vol": (self.dk_vol_table, self._dk.volumes, "name"),
+                             "net": (self.dk_net_table, self._dk.networks, "name")}[which]
+        value = self._selected(table)
+        return next((x for x in items if getattr(x, key) == value), None) if value else None
+
+    def _dk_selected_image(self):
+        return self._dk_selected("img")
+
+    def _dk_inspect(self, kind: str) -> None:
+        x = self._dk_selected({"image": "img", "volume": "vol", "network": "net"}[kind])
+        if x is None:
+            return
+        target = x.ref if kind == "image" else x.name
+        self._dk_view(f"{kind.capitalize()}: {target}", docker.inspect_command(self._dk.engine, kind, target), True)
+
+    def _dk_history(self) -> None:
+        img = self._dk_selected_image()
+        if img:
+            self._dk_view(f"Layers of {img.ref}", docker.history_command(self._dk.engine, img.ref))
+
+    def _dk_pull(self) -> None:
+        img = self._dk_selected_image()
+        if not img:
+            return
+        try:
+            cmd = docker.pull_command(self._dk.engine, img.ref)
+        except ValueError as e:
+            self.status.setText(str(e))
+            return
+        self._privileged(f"Pull {img.ref}", cmd, then="docker", allow_plain=True, timeout=900)
+
+    def _dk_remove_image(self) -> None:
+        img = self._dk_selected_image()
+        if not img or img.used_by:
+            return
+        self._privileged(f"Remove image {img.ref}", docker.remove_image_command(self._dk.engine, img.ref),
+                         then="docker", allow_plain=True)
+
+    def _dk_remove_volume(self) -> None:
+        v = self._dk_selected("vol")
+        if v:
+            self._privileged(f"Remove volume {v.name} (its data is deleted)",
+                             docker.remove_volume_command(self._dk.engine, v.name), then="docker", allow_plain=True)
+
+    def _dk_remove_network(self) -> None:
+        n = self._dk_selected("net")
+        if not n:
+            return
+        try:
+            cmd = docker.remove_network_command(self._dk.engine, n.name)
+        except ValueError as e:
+            self.status.setText(str(e))
+            return
+        self._privileged(f"Remove network {n.name}", cmd, then="docker", allow_plain=True)
+
+    def _dk_fill_clean(self, menu: QMenu) -> None:
+        menu.clear()
+        engine = self._dk.engine
+        for what, (_cmd, label) in docker.PRUNE.items():
+            if what == "build-cache" and engine != "docker":
+                continue
+            menu.addAction(label + "…", lambda w=what, lb=label: self._dk_prune(w, lb))
+
+    def _dk_prune(self, what: str, label: str) -> None:
+        try:
+            cmd = docker.prune_command(self._dk.engine, what)
+        except ValueError:
+            return
+        self._privileged(label, cmd, then="docker", allow_plain=True, timeout=600)
 
     # ---- timers ----
     def _build_timers(self) -> None:

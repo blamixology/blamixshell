@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 READ_SCRIPT = r"""
 for e in docker podman; do
@@ -13,6 +13,9 @@ for e in docker podman; do
     echo @@engine; echo $e
     echo @@ps; $e ps -a --format '{{json .}}' 2>&1
     echo @@stats; $e stats --no-stream --format '{{json .}}' 2>&1
+    echo @@images; $e images --format '{{json .}}' 2>&1
+    echo @@volumes; $e volume ls --format '{{json .}}' 2>&1
+    echo @@networks; $e network ls --format '{{json .}}' 2>&1
     exit 0
   fi
 done
@@ -40,11 +43,58 @@ class Container:
 
 
 @dataclass
+class Image:
+    id: str
+    repository: str
+    tag: str
+    size: str = ""
+    created: str = ""
+    used_by: list[str] = field(default_factory=list)      # names of the containers made from it
+
+    @property
+    def ref(self) -> str:
+        """What to call it in commands: repo:tag, or the ID for an untagged (dangling) image."""
+        if self.repository and self.repository != "<none>" and self.tag and self.tag != "<none>":
+            return f"{self.repository}:{self.tag}"
+        return self.id
+
+    @property
+    def dangling(self) -> bool:
+        return self.repository in ("", "<none>")
+
+
+@dataclass
+class Volume:
+    name: str
+    driver: str = ""
+    mountpoint: str = ""
+
+
+@dataclass
+class Network:
+    id: str
+    name: str
+    driver: str = ""
+    scope: str = ""
+
+    @property
+    def builtin(self) -> bool:
+        """The engine's own networks can't (and mustn't) be removed."""
+        return self.name in BUILTIN_NETWORKS
+
+
+BUILTIN_NETWORKS = ("bridge", "host", "none", "podman")
+
+
+@dataclass
 class Containers:
     engine: str = "none"
     items: list[Container] | None = None
     needs_access: bool = False
     error: str = ""
+    images: list[Image] = field(default_factory=list)
+    volumes: list[Volume] = field(default_factory=list)
+    networks: list[Network] = field(default_factory=list)
 
     def __post_init__(self):
         if self.items is None:
@@ -104,7 +154,32 @@ def parse(text: str) -> Containers:
             st.get("CPUPerc", ""), (st.get("MemUsage", "") or "").split(" / ")[0]))
     rank = {"running": 0, "restarting": 1, "paused": 2}
     result.items.sort(key=lambda c: (rank.get(c.state, 3), c.name))
+    result.images = _parse_images(s.get("images", ""), result.items)
+    result.volumes = [Volume(r.get("Name", ""), r.get("Driver", ""), r.get("Mountpoint", ""))
+                      for r in _json_lines(s.get("volumes", "")) if r.get("Name")]
+    result.networks = [Network((r.get("ID") or r.get("Id") or "")[:12], r.get("Name", ""), r.get("Driver", ""),
+                               r.get("Scope", "")) for r in _json_lines(s.get("networks", "")) if r.get("Name")]
     return result
+
+
+def _parse_images(text: str, containers: list[Container]) -> list[Image]:
+    out = []
+    for r in _json_lines(text):
+        iid = (r.get("ID") or r.get("Id") or "").replace("sha256:", "")[:12]
+        repo = r.get("Repository", "")
+        tag = r.get("Tag", "")
+        if not repo and isinstance(r.get("Names"), list) and r["Names"]:          # podman's other shape
+            repo, _, tag = r["Names"][0].rpartition(":")
+        size = r.get("Size", "")
+        if isinstance(size, (int, float)):                                        # podman: bytes
+            from .dashboard import human_kb
+            size = human_kb(size / 1024)
+        img = Image(iid, repo or "<none>", tag or "<none>", str(size), r.get("CreatedSince") or r.get("CreatedAt", ""))
+        names = {img.ref, iid, f"{repo}:{tag}"} | ({repo} if tag == "latest" else set())
+        img.used_by = [c.name for c in containers if c.image in names or (iid and c.image.startswith(iid))]
+        out.append(img)
+    out.sort(key=lambda i: (i.dangling, i.repository.lower(), i.tag))
+    return out
 
 
 # ---------------------------------------------------------------- commands
@@ -121,3 +196,193 @@ def action_command(engine: str, action: str, target: str, force: bool = False) -
 
 def logs_command(engine: str, target: str, lines: int = 300) -> str:
     return f"{engine} logs --tail {int(lines)} {shlex.quote(target)} 2>&1"
+
+
+# ---------------------------------------------------------------- troubleshooting (all read-only)
+KINDS = ("container", "image", "volume", "network")
+
+
+def _check(engine: str) -> None:
+    if engine not in ("docker", "podman"):
+        raise ValueError(engine)
+
+
+def inspect_command(engine: str, kind: str, target: str) -> str:
+    _check(engine)
+    if kind not in KINDS:
+        raise ValueError(kind)
+    return f"{engine} {kind} inspect {shlex.quote(target)} 2>&1"
+
+
+def top_command(engine: str, target: str) -> str:
+    """The processes running inside a container."""
+    _check(engine)
+    return f"{engine} top {shlex.quote(target)} 2>&1"
+
+
+def history_command(engine: str, image: str) -> str:
+    """How an image was built, layer by layer (with each layer's size)."""
+    _check(engine)
+    return f"{engine} history {shlex.quote(image)} 2>&1"
+
+
+def info_command(engine: str) -> str:
+    _check(engine)
+    return f"{engine} info 2>&1"
+
+
+def disk_usage_command(engine: str) -> str:
+    """What images, containers, volumes and the build cache take, and how much of it could be freed."""
+    _check(engine)
+    return f"{engine} system df -v 2>&1"
+
+
+def events_command(engine: str, minutes: int = 60) -> str:
+    """What happened lately: containers that died, were killed (OOM), restarted, images pulled ..."""
+    _check(engine)
+    m = max(1, int(minutes))
+    if engine == "podman":
+        return f"podman events --since {m}m --stream=false 2>&1 | tail -n 500"
+    return f"docker events --since {m}m --until \"$(date +%s)\" 2>&1 | tail -n 500"
+
+
+def shell_command(engine: str, target: str, sudo: bool = False) -> str:
+    """Typed into the terminal (not run from the dashboard): an interactive shell inside the container, bash when
+    it has one."""
+    _check(engine)
+    inner = shlex.quote("command -v bash >/dev/null 2>&1 && exec bash || exec sh")
+    return f"{'sudo ' if sudo else ''}{engine} exec -it {shlex.quote(target)} sh -c {inner}"
+
+
+# ---------------------------------------------------------------- cleaning up (each one asks first)
+PRUNE = {
+    "containers": ("container prune -f", "Delete all stopped containers"),
+    "images": ("image prune -f", "Delete dangling images (untagged, used by no container)"),
+    "unused-images": ("image prune -a -f", "Delete every image no container uses (they are downloaded again "
+                                            "when needed)"),
+    "volumes": ("volume prune -f", "Delete volumes no container uses (their data is lost)"),
+    "networks": ("network prune -f", "Delete networks no container uses"),
+    "build-cache": ("builder prune -f", "Delete the build cache"),
+}
+
+
+def prune_command(engine: str, what: str) -> str:
+    _check(engine)
+    if what not in PRUNE or (what == "build-cache" and engine != "docker"):
+        raise ValueError(what)
+    return f"{engine} {PRUNE[what][0]}"
+
+
+def remove_image_command(engine: str, image: str, force: bool = False) -> str:
+    _check(engine)
+    return f"{engine} rmi {'-f ' if force else ''}{shlex.quote(image)}"
+
+
+def pull_command(engine: str, image: str) -> str:
+    """Download the image again (a newer version of the same tag, if there is one)."""
+    _check(engine)
+    if image.startswith("<none>") or not re.fullmatch(r"[\w.\-/:@]+", image):
+        raise ValueError("Only a named image (repository:tag) can be pulled.")
+    return f"{engine} pull {shlex.quote(image)} 2>&1"
+
+
+def remove_volume_command(engine: str, name: str) -> str:
+    _check(engine)
+    return f"{engine} volume rm {shlex.quote(name)}"
+
+
+def remove_network_command(engine: str, name: str) -> str:
+    _check(engine)
+    if name in BUILTIN_NETWORKS:
+        raise ValueError(f"{name} is the engine's own network and can't be removed.")
+    return f"{engine} network rm {shlex.quote(name)}"
+
+
+# ---------------------------------------------------------------- `inspect`, made readable
+_SECRET = re.compile(r"pass|secret|token|key|pwd|auth|credential", re.I)
+
+EXIT_CODES = {0: "finished normally", 1: "the program reported an error", 125: "docker couldn't run it",
+              126: "the command can't be executed", 127: "the command wasn't found",
+              137: "killed (SIGKILL: out of memory, or docker kill)", 139: "crashed (segmentation fault)",
+              143: "stopped (SIGTERM)"}
+
+
+def _mask_env(item: str) -> str:
+    name, sep, value = item.partition("=")
+    return f"{name}=•••• (hidden)" if sep and value and _SECRET.search(name) else item
+
+
+def summarize_inspect(text: str) -> str:
+    """The things you look for when a container misbehaves (why it stopped, OOM, restarts, health, limits, ports,
+    networks, mounts), as plain text, followed by the full JSON. Environment values whose names look like secrets
+    are hidden in both."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return text
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, dict):                # nothing found: docker's own message says why
+        return text
+    if "State" not in data:                       # an image, volume or network: the JSON, indented
+        return json.dumps(data, indent=2, ensure_ascii=False)
+    st = data.get("State") or {}
+    cfg = data.get("Config") or {}
+    host = data.get("HostConfig") or {}
+    out: list[str] = []
+
+    def row(label, value):
+        if value not in (None, "", [], {}):
+            out.append(f"{label:<18}{value}")
+    row("Name", (data.get("Name") or "").lstrip("/"))
+    row("Image", cfg.get("Image"))
+    status = st.get("Status", "")
+    row("State", status + ("  (OOM-killed: it ran out of memory)" if st.get("OOMKilled") else ""))
+    if status in ("exited", "dead"):
+        code = st.get("ExitCode")
+        meaning = EXIT_CODES.get(code, "")
+        row("Exit code", f"{code}" + (f"  ({meaning})" if meaning else ""))
+    row("Error", st.get("Error"))
+    row("Started", st.get("StartedAt"))
+    if status != "running":
+        row("Finished", st.get("FinishedAt"))
+    row("Restarts", data.get("RestartCount"))
+    row("Restart policy", (host.get("RestartPolicy") or {}).get("Name") or "no")
+    health = st.get("Health") or {}
+    if health:
+        row("Health", f"{health.get('Status')} ({health.get('FailingStreak', 0)} failing in a row)")
+        logs = health.get("Log") or []
+        if logs:
+            last = logs[-1]
+            row("Last health check", f"exit {last.get('ExitCode')}: {(last.get('Output') or '').strip()[:200]}")
+    cmd = (cfg.get("Entrypoint") or []) + (cfg.get("Cmd") or [])
+    row("Command", " ".join(shlex.quote(x) for x in cmd))
+    row("Working folder", cfg.get("WorkingDir"))
+    row("User", cfg.get("User"))
+    mem = host.get("Memory") or 0
+    row("Memory limit", f"{mem // (1024 * 1024)} MB" if mem else "none")
+    cpus = (host.get("NanoCpus") or 0) / 1e9
+    row("CPU limit", f"{cpus:g} CPUs" if cpus else "none")
+    net = data.get("NetworkSettings") or {}
+    published = [f"{(b or {}).get('HostIp') or '0.0.0.0'}:{(b or {}).get('HostPort')} → {p}"
+                 for p, binds in (net.get("Ports") or {}).items() for b in (binds or [])]
+    row("Published ports", ", ".join(published) or "none")
+    row("Networks", ", ".join(f"{n} ({(v or {}).get('IPAddress') or 'no IP'})"
+                              for n, v in (net.get("Networks") or {}).items()))
+    mounts = data.get("Mounts") or []
+    if mounts:
+        out.append("Mounts")
+        for m in mounts:
+            src = m.get("Name") or m.get("Source")
+            out.append(f"  {m.get('Type', '')} {src} → {m.get('Destination')}"
+                       + ("" if m.get("RW", True) else " (read-only)"))
+    env = cfg.get("Env") or []
+    if env:
+        out.append("Environment")
+        out += [f"  {_mask_env(e)}" for e in env]
+    raw = json.dumps(data, indent=2, ensure_ascii=False)
+    for e in env:                                 # the JSON below must not show what the summary hid
+        masked = _mask_env(e)
+        if masked != e:
+            raw = raw.replace(json.dumps(e, ensure_ascii=False), json.dumps(masked, ensure_ascii=False))
+    return "\n".join(out) + "\n\n──── full inspect output ────\n" + raw
