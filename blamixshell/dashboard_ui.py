@@ -2400,7 +2400,7 @@ class DashboardWindow(QWidget):
         self.dk_cmp_table = _table(["Project", "State", "Services", "Folder", "Compose files"], stretch=4)
         self.dk_cmp_table.itemSelectionChanged.connect(self._cmp_selected_changed)
         self.dk_cmp_table.doubleClicked.connect(lambda _i: self._cmp_view("ps"))
-        pl.addWidget(self.dk_cmp_table, 2)
+        pl.addWidget(self.dk_cmp_table, 1)          # usually a few projects with more services: an even split
         self.dk_svc_buttons = {
             "logs": _btn("file", "Logs", lambda: self._cmp_view("logs", service=True), "This service's log"),
             "restart": _btn("refresh", "Restart", lambda: self._cmp_action("restart", service=True)),

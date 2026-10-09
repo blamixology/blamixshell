@@ -9,16 +9,47 @@
 
 > Formerly **ShellDeck**: renamed in 1.2. Your data is carried over automatically (see [Where data lives](#where-data-lives)).
 
-A modern SSH client for **Windows, macOS and Linux**, written in Python. Think PuTTY, plus a proper server manager, tabs and split panes, an SFTP browser, and an encrypted vault. It comes in three front-ends that share one vault:
+A modern SSH client for **Windows, macOS and Linux**, written in Python. Think PuTTY, plus a proper server manager, tabs and split panes, files with a built-in editor, an agentless server dashboard (services, logs, updates, Docker and Compose, firewall, security checks), and an encrypted vault. It comes in three front-ends that share one vault:
 
 | | What | Runs on |
 |---|---|---|
-| **Desktop app** | Windows/macOS-style GUI with xterm.js terminals, splits and SFTP | Windows 10/11, macOS 12+, Ubuntu 22.04+ (and other desktop Linux) |
-| **TUI** | full-screen terminal UI: browse, search, connect, run on a group | any Linux/macOS terminal, including over SSH on a headless box |
+| **Desktop app** | Windows/macOS-style GUI with xterm.js terminals, splits, files with a built-in editor, and a server dashboard (services, logs, Docker / Compose, firewall, security …) | Windows 10/11, macOS 12+, Ubuntu 22.04+ (and other desktop Linux) |
+| **TUI** | full-screen terminal UI: browse, search, connect, run on a group, and the server dashboard (`blamixshell dash`) | any Linux/macOS terminal, including over SSH on a headless box |
 | **CLI** | `blamixshell ls / connect / exec / add …` for scripts and quick use | Linux, macOS (Windows: everything except interactive `connect`) |
 
 ![desktop](docs/desktop.png)
+
+### Screenshots
+
+<table>
+<tr>
+<td width="50%"><a href="docs/screens/dashboard-overview.png"><img src="docs/screens/dashboard-overview.png" alt="Server dashboard: overview"></a><br><b>Server dashboard</b>: live CPU, memory, load and disks</td>
+<td width="50%"><a href="docs/screens/dashboard-services.png"><img src="docs/screens/dashboard-services.png" alt="Services"></a><br><b>Services</b>: failed first, actions with a confirmation</td>
+</tr>
+<tr>
+<td><a href="docs/screens/dashboard-docker.png"><img src="docs/screens/dashboard-docker.png" alt="Docker containers"></a><br><b>Docker</b>: containers with CPU / RAM totals, details, logs, shell</td>
+<td><a href="docs/screens/dashboard-compose.png"><img src="docs/screens/dashboard-compose.png" alt="Docker Compose"></a><br><b>Compose</b>: projects and services, update, down, checked edits</td>
+</tr>
+<tr>
+<td><a href="docs/screens/dashboard-logs.png"><img src="docs/screens/dashboard-logs.png" alt="Logs"></a><br><b>Logs</b>: errors and warnings highlighted, filters, next error</td>
+<td><a href="docs/screens/dashboard-security.png"><img src="docs/screens/dashboard-security.png" alt="Security checks"></a><br><b>Security checks</b>: problems first, with advice and details</td>
+</tr>
+<tr>
+<td><a href="docs/screens/dashboard-updates.png"><img src="docs/screens/dashboard-updates.png" alt="Updates and packages"></a><br><b>Updates and packages</b>: pending updates, find / install / remove</td>
+<td><a href="docs/screens/dashboard-firewall.png"><img src="docs/screens/dashboard-firewall.png" alt="Firewall"></a><br><b>Firewall</b>: ufw, firewalld, iptables, nftables</td>
+</tr>
+<tr>
+<td><a href="docs/screens/editor.png"><img src="docs/screens/editor.png" alt="Built-in editor"></a><br><b>Built-in editor</b>: highlighting, find / replace, save to the server (sudo when needed)</td>
+<td><a href="docs/screens/dash-docker.svg"><img src="docs/screens/dash-docker.svg" alt="Terminal dashboard"></a><br><b>Terminal dashboard</b> (<code>blamixshell dash</code>): the same tabs over SSH on a headless box</td>
+</tr>
+</table>
+
+<details><summary>Terminal UI</summary>
+
 ![tui](docs/tui.png)
+</details>
+
+Screenshots use demo data; `python docs/make_screenshots.py` makes them again.
 
 ## Install / run
 
@@ -71,39 +102,69 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
 
 ## Features
 
+### Connecting and terminals
 - **Server manager:** nested groups (`Prod/EU`), tags, colors and favorites. Drag and drop, search, or filter with `tag:prod`. A green dot marks servers with a live session. **Connect to all** opens every server in a group, tiled.
-- **Real terminal:** xterm.js with 256 colors and truecolor. vim, htop, tmux and mc work. Clickable links, find in scrollback, and 4 color themes.
-- **Tabs and splits:** split right or down without limit, with the same server or another one (the arrow next to the split buttons, or right-click a server → Connect in split). **Rotate** turns a side-by-side split into a stacked one and back. Each pane shows its connection state and an uptime clock.
+- **Real terminal:** xterm.js with 256 colors and truecolor. vim, htop, tmux and mc work. Clickable links, find in scrollback, and color themes; the whole interface has themes too (Midnight, Graphite, Nord, Solarized Dark, Light, High contrast), with font and size choices that preview live.
+- **Tabs and splits:** split right or down without limit, with the same server or another one (the arrow next to the split buttons, or right-click a server → Connect in split). **Rotate** turns a side-by-side split into a stacked one and back. Each pane shows its connection state and an uptime clock. **Focus mode** (`Ctrl+Shift+H`) hides everything but the tabs and the terminal.
 - **Broadcast:** send your typing, or a snippet, to every pane in a tab.
-- **SFTP panel:** drag and drop to upload. Download, rename, delete (recursive), create folders.
-- **Built-in editor** (double-click a file; the same editor as BlamixFiles): a window with a tab per file, syntax highlighting for 500+ languages (nginx, Apache, systemd, `.env` recognised), line numbers, find / replace (regex), go to line, toggle comment, auto-indent. **Ctrl+S** saves to the server: it first checks that nobody changed the file meanwhile (and shows the differences if they did), writes a copy and renames it over the original, and keeps the encoding, line endings and permissions. Files only root may read or change open and save **with sudo** after asking (the file keeps its owner and mode). Large files open read-only, binary ones not at all. Right-click → *Open in another app* still opens it in your own editor, uploading every save.
-- **Encrypted vault:** one AES-256-GCM file; the key comes from your master password via scrypt. The same file works on every OS and in every front-end.
-- **Host key verification:** you confirm the fingerprint on first connect. If a key changes, the connection is refused unless you explicitly replace the key (MITM protection).
 - **Auth options:** password (or ask each time), private key (a file or a pasted key, with passphrase), or SSH agent (Pageant, Windows OpenSSH, `ssh-agent`).
 - **2FA / verification codes:** servers that ask for a code (Google Authenticator, Duo, PAM OTP) or any other keyboard-interactive prompt get a sign-in dialog. A saved password is filled in automatically, so you only type the code. Works for jump hosts too.
-- **Tunnels (port forwarding):** per-server local (`-L`), remote (`-R`) and SOCKS (`-D`) tunnels that start with the connection. The pane header shows how many are up and how many connections are open; click it to copy a tunnel's address. If a server is open in several panes, its tunnels run once.
-- **Session restore:** your tabs and splits come back when you restart. The active tab connects right away; the others connect when you open them. Only the layout is saved (server ids), never passwords. Turn it off in Settings → Startup.
 - **Jump hosts / bastions:** any saved server can be a jump host, including chains.
-- **Agent forwarding (`ssh -A`):** per server (Advanced tab), off by default. The server can use the keys in your local agent (Pageant, the Windows OpenSSH agent or `ssh-agent`) for `git pull`, `scp` or the next hop, without copying keys. Only turn it on for servers you trust. `ForwardAgent yes` is picked up when importing `~/.ssh/config`.
-- **Server dashboard (agentless):** open it from the gauge button on a terminal, the toolbar, Ctrl+Shift+I, or right-click a server → Dashboard. It uses the connection you already have and standard commands, so nothing is installed on the server:
-  - **Overview:** OS, kernel, uptime, live CPU / memory / load / swap with a short history, disk usage bars, failed services.
-  - **Services:** systemd (any version, including CentOS 7), SysV init scripts (`service` / `chkconfig` / `update-rc.d`), OpenRC and supervisord. Filter, failed only, start / stop / restart / enable / disable (always confirmed, showing the exact command), status and logs per service. Without journald, logs come from `/var/log/messages` or `/var/log/syslog`.
-  - **Processes** (filter, sort by CPU or memory, end or force-kill), **Logs** (journal by service and priority, follow mode; errors in red and warnings in amber, "errors only" or "warnings and errors" for any log, a few lines around each match like `grep -C`, and *Next error*), **Ports** (listening TCP/UDP), **Updates** (pending packages for apt, dnf, yum, zypper, pacman, apk; the upgrade command is typed into your terminal for you to review, never run silently; *Find a package* searches the server's package lists, and with *Allow installing updates and packages* on in Settings installs or removes one after a confirmation that lists what else a removal takes with it; packages the system or your SSH access need are never removed from here) and **Users** (login accounts, who is logged in).
-  - **More tabs (the More ▾ menu, grouped):** **Users** (add, delete, lock, groups, SSH keys), **System** (change the time zone from a searchable list of the zones the server knows, with each one's offset: the *Time zone…* button or a double-click on its row; clock drift and NTP, reboot or shut down now or later, "reboot required", add or remove a swap file), **Storage** (filesystems with inode use, biggest folders), **Mounts** (`/etc/fstab` against what is mounted; mount, unmount, check the fstab), **Docker / Podman** (containers, **Compose projects** (found from their containers; up, stop, restart, update = pull and re-create, down, logs, status, check config, per-service logs / restart / re-create, and edit the compose files: saved only after compose accepts them, with a .bak copy, then applied if you want), images, volumes and networks; *Details* explains why a container stopped (exit code, out of memory, restarts, health, limits, ports, mounts; secret-looking environment values hidden), *Processes*, *Logs*, *Shell* (types `docker exec -it …` into your terminal), image layers, pull again, *Disk use*, *Events* of the last hour, *Engine info*, and *Clean up* for stopped containers, unused images, volumes, networks and the build cache, each one confirmed), **Ports**, **Network** (interfaces, addresses, routes, DNS, connection checks from the server), **Firewall** (firewalld / ufw), **Security** (quick checks), **Cron** and **Timers** (forms, no cron syntax needed). The same tabs, sortable and filterable, work in the terminal: see `blamixshell dash` below.
-  - Actions run as root only when needed: directly as root, with passwordless sudo, or with a sudo password you type for that dashboard only; it's sent over the SSH connection and never saved.
-- **Command log:** who ran what, where, and when: one line per command (time, your user, the server and login, the prompt with its folder, the command as shown on screen, so history recall and tab completion are included), plus the dashboard's actions and `blamixshell exec`. A file a day in `logs/commands`, tab-separated so it greps and imports cleanly. Turn it on for every server (**Settings → Logging**) or only some (the server's **Advanced** tab). Password prompts and full-screen programs (vim, htop) are skipped.
-- **Session recordings:** the **●** button on a terminal records everything it shows to `logs/sessions/<server>/<date-time>.log`, as clean text (default) or raw (replay with `cat` / `less -R`), optionally time-stamped per line. Servers can record every session automatically. Old logs can be deleted after N days. Logs are plain files, so whatever a command printed is in a recording.
-- **Health strip:** CPU, memory, root disk and load of the active terminal's server in the status bar, refreshed every few seconds (amber/red when high). Click it for the dashboard; right-click it (or *Alerts* in the dashboard, or the command palette) for the **alerts history**: when a server crossed disk / memory / swap / load limits or a service failed, and for how long. Kept on this computer for 30 days.
-- **Colors for production:** give a server or a whole group a color (right-click a group → Color). Its tab, pane header and terminal background get tinted, so production looks different at a glance. The terminal tint can be turned off in Settings.
-- **Backups and sync:** one encrypted backup of the vault a day (the last 20 are kept), plus Back up now, Export, Import (adds servers, never overwrites), Restore a backup, all in Settings → Vault & backups. To use the same servers on several computers, move the vault into a synced folder (OneDrive, Dropbox, Syncthing); edits from both computers are merged, and changes show up as soon as you switch back to the window.
-- **AWS Systems Manager (SSM):** reach EC2 instances without an open SSH port or a bastion. It uses your AWS CLI v2 profiles and AWS's Session Manager plugin.
-  - **SSH over SSM:** a normal SSH connection carried by Session Manager (like `ProxyCommand aws ssm start-session …`). Files, tunnels and the dashboard work as on any server.
-  - **EC2 Instance Connect (optional):** each connection pushes a one-time key (valid 60 s) with `ec2-instance-connect send-ssh-public-key`. No keys or passwords live on the instance.
-  - **SSM shell:** Session Manager's own shell, for instances without SSH (and Windows instances, which get PowerShell). Terminal only.
-  - **AWS SSO:** when the SSO session has expired, BlamixShell offers to sign in (`aws sso login`, in your browser) and reconnects. Panes of the same profile share one sign-in. There's also **+ → AWS SSO sign-in…**.
-  - **Import from AWS:** pick a profile and region to list the instances Session Manager can reach (Name tag, platform, agent status), then add them as a group (`AWS/<profile>/<region>`). Importing again updates existing entries instead of duplicating them.
-- **Imports:** PuTTY sessions (Windows) and `~/.ssh/config`, including `ProxyJump` and `LocalForward` / `RemoteForward` / `DynamicForward`.
-- **Snippets:** saved commands, one click away.
+- **Tunnels (port forwarding):** per-server local (`-L`), remote (`-R`) and SOCKS (`-D`) tunnels that start with the connection. The pane header shows how many are up and how many connections are open; click it to copy a tunnel's address. If a server is open in several panes, its tunnels run once.
+- **Agent forwarding (`ssh -A`):** per server (Advanced tab), off by default. Only turn it on for servers you trust. `ForwardAgent yes` is picked up when importing `~/.ssh/config`.
+- **Host key verification:** you confirm the fingerprint on first connect. If a key changes, the connection is refused unless you explicitly replace the key (MITM protection).
+- **Session restore:** your tabs and splits come back when you restart. The active tab connects right away; the others connect when you open them. Only the layout is saved (server ids), never passwords.
+- **Open from the command line:** `blamixshell gui --connect web-1` (or `user@host:port`, `--key`, `--jump`; also `BlamixShell.exe --connect …`). An open BlamixShell takes the request instead of starting a second window; a new address opens the New server form filled in.
+- **AWS Systems Manager (SSM):** reach EC2 instances without an open SSH port or a bastion, through your AWS CLI v2 profiles and the Session Manager plugin.
+  - **SSH over SSM:** a normal SSH connection carried by Session Manager. Files, tunnels and the dashboard work as on any server.
+  - **EC2 Instance Connect (optional):** each connection pushes a one-time key (valid 60 s). No keys or passwords live on the instance.
+  - **SSM shell:** Session Manager's own shell, for instances without SSH (and Windows instances, which get PowerShell).
+  - **AWS SSO:** when the SSO session has expired, BlamixShell offers to sign in (`aws sso login`) and reconnects. Panes of the same profile share one sign-in.
+  - **Import from AWS:** pick a profile and region to list the instances Session Manager can reach, then add them as a group (`AWS/<profile>/<region>`). Importing again updates existing entries.
+- **Imports and snippets:** PuTTY sessions (Windows) and `~/.ssh/config` (with `ProxyJump` and forwards); saved commands one click away.
+
+### Files and the built-in editor
+- **Files panel (SFTP):** drag and drop to upload. Download, rename, delete (recursive), create folders.
+- **Built-in editor** (double-click a file; the same editor as BlamixFiles): a window with a tab per file, syntax highlighting for 500+ languages (nginx, Apache, systemd and `.env` recognised), line numbers, find / replace (regex), go to line, toggle comment, auto-indent.
+  - **Ctrl+S** saves to the server. It first checks that nobody changed the file meanwhile (and shows the differences if they did), then writes a copy and renames it over the original. The encoding, line endings and permissions stay as they were.
+  - Files only root may read or change open and save **with sudo** after asking; the file keeps its owner and mode.
+  - Large files open read-only, binary ones not at all. Right-click → *Open in another app* opens a file in your own editor instead, uploading every save.
+
+### Server dashboard (agentless)
+Open it from the gauge button on a terminal, the toolbar, `Ctrl+Shift+I`, or right-click a server → Dashboard. It uses the connection you already have and standard commands, so nothing is installed on the server. Everything that changes the server asks first and shows the exact command; root is used only when needed (directly as root, passwordless sudo, or a sudo password you type for that dashboard only, never saved). If the connection drops, or after a reboot you started, it reconnects by itself.
+
+- **Overview:** OS, kernel, uptime, live CPU / memory / load / swap with a short history, disk bars, failed services.
+- **Services:** systemd (any version, including CentOS 7), SysV init scripts, OpenRC and supervisord. Filter, failed only, start / stop / restart / enable / disable, status, logs, the unit file, and a form for a new systemd service.
+- **Processes:** filter, sort by CPU or memory, end or force-kill.
+- **Logs:** the journal by service and priority (or `/var/log/messages` / `syslog` without journald), follow mode, errors in red and warnings in amber, "errors only" or "warnings and errors" for any log, a few lines around each match (like `grep -C`), *Next error*, and saved views.
+- **Updates:** pending packages for apt, dnf, yum, zypper, pacman and apk. The upgrade command can be typed into your terminal for you to review, or (opt-in in Settings) installed from the dashboard. *Find a package* searches the server's package lists; install or remove one after a confirmation that lists what else a removal takes with it. Packages the system or your SSH access need are never removed from here.
+- **Users:** add, delete, lock / unlock, groups, SSH keys (`authorized_keys`); who is logged in.
+- **Cron and timers:** jobs in plain words, added or edited from a simple form (no cron syntax needed), run now, backups of the crontab; systemd timers with enable / disable / run now and the same form.
+- **Firewall:** firewalld, ufw, iptables and nftables. Open or close a port, allow a service, save / reload, start the firewall (allowing SSH first). Rules that keep your SSH connection open can't be removed from here.
+- **Security:** quick read-only checks: SSH settings, root and password-less accounts, sudo rules, failed logins and where they come from, ports open to the world (databases, admin ports), file permissions, fail2ban, automatic updates, pending security updates. Double-click a finding for why it matters and how to fix it.
+- **System:** time zone (a searchable list of the zones the server knows, with each one's offset), clock drift against your computer and NTP, reboot or shut down now or later, "reboot required", add or remove a swap file.
+- **Storage and mounts:** filesystems with inode use, the biggest folders under any path; `/etc/fstab` against what is mounted, mount / unmount, check the fstab.
+- **Ports and network:** listening ports with their processes; interfaces, addresses, routes, DNS, and name lookup / ping / TCP checks run from the server.
+- **Report:** one button collects a Markdown report (overview, failed services, updates, ports, accounts, cron, firewall) for a ticket or a handover.
+
+### Docker, Podman and Compose
+In the dashboard's Docker tab (and the terminal dashboard), with the totals of the running containers: CPU (100 % is one full CPU) and RAM, in proportion to the server.
+- **Containers:** state, image, ports, CPU and memory. Start, stop, restart, remove; **Logs** (also on double-click); **Details** explains why a container stopped (exit code in plain words, out of memory, restarts, health checks, limits, ports, networks, mounts; environment values that look like secrets are hidden); **Processes** inside it; **Shell** types `docker exec -it …` into your terminal. Right-click a row for the same actions.
+- **Compose projects:** found from their containers (`docker compose`, `docker-compose`, `podman compose`, `podman-compose`). Up, stop, restart, update (pull and re-create what changed), down, logs, status, check config, and per service logs / restart / re-create. **Edit the compose files**: a new version is saved only after Compose accepts it (with the project's other files and its `.env`), the previous one is kept as `<file>.bak-<time>`, then applied if you want.
+- **Images, volumes and networks:** which containers use each image, its layers, pull again, remove (not while in use); volume and network details and removal (never the engine's own networks).
+- **Engine:** disk use, events of the last hour (containers that died or were killed for memory, restarts, pulls), engine info, and **Clean up** for stopped containers, unused images, volumes, networks and the build cache, each one confirmed.
+
+### Monitoring and records
+- **Health strip:** CPU, memory, root disk and load of the active terminal's server in the status bar (amber / red when high). Click it for the dashboard. Optional warnings (Settings) when a server crosses disk or memory 90 %, swap 60 % or load 1.5 per CPU.
+- **Alerts history:** when a server crossed those limits or a service failed, and for how long, with the worst value. Right-click the health strip, *Alerts* in the dashboard, or the command palette. Kept on this computer for 30 days.
+- **Command log:** who ran what, where and when: one line per command as shown on screen (history recall and tab completion included), plus the dashboard's actions and `blamixshell exec`. A file a day in `logs/commands`, tab-separated. For every server (Settings → Logging) or only some (the server's Advanced tab). Password prompts and full-screen programs are skipped.
+- **Session recordings:** the **●** button on a terminal records what it shows to `logs/sessions/<server>/<date-time>.log`, as clean text or raw, optionally time-stamped. Servers can record every session automatically; old recordings can be deleted after N days.
+
+### Vault, backups and sign-in
+- **Encrypted vault:** one AES-256-GCM file; the key comes from your master password via scrypt. The same file works on every OS and in every front-end.
+- **Unlock with Windows** (optional): the master password kept encrypted by Windows for your account (DPAPI), so BlamixShell opens without asking on this PC. Turn it on in the unlock window or Settings → Vault. Details under [Where data lives](#where-data-lives).
+- **Backups and sync:** one encrypted backup a day (the last 20 kept), plus Back up now, Export, Import (adds servers, never overwrites) and Restore, in Settings → Vault & backups. To use the same servers on several computers, put the vault in a synced folder (OneDrive, Dropbox, Syncthing); edits from both sides are merged.
+- **Colors for production:** give a server or a whole group a color. Its tab, pane header and terminal background get tinted, so production looks different at a glance.
 
 ## CLI
 
@@ -222,11 +283,19 @@ blamixshell/
   pty_process.py   local programs in a terminal (ConPTY / pty), used for SSM shells
   tunnels.py       Qt-free port forwarding: local, remote, SOCKS4/5
   dashboard.py     Qt-free server dashboard: collectors, parsers, sudo-aware actions
+  collect.py       the dashboard's tabs as tables + their actions (terminal dashboard, `show`, report)
+  system.py, firewall.py, security.py, docker.py, compose.py, packages.py, cron.py, timers.py,
+  storage.py, sshkeys.py, units.py, loglines.py
+                   Qt-free readers and command builders behind the dashboard tabs
   dashboard_ui.py  dashboard window
+  alerts.py        alerts history (alerts_ui.py: its window)
   sftp_panel.py    SFTP browser, transfers, edit-in-place
   editor.py        built-in editor (from BlamixFiles); remote_file.py: SFTP / sudo read and save
   cli.py           command line + interactive raw-tty shell + parallel exec
-  tui.py           Textual full-screen UI
+  tui.py           Textual full-screen UI; tui_dash.py: the terminal dashboard
+  handoff.py       `gui --connect`: hand a server to the window that is already open
+  oskey.py         unlock with the Windows account (DPAPI)
+  report.py        Markdown / JSON server report
   vault.py         AES-256-GCM + scrypt encrypted store
   models.py        Server / Tunnel / Snippet / Store
   links.py         project, docs and donation links

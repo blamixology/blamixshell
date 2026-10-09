@@ -265,7 +265,7 @@ def load_docker(ctx: Context) -> Table:
 def load_compose(ctx: Context) -> Table:
     """One row per project, then one per service (indented)."""
     c = _docker(ctx)
-    t = Table(["Project / service", "State", "Image", "Folder"])
+    t = Table(["Project / service", "State", "Image", "Folder / containers"])
     found = compose.projects(c.items)
     if c.engine == "none":
         t.note = "No Docker or Podman found."
