@@ -223,6 +223,42 @@ def editor() -> None:
     tab.ed.setFocus()
     tab.findbar.go(False)
     snap(win, "editor", 640)
+    readme = b"""# shop: runbook
+
+The web shop on **web-1**: nginx in front, the app and PostgreSQL in Docker Compose (`/srv/shop`).
+
+## Deploy a new version
+
+1. Pull the image: `docker compose pull app`
+2. Re-create it: `docker compose up -d app`
+3. Check the health: `curl -fsS https://shop.example.com/health`
+
+## Who to call
+
+| What | Who | When |
+|---|---|---|
+| Database | Ana | 08-18 |
+| Payments | Vlad | any time |
+
+## Checklist
+
+- [x] Backups run nightly at 02:00
+- [x] Certificates renew by themselves (certbot)
+- [ ] Move logs to the central server
+
+```bash
+docker compose logs --tail 100 app
+```
+"""
+    sess2 = session(FakeSftp({"/srv/shop/README.md": readme}))
+    sess2.server.label = "web-1"
+    from blamixshell.editor import EditorTab
+    EditorTab.md_view = "split"
+    tab2 = win.open(sess2, "/srv/shop/README.md")
+    wait(QApplication.instance(), lambda: tab2.loaded)
+    win.resize(SIZE[0], 640)
+    tab2.set_view("split")
+    snap(win, "editor-markdown", 640)
     win.close()
 
 

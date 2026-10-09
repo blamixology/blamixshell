@@ -221,3 +221,36 @@ def test_binary_files_are_not_opened():
     assert wait(app, lambda: "Can't open this file" in tab.ed.toPlainText())
     assert tab.ed.isReadOnly() and not tab.loaded
     win.close()
+
+
+def test_markdown_files_show_text_side_by_side_or_preview():
+    from PySide6.QtWidgets import QApplication
+    from blamixshell.editor import EditorTab, EditorWindow, is_markdown
+    app = QApplication.instance() or QApplication([])
+    assert is_markdown("/srv/app/README.md") and is_markdown("notes.MARKDOWN") and not is_markdown("/etc/hosts")
+    doc = b"# Deploy\n\n| step | command |\n|---|---|\n| 1 | `git pull` |\n\n- [x] backup\n"
+    sftp = FakeSftp({"/srv/app/README.md": doc, "/etc/hosts": b"127.0.0.1 localhost\n"})
+    win = EditorWindow()
+    win.resize(1000, 600)
+    EditorTab.md_view = "split"
+    tab = win.open(session(sftp), "/srv/app/README.md")
+    assert wait(app, lambda: tab.loaded)
+    assert not tab.md_buttons["split"].isHidden() and tab.md_buttons["split"].isChecked()
+    assert not tab.ed.isHidden() and not tab.preview.isHidden()                          # side by side
+    html = tab.preview.toHtml()
+    assert "Deploy" in html and "<table" in html and "git pull" in html                   # formatted, not raw
+    tab.set_view("preview")
+    assert tab.ed.isHidden() and not tab.preview.isHidden()
+    tab.set_view("split")
+    tab.ed.selectAll()
+    tab.ed.insertPlainText("# Rollback\n")                                                # follows what you type
+    assert wait(app, lambda: "Rollback" in tab.preview.toPlainText())
+    tab.set_view("text")
+    assert tab.preview.isHidden() and not tab.ed.isHidden() and EditorTab.md_view == "text"
+    other = win.open(session(sftp), "/etc/hosts")
+    assert wait(app, lambda: other.loaded)
+    assert all(b.isHidden() for b in other.md_buttons.values()) and other.preview.isHidden()   # not Markdown
+    from unittest import mock
+    from PySide6.QtWidgets import QMessageBox
+    with mock.patch.object(QMessageBox, "question", lambda *a, **k: QMessageBox.Discard):
+        win.close()

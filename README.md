@@ -40,7 +40,11 @@ A modern SSH client for **Windows, macOS and Linux**, written in Python. Think P
 </tr>
 <tr>
 <td><a href="docs/screens/editor.png"><img src="docs/screens/editor.png" alt="Built-in editor"></a><br><b>Built-in editor</b>: highlighting, find / replace, save to the server (sudo when needed)</td>
+<td><a href="docs/screens/editor-markdown.png"><img src="docs/screens/editor-markdown.png" alt="Markdown side by side"></a><br><b>Markdown</b>: text, side by side, or the formatted page</td>
+</tr>
+<tr>
 <td><a href="docs/screens/dash-docker.svg"><img src="docs/screens/dash-docker.svg" alt="Terminal dashboard"></a><br><b>Terminal dashboard</b> (<code>blamixshell dash</code>): the same tabs over SSH on a headless box</td>
+<td><a href="docs/screens/dash-compose.svg"><img src="docs/screens/dash-compose.svg" alt="Terminal dashboard: Compose"></a><br><b>Compose in the terminal</b>: up, update, down, edit the files, logs</td>
 </tr>
 </table>
 
@@ -128,6 +132,7 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
 - **Built-in editor** (double-click a file; the same editor as BlamixFiles): a window with a tab per file, syntax highlighting for 500+ languages (nginx, Apache, systemd and `.env` recognised), line numbers, find / replace (regex), go to line, toggle comment, auto-indent.
   - **Ctrl+S** saves to the server. It first checks that nobody changed the file meanwhile (and shows the differences if they did), then writes a copy and renames it over the original. The encoding, line endings and permissions stay as they were.
   - Files only root may read or change open and save **with sudo** after asking; the file keeps its owner and mode.
+  - **Markdown files** (`README.md`, runbooks, changelogs) have three views in the editor's toolbar: **Text**, **Side by side** (the formatted page follows as you type and scroll) and **Preview** (headings, tables, checklists, code, links). The last choice is kept for the next Markdown file.
   - Large files open read-only, binary ones not at all. Right-click → *Open in another app* opens a file in your own editor instead, uploading every save.
 
 ### Server dashboard (agentless)

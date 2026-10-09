@@ -11,7 +11,8 @@ import re
 from PySide6.QtCore import QObject, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QColor, QFont, QFontDatabase, QKeySequence, QPainter, QShortcut,
                            QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextDocument, QTextFormat)
-from PySide6.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+                               QSplitter, QTextBrowser,
                                QPlainTextEdit, QPushButton, QTextEdit, QToolButton, QVBoxLayout, QWidget)
 
 from .platform_ui import MONO_DEFAULT
@@ -497,6 +498,10 @@ class DiffDialog(QDialog):
         lay.addWidget(close, 0, Qt.AlignRight)
 
 
+def is_markdown(path: str, lexer_name: str = "") -> bool:
+    return path.lower().endswith((".md", ".markdown", ".mdown", ".mkd")) or lexer_name.lower() == "markdown"
+
+
 def _diff_lexer():
     try:
         from pygments.lexers import DiffLexer
@@ -558,6 +563,22 @@ class EditorTab(QWidget):
         self.sudo_lbl.setToolTip("Opened with sudo: saving uses sudo too (the file keeps its owner and mode)")
         self.sudo_lbl.hide()
         bl.addWidget(self.sudo_lbl)
+        self.md_buttons = {}
+        self.md_group = QButtonGroup(self)
+        self.md_group.setExclusive(True)
+        for mode, text, tip in (("text", "Text", "Only the text"),
+                                ("split", "Side by side", "The text and the formatted page next to each other"),
+                                ("preview", "Preview", "Only the formatted page")):
+            b = QToolButton()
+            b.setText(text)
+            b.setToolTip(tip)
+            b.setCheckable(True)
+            b.setAutoRaise(True)
+            b.clicked.connect(lambda _c=False, m=mode: self.set_view(m))
+            self.md_group.addButton(b)
+            self.md_buttons[mode] = b
+            bl.addWidget(b)
+            b.hide()
         self.save_btn = QPushButton(icon("upload", C["on_accent"]), " Save", objectName="Primary")
         self.save_btn.setToolTip("Save to the server (Ctrl+S)")
         self.save_btn.clicked.connect(self.save)
@@ -572,7 +593,23 @@ class EditorTab(QWidget):
         self.ed = CodeEditor()
         self.ed.setReadOnly(True)
         self.ed.setPlainText("Loading …")
-        lay.addWidget(self.ed, 1)
+        # Markdown files: the formatted page next to the text (Qt draws it: headings, tables, lists, code, links)
+        self.preview = QTextBrowser()
+        self.preview.setOpenExternalLinks(True)
+        self.preview.document().setDefaultStyleSheet(
+            f"code, pre {{ font-family: '{mono_font().family()}'; background: {blend(C['bg'], C['accent'], 0.10)}; }}"
+            f"a {{ color: {C['accent']}; }} th {{ background: {blend(C['bg'], C['accent'], 0.14)}; }}")
+        self.preview.hide()
+        self.split = QSplitter(Qt.Horizontal)
+        self.split.addWidget(self.ed)
+        self.split.addWidget(self.preview)
+        self.split.setChildrenCollapsible(False)
+        lay.addWidget(self.split, 1)
+        self.markdown = False
+        self._render_timer = QTimer(self, singleShot=True, interval=300)
+        self._render_timer.timeout.connect(self._render)
+        self.ed.textChanged.connect(lambda: self.markdown and self.preview.isVisible() and self._render_timer.start())
+        self.ed.verticalScrollBar().valueChanged.connect(self._follow_scroll)
         self.findbar = FindBar(self.ed)
         self.findbar.hide()
         lay.addWidget(self.findbar)
@@ -646,6 +683,9 @@ class EditorTab(QWidget):
         spaces = sum(1 for ln in lines if ln.startswith("  "))
         self.ed.indent_unit = "\t" if tabs > spaces else ("  " if self._two_space(text) else "    ")
         self.ed.setPlainText(text)
+        self.markdown = is_markdown(self.path, self.lexer_name)
+        for b in self.md_buttons.values():
+            b.setVisible(self.markdown)
         self.hl = Highlighter(self.ed.document(), lexer)
         self.hl.start()
         read_only = len(data) > EDIT_LIMIT
@@ -656,6 +696,8 @@ class EditorTab(QWidget):
         self._update_status()
         if read_only:
             self.message.emit(f"{self.name} is larger than {human_size(EDIT_LIMIT)}: opened read-only")
+        if self.markdown:
+            self.set_view(EditorTab.md_view)
         self.title_changed.emit()
 
     def _load_failed(self, msg: str) -> None:
@@ -755,6 +797,38 @@ class EditorTab(QWidget):
         self.save_btn.setEnabled(self.dirty)
         self.status.setText(f"Save failed: {msg}")
         self.message.emit(f"Could not save {self.name}: {msg}")
+
+    # ---- Markdown: text, side by side, or only the formatted page
+    md_view = "split"                       # the last choice, for the next Markdown file
+
+    def set_view(self, mode: str) -> None:
+        if not self.markdown:
+            return
+        EditorTab.md_view = mode
+        self.md_buttons[mode].setChecked(True)
+        self.ed.setVisible(mode != "preview")
+        self.preview.setVisible(mode != "text")
+        if mode == "split":
+            w = max(self.split.width(), 2)
+            self.split.setSizes([w // 2, w - w // 2])
+        if mode != "text":
+            self._render()
+        (self.preview if mode == "preview" else self.ed).setFocus()
+
+    def _render(self) -> None:
+        bar = self.preview.verticalScrollBar()
+        keep = bar.value() / bar.maximum() if bar.maximum() else 0.0
+        self.preview.setMarkdown(self.ed.toPlainText())
+        bar.setValue(round(keep * bar.maximum()))
+        self._follow_scroll()
+
+    def _follow_scroll(self, *_a) -> None:
+        """Side by side: the page follows the text's scroll position (in proportion)."""
+        if not (self.markdown and self.preview.isVisible() and self.ed.isVisible()):
+            return
+        src, dst = self.ed.verticalScrollBar(), self.preview.verticalScrollBar()
+        if src.maximum():
+            dst.setValue(round(src.value() / src.maximum() * dst.maximum()))
 
     # ---- misc
     def goto_line(self) -> None:
