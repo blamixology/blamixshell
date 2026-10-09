@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.18.5](https://github.com/blamixology/blamixshell/releases/tag/v1.18.5) - 2026-10-09
+
+### Improvements
+- Built-in editor from BlamixFiles (highlighting, find/replace, safe save, sudo for root's files); Docker tab: double-click for logs, right-click menus, total CPU and RAM (1727150)
+
 ## [1.18.4](https://github.com/blamixology/blamixshell/releases/tag/v1.18.4) - 2026-10-09
 
 ### Improvements
