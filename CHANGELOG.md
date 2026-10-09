@@ -2,6 +2,12 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.18.6](https://github.com/blamixology/blamixshell/releases/tag/v1.18.6) - 2026-10-09
+
+### Improvements
+- Editor: Markdown files can be shown as text, side by side, or as the formatted page (77e85b0)
+- README: features by section, screenshot gallery (dashboard, Docker, Compose, logs, security, updates, firewall, editor, terminal dashboard) and a script to make them; Compose tab gives services more room (dee9860)
+
 ## [1.18.5](https://github.com/blamixology/blamixshell/releases/tag/v1.18.5) - 2026-10-09
 
 ### Improvements
