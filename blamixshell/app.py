@@ -1694,6 +1694,10 @@ class MainWindow(QMainWindow):
             self.close()
 
     def closeEvent(self, e):  # noqa: N802
+        editor = getattr(self.sftp, "_editor", None)
+        if editor is not None and not getattr(self, "_force_quit", False) and not editor.close():
+            e.ignore()                       # unsaved files in the editor, and "Cancel" was chosen
+            return
         live = [p for p in self.all_panes() if p.state == "connected"]
         if live and not getattr(self, "_force_quit", False) and QMessageBox.question(
                 self, "Quit BlamixShell?", f"Disconnect {len(live)} live session(s) and quit?") != QMessageBox.Yes:

@@ -75,7 +75,8 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
 - **Real terminal:** xterm.js with 256 colors and truecolor. vim, htop, tmux and mc work. Clickable links, find in scrollback, and 4 color themes.
 - **Tabs and splits:** split right or down without limit, with the same server or another one (the arrow next to the split buttons, or right-click a server → Connect in split). **Rotate** turns a side-by-side split into a stacked one and back. Each pane shows its connection state and an uptime clock.
 - **Broadcast:** send your typing, or a snippet, to every pane in a tab.
-- **SFTP panel:** drag and drop to upload. Download, rename, delete (recursive), create folders. **Edit in place:** open a file in your editor and every save uploads it.
+- **SFTP panel:** drag and drop to upload. Download, rename, delete (recursive), create folders.
+- **Built-in editor** (double-click a file; the same editor as BlamixFiles): a window with a tab per file, syntax highlighting for 500+ languages (nginx, Apache, systemd, `.env` recognised), line numbers, find / replace (regex), go to line, toggle comment, auto-indent. **Ctrl+S** saves to the server: it first checks that nobody changed the file meanwhile (and shows the differences if they did), writes a copy and renames it over the original, and keeps the encoding, line endings and permissions. Files only root may read or change open and save **with sudo** after asking (the file keeps its owner and mode). Large files open read-only, binary ones not at all. Right-click → *Open in another app* still opens it in your own editor, uploading every save.
 - **Encrypted vault:** one AES-256-GCM file; the key comes from your master password via scrypt. The same file works on every OS and in every front-end.
 - **Host key verification:** you confirm the fingerprint on first connect. If a key changes, the connection is refused unless you explicitly replace the key (MITM protection).
 - **Auth options:** password (or ask each time), private key (a file or a pasted key, with passphrase), or SSH agent (Pageant, Windows OpenSSH, `ssh-agent`).
@@ -223,6 +224,7 @@ blamixshell/
   dashboard.py     Qt-free server dashboard: collectors, parsers, sudo-aware actions
   dashboard_ui.py  dashboard window
   sftp_panel.py    SFTP browser, transfers, edit-in-place
+  editor.py        built-in editor (from BlamixFiles); remote_file.py: SFTP / sudo read and save
   cli.py           command line + interactive raw-tty shell + parallel exec
   tui.py           Textual full-screen UI
   vault.py         AES-256-GCM + scrypt encrypted store

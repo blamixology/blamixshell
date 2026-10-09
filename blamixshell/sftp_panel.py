@@ -345,13 +345,14 @@ class SftpPanel(QWidget):
         if is_dir:
             self.navigate(path)
         else:
-            self.edit_remote(path)
+            self.edit_here(path)
 
     def _menu(self, pos) -> None:
         sel = self._selected()
         m = QMenu(self)
         if len(sel) == 1 and not sel[0][1]:
-            m.addAction(icon("edit"), "Open / edit (auto-upload on save)", lambda: self.edit_remote(sel[0][0]))
+            m.addAction(icon("edit"), "Edit", lambda: self.edit_here(sel[0][0]))
+            m.addAction(icon("code"), "Open in another app (uploads when you save)", lambda: self.edit_remote(sel[0][0]))
         if sel:
             m.addAction(icon("download"), "Download…", self.download_selected)
         if len(sel) == 1:
@@ -495,7 +496,18 @@ class SftpPanel(QWidget):
             done += size
         self.sig.finished.emit(f"Downloaded {len(plan)} file(s) to {dest}")
 
-    # edit in place
+    # the built-in editor (a window with a tab per file)
+    def edit_here(self, remote: str) -> None:
+        if not self.session or not self.session.is_connected:
+            return
+        win = getattr(self, "_editor", None)
+        if win is None:
+            from .editor import EditorWindow
+            win = self._editor = EditorWindow(self.window())
+            win.message.connect(self.status_message.emit)
+        win.open(self.session, remote)
+
+    # edit in another app: download, watch, upload on every save
     def edit_remote(self, remote: str) -> None:
         self._run(self._job_fetch_for_edit, remote)
 

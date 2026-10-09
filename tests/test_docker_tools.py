@@ -142,3 +142,37 @@ def test_the_docker_tab():
     assert "Delete the build cache…" in labels and len(labels) == 6
     w._dk_prune("volumes", "Delete volumes no container uses (their data is lost)")
     assert calls[-1][1] == "docker volume prune -f"
+
+
+def test_totals_of_the_running_containers():
+    c = docker.parse(FULL.replace("@@images", '@@stats\n{"ID":"a1b2c3d4e5f6","Name":"web","CPUPerc":"150.00%",'
+                                  '"MemUsage":"1.5GiB / 7.6GiB"}\n{"ID":"112233445566","Name":"db","CPUPerc":"10%",'
+                                  '"MemUsage":"512MiB / 7.6GiB"}\n@@host\n4\nMemTotal:        8000000 kB\n@@images'))
+    cpu, mem = c.totals()
+    assert cpu == 160.0 and mem == 2 * 1024 ** 3                                     # web + db (paused counts)
+    assert c.cpus == 4 and c.mem_total == 8_192_000_000
+    assert c.totals_text() == "CPU 160.0 % of 4 CPUs (40.0 % of the server)  ·  RAM 2.0 GB (26 % of 7.6 GB)"
+    assert docker.parse("@@engine\ndocker\n@@ps\n").totals_text() == ""              # no stats: nothing claimed
+    assert [docker.size_bytes(x) for x in ("12.3MiB", "1.2GB", "512kB", "0B", "?")] == [
+        12897484, 1_200_000_000, 512_000, 0, 0]
+
+
+def test_double_click_shows_logs_and_right_click_has_the_toolbar_actions():
+    from PySide6.QtCore import QPoint
+    from test_dashboard_fw_details import make
+    w, calls = make()
+    w.send_to_terminal = lambda t: None
+    views = []
+    w._dk_view = lambda title, cmd, summarize=False, timeout=60: views.append(title)
+    w._show_docker((FULL, False))
+    w.resize(1000, 600)
+    w.dk_table.selectRow(0)
+    w.dk_table.doubleClicked.emit(w.dk_table.model().index(0, 1))
+    assert views == ["Logs: web"]
+    y = w.dk_table.visualItemRect(w.dk_table.item(2, 1)).center().y()              # old-job: exited
+    menu = w._dk_menu_for(w.dk_table, w.dk_buttons, QPoint(5, y))
+    labels = dict((x.text(), x.isEnabled()) for x in menu.actions() if not x.isSeparator())
+    assert w.dk_table.currentRow() == 2                                               # the row under the mouse
+    assert labels["Start"] and not labels["Stop"] and labels["Logs"] and labels["Details"] and not labels["Shell"]
+    assert "Disk use" in labels and "Events" in labels
+    assert "Images (4), 1 dangling" == w.dk_tabs.tabText(2)

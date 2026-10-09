@@ -16,6 +16,7 @@ for e in docker podman; do
     echo @@images; $e images --format '{{json .}}' 2>&1
     echo @@volumes; $e volume ls --format '{{json .}}' 2>&1
     echo @@networks; $e network ls --format '{{json .}}' 2>&1
+    echo @@host; nproc 2>/dev/null; grep -m1 MemTotal /proc/meminfo 2>/dev/null
     echo @@compose
     if $e compose version >/dev/null 2>&1; then echo "$e compose"
     elif command -v $e-compose >/dev/null 2>&1; then echo "$e-compose"
@@ -107,6 +108,8 @@ class Containers:
     needs_access: bool = False
     error: str = ""
     compose: str = ""                         # the compose command on the server: "docker compose", "docker-compose" …
+    cpus: int = 0                             # the server's CPUs and memory (to put the totals in proportion)
+    mem_total: int = 0                        # bytes
     images: list[Image] = field(default_factory=list)
     volumes: list[Volume] = field(default_factory=list)
     networks: list[Network] = field(default_factory=list)
@@ -114,6 +117,24 @@ class Containers:
     def __post_init__(self):
         if self.items is None:
             self.items = []
+
+    def totals(self) -> tuple[float, int]:
+        """(CPU % summed over the running containers, as docker counts it: 100 % = one CPU; memory in bytes)."""
+        cpu = sum(_percent(c.cpu) for c in self.items if c.running)
+        mem = sum(size_bytes(c.mem) for c in self.items if c.running)
+        return cpu, mem
+
+    def totals_text(self) -> str:
+        """"CPU 37 % of 4 CPUs (9 % of the server) · RAM 1.4 GB (18 % of 7.8 GB)", or "" without stats."""
+        from .dashboard import human_kb
+        if not any(c.cpu or c.mem for c in self.items):
+            return ""
+        cpu, mem = self.totals()
+        parts = [f"CPU {cpu:.1f} %" + (f" of {self.cpus} CPU{'s' if self.cpus != 1 else ''} ({cpu / self.cpus:.1f} % of "
+                                       "the server)" if self.cpus else "")]
+        parts.append(f"RAM {human_kb(mem / 1024)}" + (f" ({100 * mem / self.mem_total:.0f} % of "
+                                                      f"{human_kb(self.mem_total / 1024)})" if self.mem_total else ""))
+        return "  ·  ".join(parts)
 
 
 def state_of(status: str, state: str = "") -> str:
@@ -170,6 +191,13 @@ def parse(text: str) -> Containers:
     rank = {"running": 0, "restarting": 1, "paused": 2}
     result.items.sort(key=lambda c: (rank.get(c.state, 3), c.name))
     result.images = _parse_images(s.get("images", ""), result.items)
+    host = s.get("host", "").split()
+    if host and host[0].isdigit():
+        result.cpus = int(host[0])
+    if "MemTotal:" in host:
+        i = host.index("MemTotal:")
+        if i + 1 < len(host) and host[i + 1].isdigit():
+            result.mem_total = int(host[i + 1]) * 1024
     tool = s.get("compose", "").strip()
     result.compose = tool if tool in COMPOSE_TOOLS else ""
     result.volumes = [Volume(r.get("Name", ""), r.get("Driver", ""), r.get("Mountpoint", ""))
@@ -177,6 +205,28 @@ def parse(text: str) -> Containers:
     result.networks = [Network((r.get("ID") or r.get("Id") or "")[:12], r.get("Name", ""), r.get("Driver", ""),
                                r.get("Scope", "")) for r in _json_lines(s.get("networks", "")) if r.get("Name")]
     return result
+
+
+_UNITS = {"b": 1, "kb": 1000, "kib": 1024, "mb": 1000 ** 2, "mib": 1024 ** 2, "gb": 1000 ** 3, "gib": 1024 ** 3,
+          "tb": 1000 ** 4, "tib": 1024 ** 4}
+
+
+def size_bytes(text: str) -> int:
+    """"12.3MiB", "1.2GB", "512kB", "0B" (docker stats) -> bytes; 0 when it can't be read."""
+    m = re.fullmatch(r"\s*([\d.]+)\s*([a-zA-Z]*)\s*", text or "")
+    if not m:
+        return 0
+    try:
+        return int(float(m.group(1)) * _UNITS.get(m.group(2).lower() or "b", 0))
+    except ValueError:
+        return 0
+
+
+def _percent(text: str) -> float:
+    try:
+        return float((text or "").strip().rstrip("%") or 0)
+    except ValueError:
+        return 0.0
 
 
 COMPOSE_TOOLS = ("docker compose", "docker-compose", "podman compose", "podman-compose")

@@ -2360,10 +2360,11 @@ class DashboardWindow(QWidget):
             "start": _btn("bolt", "Start", lambda: self._dk_action("start")),
             "stop": _btn("x", "Stop", lambda: self._dk_action("stop")),
             "restart": _btn("refresh", "Restart", lambda: self._dk_action("restart")),
-            "logs": _btn("file", "Logs", self._dk_logs, "The last 300 log lines of the selected container"),
+            "logs": _btn("file", "Logs", self._dk_logs, "The last 300 log lines of the selected container "
+                                                         "(also: double-click)"),
             "details": _btn("search", "Details", self._dk_details,
                             "Why it stopped (exit code, out of memory), restarts, health, limits, ports, mounts, "
-                            "environment (secrets hidden) and the full inspect output. Also: double-click"),
+                            "environment (secrets hidden) and the full inspect output"),
             "top": _btn("gauge", "Processes", self._dk_top, "The processes running inside the selected container"),
             "shell": _btn("terminal", "Shell", self._dk_shell,
                           "Types a command into this server's terminal that opens a shell inside the container"),
@@ -2372,7 +2373,7 @@ class DashboardWindow(QWidget):
         pl.addLayout(_toolbar("stretch", *self.dk_buttons.values()))
         self.dk_table = _table(["State", "Name", "Image", "Status", "Ports", "CPU", "Memory"], stretch=4)
         self.dk_table.itemSelectionChanged.connect(self._update_dk_buttons)
-        self.dk_table.doubleClicked.connect(lambda _i: self._dk_details())
+        self.dk_table.doubleClicked.connect(lambda _i: self._dk_logs())
         pl.addWidget(self.dk_table, 1)
         self.dk_tabs.addTab(page, "Containers")
 
@@ -2464,6 +2465,11 @@ class DashboardWindow(QWidget):
         self.dk_net_table.doubleClicked.connect(lambda _i: self._dk_inspect("network"))
         pl.addWidget(self.dk_net_table, 1)
         self.dk_tabs.addTab(page, "Networks")
+        for table, buttons in ((self.dk_table, self.dk_buttons), (self.dk_cmp_table, self.dk_cmp_buttons),
+                               (self.dk_svc_table, self.dk_svc_buttons), (self.dk_img_table, self.dk_img_buttons),
+                               (self.dk_vol_table, self.dk_vol_buttons), (self.dk_net_table, self.dk_net_buttons)):
+            table.setContextMenuPolicy(Qt.CustomContextMenu)
+            table.customContextMenuRequested.connect(lambda pos, t=table, b=buttons: self._dk_menu(t, b, pos))
 
         self.dk_hint = QLabel("", objectName="Hint", wordWrap=True)
         lay.addWidget(self.dk_hint)
@@ -2518,7 +2524,11 @@ class DashboardWindow(QWidget):
                                     if "daemon running" in c.error.lower() else ""))
         else:
             run = sum(1 for x in c.items if x.state == "running")
-            self.dk_lbl.setText(f"<b>{c.engine}</b>  ·  {run} running, {len(c.items) - run} not running")
+            totals = c.totals_text()
+            self.dk_lbl.setText(f"<b>{c.engine}</b>  ·  {run} running, {len(c.items) - run} not running"
+                                + (f"  ·  <b>{totals}</b>" if totals else ""))
+            self.dk_lbl.setToolTip("Summed over the running containers. Docker counts CPU per core: 100 % is one "
+                                   "full CPU." if totals else "")
             self.dk_hint.setText("Via sudo. " if used else "")
         self._update_dk_buttons()
 
@@ -2586,6 +2596,32 @@ class DashboardWindow(QWidget):
         cmd = docker.action_command(self._dk.engine, "remove", x.id, force=x.running)
         self._privileged(f"Remove container {x.name}" + (" (it is running: forced)" if x.running else ""), cmd,
                          then="docker", allow_plain=True)
+
+    def _dk_menu(self, table: QTableWidget, buttons: dict, pos) -> None:
+        """Right-click: the row under the mouse, and the same actions as the toolbar (greyed out the same way)."""
+        m = self._dk_menu_for(table, buttons, pos)
+        if m is not None:
+            m.exec(table.viewport().mapToGlobal(pos))
+
+    def _dk_menu_for(self, table: QTableWidget, buttons: dict, pos):
+        row = table.rowAt(pos.y())
+        if row < 0:
+            return None
+        table.selectRow(row)
+        m = QMenu(table)
+        for b in buttons.values():
+            if b.isHidden():
+                continue
+            act = m.addAction(b.icon(), b.text().strip(), b.click)
+            act.setEnabled(b.isEnabled())
+            if b.toolTip() and not b.isEnabled():
+                act.setToolTip(b.toolTip())
+        m.setToolTipsVisible(True)
+        if table is self.dk_table:
+            m.addSeparator()
+            for b in self.dk_tools[:3]:                      # disk use, events, engine info
+                m.addAction(b.icon(), b.text().strip(), b.click).setEnabled(b.isEnabled())
+        return m
 
     def _dk_logs(self) -> None:
         x = self._selected_container()

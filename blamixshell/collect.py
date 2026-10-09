@@ -253,7 +253,8 @@ def load_docker(ctx: Context) -> Table:
         t.note = "This account can't talk to the daemon: use root, the docker group, or sudo (press S)."
     else:
         run = sum(1 for x in c.items if x.state == "running")
-        t.note = f"{c.engine}: {run} running, {len(c.items) - run} not running"
+        totals = c.totals_text()
+        t.note = f"{c.engine}: {run} running, {len(c.items) - run} not running" + (f"  ·  {totals}" if totals else "")
     for x in c.items:
         t.add([x.state, x.name, x.image, x.status, x.ports or "–", x.cpu or "–", x.mem or "–"],
               "ok" if x.state == "running" else "warn" if x.state in ("paused", "restarting") else "dim",

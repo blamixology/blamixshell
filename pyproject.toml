@@ -17,9 +17,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gui = ["PySide6>=6.7", 'pywinpty>=2.0.13; sys_platform == "win32"']
+gui = ["PySide6>=6.7", "Pygments>=2.17", 'pywinpty>=2.0.13; sys_platform == "win32"']
 tui = ["textual>=0.80"]
-all = ["PySide6>=6.7", "textual>=0.80", 'pywinpty>=2.0.13; sys_platform == "win32"']
+all = ["PySide6>=6.7", "Pygments>=2.17", "textual>=0.80", 'pywinpty>=2.0.13; sys_platform == "win32"']
 
 [project.scripts]
 blamixshell = "blamixshell.cli:main"
