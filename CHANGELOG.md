@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.18.7](https://github.com/blamixology/blamixshell/releases/tag/v1.18.7) - 2026-10-20
+
+### Fixes
+- The Files panel says which machine its files are on, notices when the terminal went on to another machine with ssh, and offers to open that machine through the first one (ba86fb3)
+
 ## [1.18.6](https://github.com/blamixology/blamixshell/releases/tag/v1.18.6) - 2026-10-09
 
 ### Improvements
