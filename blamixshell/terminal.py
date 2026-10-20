@@ -154,6 +154,7 @@ class TerminalPane(QWidget):
     user_input = Signal(object, bytes)     # the tab decides where input goes (broadcast)
     dashboard_requested = Signal(object)
     context_requested = Signal(object)
+    hop_changed = Signal(object)            # the shell went on to another machine with ssh (or came back)
 
     def __init__(self, server: Server, resolve, settings, parent=None, tint: str = ""):
         super().__init__(parent)
@@ -168,6 +169,8 @@ class TerminalPane(QWidget):
         self._buffer: list[str] = []
         self._pending_start = False
         self._session_password = ""
+        from .hops import HopWatch
+        self.hops = HopWatch()                # `ssh other` typed in this shell: the files etc. stay on this server
         self.remote_title = ""
         self.deferred = False            # restored from the last session, not connected yet
         self.recorder = None             # session_log.Recorder while recording
@@ -541,7 +544,8 @@ class TerminalPane(QWidget):
         from . import cmd_history
         bridge = self.view.bridge
         on = self._suggest_on()
-        bridge.logCommands.emit(self._command_log is not None or on)
+        # always: the lines also show when the shell went on to another machine (they're logged only if asked)
+        bridge.logCommands.emit(True)
         hist = cmd_history.shared().get(self.server.id) if on else []
         bridge.suggest.emit(json.dumps({"on": on, "history": hist[-500:]}))
 
@@ -555,7 +559,10 @@ class TerminalPane(QWidget):
         if explicit:
             self.log_command(explicit, "paste")
             return
-        from .session_log import command_from_line
+        from .session_log import command_from_line, split_prompt
+        prompt, typed = split_prompt(line)
+        if self.hops.update(prompt, typed):
+            self.hop_changed.emit(self)
         got = command_from_line(line)
         if got:
             self.log_command(got[1], "terminal", got[0])

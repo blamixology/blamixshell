@@ -254,3 +254,31 @@ def test_markdown_files_show_text_side_by_side_or_preview():
     from PySide6.QtWidgets import QMessageBox
     with mock.patch.object(QMessageBox, "question", lambda *a, **k: QMessageBox.Discard):
         win.close()
+
+
+def test_the_files_panel_says_which_machine_the_files_are_on():
+    """A shell that went on to another machine (ssh from the terminal) must not make the files look like that
+    machine's: the panel names the machine BlamixShell is really connected to."""
+    from PySide6.QtWidgets import QApplication
+    from blamixshell import sftp_panel
+    QApplication.instance() or QApplication([])
+
+    class Out:
+        def read(self, n):
+            return b"compilermaster\n"
+
+    class Client:
+        def exec_command(self, cmd, timeout=None):
+            assert "hostname" in cmd
+            return None, Out(), None
+    sess = SimpleNamespace(client=Client(), server=SimpleNamespace(label="!CompilerMaster"))
+    assert sftp_panel.machine_name(sess) == "compilermaster"
+    assert sftp_panel.machine_name(SimpleNamespace(client=None)) == ""
+    panel = sftp_panel.SftpPanel()
+    panel.session = sess
+    sess.files_host = "compilermaster"
+    sess.sftp_noise = ""
+    panel._on_listed(sess, "/etc/nginx/conf.d", [("safemobile.conf", True, 0, 0, "drwxr-xr-x")])
+    assert panel.host_lbl.text() == "!CompilerMaster  ·  on compilermaster"
+    assert "jump host" in panel.host_lbl.toolTip()
+    panel.shutdown()

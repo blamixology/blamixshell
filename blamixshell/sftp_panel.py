@@ -21,6 +21,19 @@ from .ssh_session import ShellSession, friendly_error
 from .theme import C, icon
 
 
+def machine_name(sess) -> str:
+    """The hostname of the machine the files are on (what BlamixShell is connected to), "" if unknown."""
+    client = getattr(sess, "client", None)
+    if client is None:
+        return ""
+    try:
+        _i, out, _e = client.exec_command("hostname 2>/dev/null || uname -n", timeout=10)
+        name = out.read(256).decode("utf-8", "replace").strip().splitlines()
+        return name[0][:64] if name else ""
+    except Exception:
+        return ""
+
+
 def human(n: int) -> str:
     f = float(n)
     for unit in ("B", "KB", "MB", "GB", "TB"):
@@ -100,6 +113,7 @@ class RemoteTree(QTreeWidget):
 
 class SftpPanel(QWidget):
     status_message = Signal(str)
+    open_hop = Signal(object)                 # "Open <that machine> here": a Hop from the terminal
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -181,6 +195,29 @@ class SftpPanel(QWidget):
                                    "border-radius:8px; padding:8px;")
         self.err_lbl.hide()
         lay.addWidget(self.err_lbl)
+        # the terminal went on to another machine (ssh): say that these files are still the first server's
+        self.hop_box = QWidget()
+        hb = QVBoxLayout(self.hop_box)
+        hb.setContentsMargins(10, 8, 10, 8)
+        self.hop_box.setStyleSheet(f"background:{C['surface']}; border:1px solid {C['warn']}; border-radius:8px;")
+        self.hop_lbl = QLabel(wordWrap=True)
+        self.hop_lbl.setStyleSheet("border:none;")
+        hb.addWidget(self.hop_lbl)
+        row = QHBoxLayout()
+        self.hop_open = QToolButton()
+        self.hop_open.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.hop_open.setIcon(icon("plug"))
+        self.hop_open.clicked.connect(lambda: self._hop and self.open_hop.emit(self._hop))
+        row.addWidget(self.hop_open)
+        row.addStretch(1)
+        lay_hint = QToolButton()
+        lay_hint.setText("Hide")
+        lay_hint.clicked.connect(self.hop_box.hide)
+        row.addWidget(lay_hint)
+        hb.addLayout(row)
+        self._hop = None
+        self.hop_box.hide()
+        lay.addWidget(self.hop_box)
         lay.addWidget(self.tree, 1)
 
         self.placeholder = QLabel("Open an SSH session to browse its files.\n\nDrop files here to upload.")
@@ -215,6 +252,21 @@ class SftpPanel(QWidget):
         self.progress_lbl.setVisible(on)
 
     # ------------------------------------------------------------ binding
+    def show_hop(self, hop, server_label: str = "") -> None:
+        """The active terminal is on another machine now (None: it isn't, hide the note)."""
+        self._hop = hop
+        if hop is None:
+            self.hop_box.hide()
+            return
+        here = getattr(self.session, "files_host", "") or server_label or "the server"
+        self.hop_lbl.setText(f"<b>Your terminal is on {hop.label} now</b> (you typed <code>{hop.typed}</code>). "
+                             f"The files here are still on <b>{here}</b>: BlamixShell is connected to that machine, "
+                             "and the ssh inside the terminal is a separate connection it can't use.")
+        self.hop_open.setText(f" Open {hop.label} here (through {server_label or here})")
+        self.hop_open.setToolTip("Adds it as a server with this one as its jump host (you check the form first), "
+                                 "then connects: its files, editor and dashboard work like on any server.")
+        self.hop_box.show()
+
     def set_session(self, session: ShellSession | None) -> None:
         if session is self.session and session and self.tree.topLevelItemCount():
             return
@@ -277,11 +329,20 @@ class SftpPanel(QWidget):
             entries.append((a.filename, is_dir, a.st_size or 0, a.st_mtime or 0,
                             stat.filemode(a.st_mode or 0)))
         sess.sftp_cwd = path
+        if getattr(sess, "files_host", None) is None:
+            sess.files_host = machine_name(sess)
         self.sig.listed.emit(sess, path, entries)
 
     def _on_listed(self, sess, path: str, entries: list) -> None:
         if sess is not self.session:
             return
+        host = getattr(sess, "files_host", "") or ""
+        self.host_lbl.setText(f"{sess.server.label}  ·  on {host}" if host else sess.server.label)
+        self.host_lbl.setToolTip(
+            f"The files shown here are on {host or 'the server'}: the machine BlamixShell is connected to. "
+            "If you went further from the terminal (ssh to another machine), the files here are still this "
+            "machine's. To browse that other machine, add it as a server with this one as its jump host."
+            if host else "")
         self.err_lbl.hide()
         if sess.sftp_noise and not getattr(sess, "_noise_reported", False):
             sess._noise_reported = True

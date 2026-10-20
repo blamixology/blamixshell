@@ -375,6 +375,7 @@ class MainWindow(QMainWindow):
         # ---------------- sftp
         self.sftp = SftpPanel()
         self.sftp.status_message.connect(lambda m: self.statusBar().showMessage(m, 6000))
+        self.sftp.open_hop.connect(self.open_hop)
         root.addWidget(self.sftp)
         root.setStretchFactor(0, 0)
         root.setStretchFactor(1, 1)
@@ -749,6 +750,8 @@ class MainWindow(QMainWindow):
             return
         p = self.active_pane()
         self.sftp.set_session(p.session if p and p.state == "connected" and p.server.uses_ssh else None)
+        self.sftp.show_hop(p.hops.hop if p is not None and p.state == "connected" else None,
+                           p.server.label if p is not None else "")
 
     # ================================================================ connect
     def _make_pane(self, server: Server, touch: bool = True) -> TerminalPane:
@@ -758,6 +761,7 @@ class MainWindow(QMainWindow):
         pane.state_changed.connect(self._on_pane_state)
         pane.dashboard_requested.connect(self.open_dashboard)
         pane.context_requested.connect(self._terminal_menu)
+        pane.hop_changed.connect(lambda _p: self._sync_sftp())
         if touch and server.id in self.store.servers:
             self.store.touch(server.id)
         return pane
@@ -1540,6 +1544,26 @@ class MainWindow(QMainWindow):
             self.connect_server(what)
             return
         dlg = ServerDialog(self.store, what, self, new=True)
+        if dlg.exec() == QDialog.Accepted:
+            s = dlg.result_server()
+            self.store.upsert(s)
+            self.refresh_all()
+            self.connect_server(s.id)
+
+    def open_hop(self, hop) -> None:
+        """The terminal went on to another machine with ssh: open that machine as a server of its own, through the
+        current one as its jump host (a saved one is reused; otherwise the New server form, filled in)."""
+        pane = self.active_pane()
+        if pane is None or hop is None:
+            return
+        home = pane.server
+        for s in self.store.servers.values():
+            if s.host.lower() == hop.host.lower() and s.port == hop.port and s.jump_id == home.id and                     (not hop.user or s.username == hop.user):
+                self.connect_server(s.id)
+                return
+        srv = Server(name=hop.label, host=hop.host, port=hop.port, username=hop.user, auth="password",
+                     jump_id=home.id if home.id in self.store.servers else "", group=home.group)
+        dlg = ServerDialog(self.store, srv, self, new=True)
         if dlg.exec() == QDialog.Accepted:
             s = dlg.result_server()
             self.store.upsert(s)

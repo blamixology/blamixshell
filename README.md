@@ -128,7 +128,7 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
 - **Imports and snippets:** PuTTY sessions (Windows) and `~/.ssh/config` (with `ProxyJump` and forwards); saved commands one click away.
 
 ### Files and the built-in editor
-- **Files panel (SFTP):** drag and drop to upload. Download, rename, delete (recursive), create folders.
+- **Files panel (SFTP):** drag and drop to upload. Download, rename, delete (recursive), create folders. Its header names the machine the files are on. If you `ssh` from the terminal to another machine, the panel says that its files are still the first server's, and offers **Open <that machine> here**: it becomes a server with the first one as its jump host, so its files, editor and dashboard work too.
 - **Built-in editor** (double-click a file; the same editor as BlamixFiles): a window with a tab per file, syntax highlighting for 500+ languages (nginx, Apache, systemd and `.env` recognised), line numbers, find / replace (regex), go to line, toggle comment, auto-indent.
   - **Ctrl+S** saves to the server. It first checks that nobody changed the file meanwhile (and shows the differences if they did), then writes a copy and renames it over the original. The encoding, line endings and permissions stay as they were.
   - Files only root may read or change open and save **with sudo** after asking; the file keeps its owner and mode.
