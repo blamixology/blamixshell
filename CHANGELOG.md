@@ -2,6 +2,11 @@
 
 _Generated automatically from the commit history between release tags. Don't edit by hand._
 
+## [1.18.8](https://github.com/blamixology/blamixshell/releases/tag/v1.18.8) - 2026-10-21
+
+### Improvements
+- Files, editor, dashboard and health strip follow ssh typed in a terminal, through the first server's own ssh (chains too); a filled-in jump-host form when it needs a password (5439735)
+
 ## [1.18.7](https://github.com/blamixology/blamixshell/releases/tag/v1.18.7) - 2026-10-20
 
 ### Fixes
