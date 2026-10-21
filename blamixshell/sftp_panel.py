@@ -252,19 +252,35 @@ class SftpPanel(QWidget):
         self.progress_lbl.setVisible(on)
 
     # ------------------------------------------------------------ binding
-    def show_hop(self, hop, server_label: str = "") -> None:
-        """The active terminal is on another machine now (None: it isn't, hide the note)."""
+    def show_hop(self, hop, server_label: str = "", relay_state: str = "", relay_error: str = "") -> None:
+        """The active terminal is on another machine now (None: it isn't, hide the note). relay_state: "checking",
+        "ok" (the files etc. follow the terminal there) or "failed" (relay_error says why)."""
         self._hop = hop
         if hop is None:
             self.hop_box.hide()
             return
-        here = getattr(self.session, "files_host", "") or server_label or "the server"
-        self.hop_lbl.setText(f"<b>Your terminal is on {hop.label} now</b> (you typed <code>{hop.typed}</code>). "
-                             f"The files here are still on <b>{here}</b>: BlamixShell is connected to that machine, "
-                             "and the ssh inside the terminal is a separate connection it can't use.")
-        self.hop_open.setText(f" Open {hop.label} here (through {server_label or here})")
-        self.hop_open.setToolTip("Adds it as a server with this one as its jump host (you check the form first), "
-                                 "then connects: its files, editor and dashboard work like on any server.")
+        via = server_label or "the server"
+        border = C["accent"] if relay_state in ("ok", "checking") else C["warn"]
+        self.hop_box.setStyleSheet(f"background:{C['surface']}; border:1px solid {border}; border-radius:8px;")
+        if relay_state == "ok":
+            self.hop_lbl.setText(f"<b>Following your terminal to {hop.label}.</b> Files, the editor and the dashboard "
+                                 f"work there through {via}'s own ssh (its keys and settings), until you exit.")
+            self.hop_open.setText(f" Save {hop.label} as a server")
+            self.hop_open.setToolTip("Optional: add it as a server with this one as its jump host, to open it "
+                                     "directly next time (you check the form first).")
+        elif relay_state == "checking":
+            self.hop_lbl.setText(f"<b>Your terminal is on {hop.label} now.</b> Connecting the files to it through "
+                                 f"{via} …")
+            self.hop_open.setText(f" Open {hop.label} here (through {via})")
+        else:
+            here = getattr(self.session, "files_host", "") or via
+            why = f" ({relay_error})" if relay_error else ""
+            self.hop_lbl.setText(f"<b>Your terminal is on {hop.label} now</b> (you typed <code>{hop.typed}</code>). "
+                                 f"The files here are still on <b>{here}</b>: BlamixShell can't follow you there "
+                                 f"without a password{why}.")
+            self.hop_open.setText(f" Open {hop.label} here (through {via})")
+            self.hop_open.setToolTip("Adds it as a server with this one as its jump host (filled in from that "
+                                     "server's ssh settings; you check the form first), then connects.")
         self.hop_box.show()
 
     def set_session(self, session: ShellSession | None) -> None:

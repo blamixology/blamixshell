@@ -155,6 +155,7 @@ class TerminalPane(QWidget):
     dashboard_requested = Signal(object)
     context_requested = Signal(object)
     hop_changed = Signal(object)            # the shell went on to another machine with ssh (or came back)
+    _relay_checked = Signal(object, object, str)   # (relay, works, why not), from the checking thread
 
     def __init__(self, server: Server, resolve, settings, parent=None, tint: str = ""):
         super().__init__(parent)
@@ -170,7 +171,11 @@ class TerminalPane(QWidget):
         self._pending_start = False
         self._session_password = ""
         from .hops import HopWatch
-        self.hops = HopWatch()                # `ssh other` typed in this shell: the files etc. stay on this server
+        self.hops = HopWatch()                # `ssh other` typed in this shell: files and tools can follow it
+        self.relay = None                     # RelaySession to that machine once it's known to work
+        self.relay_state = ""                 # "" | "checking" | "ok" | "failed"
+        self.relay_error = ""
+        self._relay_checked.connect(self._on_relay_checked)
         self.remote_title = ""
         self.deferred = False            # restored from the last session, not connected yet
         self.recorder = None             # session_log.Recorder while recording
@@ -283,6 +288,11 @@ class TerminalPane(QWidget):
 
     def _set_state(self, st: str, msg: str = "") -> None:
         self.state = st
+        if st != "connected" and (self.hops.chain or self.relay is not None):
+            from .hops import HopWatch
+            self.hops = HopWatch()            # a new connection starts at the first server again
+            self._drop_relay()
+            self.hop_changed.emit(self)
         if msg:
             self.status_lbl.setText(msg)
         self._refresh_header()
@@ -562,6 +572,7 @@ class TerminalPane(QWidget):
         from .session_log import command_from_line, split_prompt
         prompt, typed = split_prompt(line)
         if self.hops.update(prompt, typed):
+            self._follow_hop()
             self.hop_changed.emit(self)
         got = command_from_line(line)
         if got:
@@ -570,6 +581,41 @@ class TerminalPane(QWidget):
                 from . import cmd_history
                 if cmd_history.shared().add(self.server.id, got[1]):
                     self.view.bridge.histAdd.emit(got[1])
+
+    # ---- following the shell to another machine (relay.py)
+    @property
+    def files_session(self):
+        """Where the files, the editor and the dashboard work: the machine the shell went on to (when the relay
+        works), else this server."""
+        return self.relay if self.relay_state == "ok" and self.relay is not None else self.session
+
+    def _drop_relay(self) -> None:
+        if self.relay is not None:
+            self.relay.close()
+        self.relay, self.relay_state, self.relay_error = None, "", ""
+
+    def _follow_hop(self) -> None:
+        self._drop_relay()
+        chain = list(self.hops.chain)
+        if not chain or self.session is None or not getattr(self.session, "client", None) or \
+                not self.server.uses_ssh or not self.settings.get("follow_ssh", True):
+            return
+        import threading
+        from .relay import RelaySession
+        relay = RelaySession(self.session, chain)
+        self.relay, self.relay_state = relay, "checking"
+
+        def check():
+            ok, why = relay.probe()
+            self._relay_checked.emit(relay, ok, why)
+        threading.Thread(target=check, daemon=True, name="relay-check").start()
+
+    def _on_relay_checked(self, relay, ok, why: str) -> None:
+        if relay is not self.relay:            # the shell moved on (or back) meanwhile
+            relay.close()
+            return
+        self.relay_state, self.relay_error = ("ok", "") if ok else ("failed", why)
+        self.hop_changed.emit(self)
 
     def _record(self, data: bytes) -> None:
         if self.recorder is not None:

@@ -630,7 +630,8 @@ class MainWindow(QMainWindow):
             return
         self._health_busy = True
         from . import dashboard as d
-        client, prev = pane.session.client, self._health_prev.get(id(pane))
+        target = pane.files_session or pane.session        # the machine the shell is on (see relay.py)
+        client, prev = target.client, self._health_prev.get((id(pane), id(target)))
 
         def run():
             try:
@@ -659,7 +660,7 @@ class MainWindow(QMainWindow):
                     self.health_lbl.setText(self.health_lbl.text().replace(
                         "&nbsp;&nbsp;", f" <span style='color:{C['faint']}'>(stale)</span>&nbsp;&nbsp;"))
             return
-        self._health_prev[id(pane)] = h.sample
+        self._health_prev[(id(pane), id(pane.files_session or pane.session))] = h.sample
 
         def part(label, v, warn=75, bad=90, fmt="{:.0f}%"):
             if v is None:
@@ -674,7 +675,8 @@ class MainWindow(QMainWindow):
             parts.insert(2, part("swap", h.swap, 25, 60))
         self.health_lbl.setText("  ·  ".join(parts) + "&nbsp;&nbsp;")
         from .dashboard import health_alerts, human_kb
-        tip = [f"{pane.server.label} ({h.cpus} CPU{'s' if h.cpus != 1 else ''})"]
+        shown = getattr(pane.files_session, "server", pane.server) or pane.server
+        tip = [f"{shown.label} ({h.cpus} CPU{'s' if h.cpus != 1 else ''})"]
         if h.cpu is not None:
             tip.append(f"CPU {h.cpu:.0f}%")
         if h.mem_kb:
@@ -749,9 +751,10 @@ class MainWindow(QMainWindow):
         if not self.sftp.isVisible():
             return
         p = self.active_pane()
-        self.sftp.set_session(p.session if p and p.state == "connected" and p.server.uses_ssh else None)
-        self.sftp.show_hop(p.hops.hop if p is not None and p.state == "connected" else None,
-                           p.server.label if p is not None else "")
+        self.sftp.set_session(p.files_session if p and p.state == "connected" and p.server.uses_ssh else None)
+        on = p is not None and p.state == "connected"
+        self.sftp.show_hop(p.hops.hop if on else None, p.server.label if p is not None else "",
+                           p.relay_state if on else "", p.relay_error if on else "")
 
     # ================================================================ connect
     def _make_pane(self, server: Server, touch: bool = True) -> TerminalPane:
@@ -761,7 +764,7 @@ class MainWindow(QMainWindow):
         pane.state_changed.connect(self._on_pane_state)
         pane.dashboard_requested.connect(self.open_dashboard)
         pane.context_requested.connect(self._terminal_menu)
-        pane.hop_changed.connect(lambda _p: self._sync_sftp())
+        pane.hop_changed.connect(lambda _p: (self._sync_sftp(), self._health_kick()))
         if touch and server.id in self.store.servers:
             self.store.touch(server.id)
         return pane
@@ -1552,16 +1555,31 @@ class MainWindow(QMainWindow):
 
     def open_hop(self, hop) -> None:
         """The terminal went on to another machine with ssh: open that machine as a server of its own, through the
-        current one as its jump host (a saved one is reused; otherwise the New server form, filled in)."""
+        current one as its jump host. A saved one is reused; otherwise the New server form opens, filled in from
+        what that server's ssh would really use (`ssh -G`: the hostname behind an alias, port, user)."""
         pane = self.active_pane()
         if pane is None or hop is None:
             return
         home = pane.server
+        host, port, user = hop.host, hop.port, hop.user
+        client = getattr(pane.session, "client", None)
+        if client is not None and len(pane.hops.chain) <= 1:
+            from PySide6.QtGui import QGuiApplication
+            from .relay import resolved
+            QGuiApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                got = resolved(client, hop)
+            finally:
+                QGuiApplication.restoreOverrideCursor()
+            host = got.get("hostname", host)
+            port = int(got["port"]) if got.get("port", "").isdigit() else port
+            user = got.get("user", user)
+        names = {hop.host.lower(), host.lower()}
         for s in self.store.servers.values():
-            if s.host.lower() == hop.host.lower() and s.port == hop.port and s.jump_id == home.id and                     (not hop.user or s.username == hop.user):
+            if s.host.lower() in names and s.port == port and s.jump_id == home.id and (not user or s.username == user):
                 self.connect_server(s.id)
                 return
-        srv = Server(name=hop.label, host=hop.host, port=hop.port, username=hop.user, auth="password",
+        srv = Server(name=hop.label, host=host, port=port, username=user, auth="password",
                      jump_id=home.id if home.id in self.store.servers else "", group=home.group)
         dlg = ServerDialog(self.store, srv, self, new=True)
         if dlg.exec() == QDialog.Accepted:
@@ -1595,16 +1613,29 @@ class MainWindow(QMainWindow):
         from .dashboard_ui import DashboardWindow
         wins = getattr(self, "_dashboards", {})
         self._dashboards = wins
+        term = pane
+        if getattr(pane, "relay_state", "") == "ok" and pane.relay is not None:
+            pane = self._relay_pane(pane)           # the machine the shell went on to
         win = wins.get(id(pane))
         if win is None:
             color = self.store.color_for(self.store.servers.get(pane.server.id, pane.server))
-            win = DashboardWindow(pane, color=color, send_to_terminal=lambda text, p=pane: self._type_into(p, text),
+            win = DashboardWindow(pane, color=color, send_to_terminal=lambda text, p=term: self._type_into(p, text),
                                   settings=self.settings, parent=self)
             win.destroyed.connect(lambda _o=None, k=id(pane): wins.pop(k, None))
             wins[id(pane)] = win
         win.show()
         win.raise_()
         win.activateWindow()
+
+    def _relay_pane(self, term):
+        """A stand-in terminal pane for the dashboard of the machine `term`'s shell went on to (one per relay)."""
+        cache = getattr(self, "_relay_panes", {})
+        self._relay_panes = cache
+        rp = cache.get(id(term.relay))
+        if rp is None:
+            from .relay_pane import RelayPane
+            rp = cache[id(term.relay)] = RelayPane(term)
+        return rp
 
     def _type_into(self, pane, text: str) -> None:
         pane.send_text(text)

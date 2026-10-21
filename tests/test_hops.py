@@ -69,8 +69,8 @@ def test_open_here_reuses_a_saved_server_or_fills_in_the_form():
     home = Server(name="!CompilerMaster", host="git.safemobile.org", port=64990, username="safemobile", group="Lab")
     opened, saved = [], []
     store = SimpleNamespace(servers={home.id: home}, upsert=saved.append)
-    win = SimpleNamespace(active_pane=lambda: SimpleNamespace(server=home), store=store, refresh_all=lambda: None,
-                          connect_server=opened.append)
+    win = SimpleNamespace(active_pane=lambda: SimpleNamespace(server=home, session=None, hops=SimpleNamespace(chain=[])),
+                          store=store, refresh_all=lambda: None, connect_server=opened.append)
     w = HopWatch()
     w.update("safemobile@CompilerMaster:~$", "ssh linxstress")
     w.update("safemobile@LinxStress:~$", "ls")

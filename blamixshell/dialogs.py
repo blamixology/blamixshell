@@ -954,6 +954,13 @@ class SettingsDialog(_Base):
                                      "the dashboard's Updates tab (each one asks first). Off by default.")
         self.dash_install.setChecked(settings.get("dashboard_install_updates", False))
         f.addRow("", self.dash_install)
+        self.follow_ssh = QCheckBox("Follow ssh from the terminal: files, editor and dashboard go to the machine you "
+                                    "ssh to")
+        self.follow_ssh.setToolTip("When you type ssh other-machine in a server's terminal, BlamixShell reaches it "
+                                   "through that server's own ssh (its keys and settings, never a password prompt). "
+                                   "On by default.")
+        self.follow_ssh.setChecked(settings.get("follow_ssh", True))
+        f.addRow("", self.follow_ssh)
         lt.addLayout(f)
         lt.addStretch(1)
 
@@ -1140,6 +1147,7 @@ class SettingsDialog(_Base):
         s["health_interval"] = self.health_iv.currentData()
         s["history_autocomplete"] = self.hist.isChecked()
         s["dashboard_install_updates"] = self.dash_install.isChecked()
+        s["follow_ssh"] = self.follow_ssh.isChecked()
         s["command_log"] = self.cmdlog.isChecked()
         s["record_format"] = self.rec_fmt.currentData()
         s["record_timestamps"] = self.rec_ts.isChecked()

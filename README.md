@@ -128,7 +128,8 @@ Pushing a tag like `v1.0.0` makes GitHub Actions (`.github/workflows/release.yml
 - **Imports and snippets:** PuTTY sessions (Windows) and `~/.ssh/config` (with `ProxyJump` and forwards); saved commands one click away.
 
 ### Files and the built-in editor
-- **Files panel (SFTP):** drag and drop to upload. Download, rename, delete (recursive), create folders. Its header names the machine the files are on. If you `ssh` from the terminal to another machine, the panel says that its files are still the first server's, and offers **Open <that machine> here**: it becomes a server with the first one as its jump host, so its files, editor and dashboard work too.
+- **Files panel (SFTP):** drag and drop to upload. Download, rename, delete (recursive), create folders. Its header names the machine the files are on.
+- **Follows `ssh` from the terminal:** type `ssh linxstress` in a server's shell and the Files panel, the editor, the dashboard and the health strip go there too, and come back when you `exit` (chains like A → B → C as well). BlamixShell asks the first server to connect for it the way you did, with that server's own keys, `~/.ssh/config` and known hosts, so nothing has to be set up on your PC. One shared connection (OpenSSH ControlMaster) keeps it quick, and it never answers a password prompt. When the machine needs a password, the Files panel says why and offers **Open <machine> here**: the New server form, filled in from that server's ssh settings, with the first server as the jump host. It can be turned off in Settings.
 - **Built-in editor** (double-click a file; the same editor as BlamixFiles): a window with a tab per file, syntax highlighting for 500+ languages (nginx, Apache, systemd and `.env` recognised), line numbers, find / replace (regex), go to line, toggle comment, auto-indent.
   - **Ctrl+S** saves to the server. It first checks that nobody changed the file meanwhile (and shows the differences if they did), then writes a copy and renames it over the original. The encoding, line endings and permissions stay as they were.
   - Files only root may read or change open and save **with sudo** after asking; the file keeps its owner and mode.
@@ -299,6 +300,8 @@ blamixshell/
   cli.py           command line + interactive raw-tty shell + parallel exec
   tui.py           Textual full-screen UI; tui_dash.py: the terminal dashboard
   handoff.py       `gui --connect`: hand a server to the window that is already open
+  hops.py, relay.py, relay_pane.py
+                   following `ssh other` typed in a terminal, through the first server's own ssh
   oskey.py         unlock with the Windows account (DPAPI)
   report.py        Markdown / JSON server report
   vault.py         AES-256-GCM + scrypt encrypted store

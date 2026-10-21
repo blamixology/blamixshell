@@ -72,6 +72,7 @@ DEFAULTS = {
     "history_autocomplete": False,  # suggest commands from this server's history (opt-in)
     "dashboard_size": [],                 # [width, height] the dashboard window had last time
     "dashboard_install_updates": False,   # allow installing updates from the dashboard (opt-in)
+    "follow_ssh": True,                   # files / editor / dashboard follow `ssh other` typed in a terminal
     "ui_theme": "Midnight",         # interface colors (applied at startup; see theme.THEMES)
     "ui_font": "",                  # "" = the system's UI font
     "ui_font_size": 10,             # base text size of the interface, in points
